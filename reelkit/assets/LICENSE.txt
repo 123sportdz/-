@@ -1,0 +1,4 @@
+Noto Sans Arabic — Copyright 2015-2024 Google LLC
+Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1).
+Full license: https://scripts.sil.org/OFL
+Bundled so that Arabic branding renders identically on Windows / macOS / Linux.

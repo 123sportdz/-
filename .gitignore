@@ -1,0 +1,15 @@
+# runtime artifacts
+__pycache__/
+*.pyc
+.tmp/
+outputs/
+incoming/
+watch/
+state.json
+config.json
+font_warnings.log
+*.log
+.DS_Store
+# keep logo library dir but not uploaded logos
+logo_library/*
+!logo_library/.gitkeep

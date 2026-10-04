@@ -1,0 +1,24 @@
+# pytorch is installed separately (CPU or CUDA build) — see README
+ultralytics>=8.3.0
+opencv-python-headless>=4.9.0
+numpy>=1.24
+pillow>=10.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+# dashboard
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pytesseract>=0.3.10          # + system package: apt install tesseract-ocr tesseract-ocr-ara
+edge-tts>=7.0                # 🎙️ محرّك التعليق الصوتي المجاني الافتراضي (voice.py)
+# optional (YouTube upload) — مثبّتة افتراضياً لأن النشر لليوتيوب ميزة مشحونة في المشروع
+# (كانت معلّقة ⇒ link_youtube.py ورفع الفيديو يفشلان بـModuleNotFoundError بعد install.sh)
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+fonttools>=4.40
+
+# 🎯 اختياري لكن موصى به: تنزيل فيديوهات تيليجرام الكبيرة بحسابك
+# python-socks: مشغّل البروكسي الذي يوصي به QUICKSTART (بدونه socks5:// يرمي ModuleNotFoundError)
+telethon>=1.36
+python-socks[asyncio]>=2.4
+qrcode[pil]>=7.4
