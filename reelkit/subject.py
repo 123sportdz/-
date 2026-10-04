@@ -30,66 +30,71 @@ class PlayerTracker:
         self._prev_center = None
         cap = cv2.VideoCapture(video_path)
         fps = fps or (cap.get(cv2.CAP_PROP_FPS) or 30.0)
-        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)); W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = W = 0                          # تُقاس من الفريم (CAP_PROP قد تُرجع 0)
         step = max(1, int(round(fps / rate)))
         n = 0; out = []; sticky = None
-        while True:
-            ok, fr = cap.read()
-            if not ok:
-                break
-            n += 1
-            if n % step:
-                continue
-            r = None
-            if self._tracking_ok:
-                try:
-                    kw = dict(persist=True, classes=[0], conf=self.conf, imgsz=self.imgsz,
-                              device=self.device, tracker=self.tracker, verbose=False)
+        try:
+            while True:
+                ok, fr = cap.read()
+                if not ok:
+                    break
+                if not H or not W:
+                    H, W = fr.shape[:2]
+                n += 1
+                if n % step:
+                    continue
+                r = None
+                if self._tracking_ok:
+                    try:
+                        kw = dict(persist=True, classes=[0], conf=self.conf, imgsz=self.imgsz,
+                                  device=self.device, tracker=self.tracker, verbose=False)
+                        if self.half:
+                            kw["half"] = True
+                        r = self.model.track(fr, **kw)[0]
+                    except Exception as e:            # lap/ByteTrack غير متاح؟
+                        self._tracking_ok = False
+                        if progress:
+                            progress(f"  tracker غير متاح ({type(e).__name__}) — استخدم مطابقة بسيطة")
+                if r is None:
+                    kw = dict(classes=[0], conf=self.conf, imgsz=self.imgsz,
+                              device=self.device, verbose=False)
                     if self.half:
                         kw["half"] = True
-                    r = self.model.track(fr, **kw)[0]
-                except Exception as e:            # lap/ByteTrack غير متاح؟
-                    self._tracking_ok = False
-                    if progress:
-                        progress(f"  tracker غير متاح ({type(e).__name__}) — استخدم مطابقة بسيطة")
-            if r is None:
-                kw = dict(classes=[0], conf=self.conf, imgsz=self.imgsz,
-                          device=self.device, verbose=False)
-                if self.half:
-                    kw["half"] = True
-                r = self.model.predict(fr, **kw)[0]
-            t = n / fps
-            bx = None
-            if ball_x is not None:
-                fi = min(len(ball_x) - 1, n - 1)
-                if fi >= 0 and ball_x[fi] == ball_x[fi]:
-                    bx = float(ball_x[fi])
-            best = None
-            if len(r.boxes):
-                ids = r.boxes.id.tolist() if r.boxes.id is not None else [None]*len(r.boxes)
-                for b, tid in zip(r.boxes, ids):
-                    x1, y1, x2, y2 = b.xyxy[0].tolist()
-                    w, h = x2-x1, y2-y1
-                    if h < min_h*H:
-                        continue
-                    cx = (x1+x2)/2
-                    if bx is not None:
-                        sc = -abs(cx - bx)/W                      # closest to the ball wins
-                    else:
-                        sc = -abs(cx - W/2)/W + 0.5*(h/H)         # biggest + most central
-                    sc += 0.25*float(b.conf[0])
-                    if sticky is not None and tid == sticky:
-                        sc += 0.35                                 # stay on the same player
-                    if best is None or sc > best[0]:
-                        best = (sc, tid, cx, (y1+y2)/2, w, h, float(b.conf[0]))
-            if best is not None:
-                _, tid, cx, cy, w, h, c = best
-                if tid is not None:
-                    sticky = tid
-                out.append((t, cx, cy, w, h, c))
-            if progress and n % (step*60) == 0:
-                progress(f"  player scan {t:6.1f}s  picks={len(out)}")
-        cap.release()
+                    r = self.model.predict(fr, **kw)[0]
+                t = n / fps
+                bx = None
+                if ball_x is not None:
+                    bflat = np.asarray(ball_x).reshape(-1)   # يتقبّل (N,) و(N,1) وفق التوثيق
+                    fi = min(len(bflat) - 1, n - 1)
+                    if fi >= 0 and bflat[fi] == bflat[fi]:
+                        bx = float(bflat[fi])
+                best = None
+                if len(r.boxes):
+                    ids = r.boxes.id.tolist() if r.boxes.id is not None else [None]*len(r.boxes)
+                    for b, tid in zip(r.boxes, ids):
+                        x1, y1, x2, y2 = b.xyxy[0].tolist()
+                        w, h = x2-x1, y2-y1
+                        if h < min_h*H:
+                            continue
+                        cx = (x1+x2)/2
+                        if bx is not None:
+                            sc = -abs(cx - bx)/W                      # closest to the ball wins
+                        else:
+                            sc = -abs(cx - W/2)/W + 0.5*(h/H)         # biggest + most central
+                        sc += 0.25*float(b.conf[0])
+                        if sticky is not None and tid == sticky:
+                            sc += 0.35                                 # stay on the same player
+                        if best is None or sc > best[0]:
+                            best = (sc, tid, cx, (y1+y2)/2, w, h, float(b.conf[0]))
+                if best is not None:
+                    _, tid, cx, cy, w, h, c = best
+                    if tid is not None:
+                        sticky = tid
+                    out.append((t, cx, cy, w, h, c))
+                if progress and n % (step*60) == 0:
+                    progress(f"  player scan {t:6.1f}s  picks={len(out)}")
+        finally:
+            cap.release()      # يُحرَّر حتى عند الاستثناء
         return np.array(out, dtype=np.float32) if out else np.zeros((0, 6), np.float32)
 
 

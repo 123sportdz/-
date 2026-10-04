@@ -16,6 +16,8 @@ edge-tts>=7.0                # 🎙️ محرّك التعليق الصوتي ا
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 fonttools>=4.40
+# ByteTrack لتتبّع اللاعب/الشاشة المقسومة (بدونه يتراجع تلقائياً لمطابقة بسيطة)
+lap>=0.5.12
 
 # 🎯 اختياري لكن موصى به: تنزيل فيديوهات تيليجرام الكبيرة بحسابك
 # python-socks: مشغّل البروكسي الذي يوصي به QUICKSTART (بدونه socks5:// يرمي ModuleNotFoundError)

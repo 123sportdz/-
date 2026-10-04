@@ -112,9 +112,14 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
     if SPLIT:
         top_h = min(int(round(out_w * H / W)), out_h // 2)
         bot_h = out_h - top_h - 4
-        # مساحة أوسع حول اللاعب تمنع التصاقه بالحافة عند الحركة.
-        p_w = min(W, int(round(H * out_w / max(bot_h, 1) * 1.18)))
+        # ✅ v1.49: كان ×1.18 يمدّ لقطة اللاعب أفقياً 18% (تشويه + تقلّص للأشكال).
+        # نعود للنسبة الصحيحة، ونسمح باقتصاص رأسي مركزي عند المصادر الطولية بدل التمديد.
+        p_w = min(W, int(round(H * out_w / max(bot_h, 1))))
+        p_h = min(H, int(round(p_w * bot_h / max(1, out_w))))
         p_half = p_w / 2
+    # موضع شريط الهوية الفعلي: في split أنزله فوق أرجل اللاعب مع ضمان بقاء اللوحة داخل الإطار
+    _brand_y_eff = (min(0.90, max(0.5, 1.0 - (200.0 / max(1, out_h))))
+                    if SPLIT else float(brand_y))
 
     tmp_video = tmp_path or (os.path.splitext(out_path)[0] + "_video.mp4")
     cmd = ["ffmpeg", "-v", "error", "-y",
@@ -125,7 +130,19 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
     errlog_fd, errlog_path = tempfile.mkstemp(prefix=".ffmpeg_", suffix=".log",
                                               dir=(os.path.dirname(out_path) or "."))
     errlog = os.fdopen(errlog_fd, "w")
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
+    except Exception:
+        # فشل تشغيل ffmpeg (غير مثبّت/مسار تالف) — ننظّف السجل ونُعيد الخطأ
+        try:
+            errlog.close()
+        except Exception:
+            pass
+        try:
+            os.remove(errlog_path)
+        except OSError:
+            pass
+        raise
 
     cap = cv2.VideoCapture(video)
     n = 0; cache = {"bg": None}; last_mode = None; split_cx = None
@@ -165,7 +182,8 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                     split_cx += delta * 0.34
                 px = split_cx
                 cx0 = int(round(px - p_half)); cx0 = max(0, min(W - p_w, cx0))
-                canvas[top_h + 4:] = cv2.resize(fr[:, cx0:cx0 + p_w], (out_w, bot_h),
+                cy0 = max(0, (H - p_h) // 2)          # اقتصاص رأسي مركزي عند المصادر الطولية
+                canvas[top_h + 4:] = cv2.resize(fr[cy0:cy0 + p_h, cx0:cx0 + p_w], (out_w, bot_h),
                                                 interpolation=cv2.INTER_CUBIC)
                 if split_labels:
                     G.tag(canvas, "WIDE", 14, 14)
@@ -240,18 +258,16 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
             if burst_t is not None:
                 canvas = G.goal_burst(canvas, (n / fps) - float(burst_t), text=burst_text)
             if commentary_show and commentary_text:
-                # فوق شعار القناة مباشرة (وكلاهما فوق منطقة أزرار شورتس)
-                y_l3 = int(out_h * float(brand_y)) - 200
+                # فوق شعار القناة مباشرة — بنفس موضع الشريط الفعلي (كان 0.76 حتى في split)
+                y_l3 = int(out_h * float(_brand_y_eff)) - 200
                 G.lower_third(canvas, commentary_text, y=max(10, y_l3), accent=accent)
             if source_credit:
                 # 🛡️ سطر إسناد المصدر فوق شريط الهوية (عمل تحويلي موثّق)
-                canvas = G.source_credit(canvas, source_credit, accent=accent_bgr,
-                                         y=int(out_h * (0.90 if SPLIT else float(brand_y))) - 72)
+                canvas = G.source_credit(canvas, source_credit, accent=accent,
+                                         y=int(out_h * float(_brand_y_eff)) - 72)
             if brand_name or brand_url:
-                # 76% تقع فوق الأرجل في اللوحة السفلية للشاشة المقسومة.
-                brand_y_eff = 0.90 if SPLIT else brand_y
                 canvas = G.draw_brand(canvas, brand_name, brand_url, accent=accent,
-                                      y=int(out_h * float(brand_y_eff)),
+                                      y=int(out_h * float(_brand_y_eff)),
                                       scale=(0.72 if SPLIT else 1.0))
             if logo is not None:
                 canvas = logo.apply(canvas)
@@ -311,12 +327,16 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
         _mux(tmp_video, out_path, audio=audio, voice_wav=voice_wav, duck=duck,
              voice_gain=voice_gain, voice_delay_ms=voice_delay_ms)
     finally:
-        # 🧹 لا يتسرّب ملف ‎_video.mp4 الوسيط لو فشل المزج (كان يبقى بجانب المخرج)
+        # 🧹 لا يتسرّب ملف ‎_video.mp4 الوسيط ولا سجل ffmpeg لو فشل المزج
         if os.path.exists(tmp_video):
             try:
                 os.remove(tmp_video)
             except OSError:
                 pass
+        try:
+            os.remove(errlog_path)
+        except OSError:
+            pass
     # تحقق أخير: لازم يكون فيه فيديو وصوت
     chk = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
                           "-of", "csv=p=0", out_path], capture_output=True, text=True, timeout=60)

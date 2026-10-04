@@ -78,8 +78,8 @@ def _tiles(W, H, tile, overlap=0.25):
     step = max(1, int(tile * (1 - overlap)))
     xs = list(range(0, max(1, W - tile + 1), step)) or [0]
     ys = list(range(0, max(1, H - tile + 1), step)) or [0]
-    if xs[-1] != W - tile: xs.append(max(0, W - tile))
-    if ys[-1] != H - tile: ys.append(max(0, H - tile))
+    if W - tile > 0 and xs[-1] != W - tile: xs.append(W - tile)
+    if H - tile > 0 and ys[-1] != H - tile: ys.append(H - tile)
     out = []
     for y in ys:
         for x in xs:
@@ -213,30 +213,32 @@ class BallDetector:
                     out.append((t, (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, cf))
             pend.clear()
 
-        while True:
-            ok, fr = cap.read()
-            if not ok:
-                break
-            n += 1
-            if n % step:
-                continue
-            t = n / fps
-            if self.batch <= 1:
-                # المسار المتسلسل (CPU) — كما كان
-                if not self._warmed:
-                    self._warmup(fr)
-                for (x1, y1, x2, y2, cf) in self.detect_frame(fr):
-                    out.append((t, (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, cf))
-            else:
-                if not self._warmed:
-                    self._warmup(fr)
-                pend.append((t, fr))
-                if len(pend) >= self.batch:
-                    flush()
-            if progress and n % (step * 60) == 0:
-                progress(f"  ball scan {t:6.1f}s  dets={len(out)}")
-        flush()
-        cap.release()
+        try:
+            while True:
+                ok, fr = cap.read()
+                if not ok:
+                    break
+                n += 1
+                if n % step:
+                    continue
+                t = n / fps
+                if self.batch <= 1:
+                    # المسار المتسلسل (CPU) — كما كان
+                    if not self._warmed:
+                        self._warmup(fr)
+                    for (x1, y1, x2, y2, cf) in self.detect_frame(fr):
+                        out.append((t, (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, cf))
+                else:
+                    if not self._warmed:
+                        self._warmup(fr)
+                    pend.append((t, fr))
+                    if len(pend) >= self.batch:
+                        flush()
+                if progress and n % (step * 60) == 0:
+                    progress(f"  ball scan {t:6.1f}s  dets={len(out)}")
+            flush()
+        finally:
+            cap.release()      # يُحرَّر حتى لو رُمي استثناء أثناء الكشف (كان يبقى مفتوحاً)
         return np.array(out, dtype=np.float32) if out else np.zeros((0, 6), np.float32)
 
 
@@ -270,7 +272,8 @@ class PersonDetector:
         import cv2
         cap = cv2.VideoCapture(video_path)
         fps = fps or (cap.get(cv2.CAP_PROP_FPS) or 30.0)
-        H = cap.get(cv2.CAP_PROP_FRAME_HEIGHT); W = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        # أبعاد الفريم تُقاس من الفريم نفسه: CAP_PROP_* قد تُرجع 0 على بعض المصادر
+        H = W = 0
         step = max(1, int(round(fps / rate)))
         n = 0; out = []
         pend = []
@@ -283,31 +286,35 @@ class PersonDetector:
             pend.clear()
             for t, r in zip(ts, self._predict_batch(frames)):
                 mh = mw = 0.0
-                if len(r.boxes):
+                if len(r.boxes) and H and W:
                     for b in r.boxes:
                         x1, y1, x2, y2 = b.xyxy[0].tolist()
                         mh = max(mh, (y2 - y1) / H); mw = max(mw, (x2 - x1) / W)
                 out.append((t, mh, mw))
 
-        while True:
-            ok, fr = cap.read()
-            if not ok:
-                break
-            n += 1
-            if n % step:
-                continue
-            if self.batch <= 1:
-                r = self._predict_batch([fr])[0]
-                mh = mw = 0.0
-                if len(r.boxes):
-                    for b in r.boxes:
-                        x1, y1, x2, y2 = b.xyxy[0].tolist()
-                        mh = max(mh, (y2 - y1) / H); mw = max(mw, (x2 - x1) / W)
-                out.append((n / fps, mh, mw))
-            else:
-                pend.append((n / fps, fr))
-                if len(pend) >= self.batch:
-                    flush()
-        flush()
-        cap.release()
+        try:
+            while True:
+                ok, fr = cap.read()
+                if not ok:
+                    break
+                if not H or not W:
+                    H, W = fr.shape[:2]          # أبعاد موثوقة من الفريم نفسه
+                n += 1
+                if n % step:
+                    continue
+                if self.batch <= 1:
+                    r = self._predict_batch([fr])[0]
+                    mh = mw = 0.0
+                    if len(r.boxes) and H and W:
+                        for b in r.boxes:
+                            x1, y1, x2, y2 = b.xyxy[0].tolist()
+                            mh = max(mh, (y2 - y1) / H); mw = max(mw, (x2 - x1) / W)
+                    out.append((n / fps, mh, mw))
+                else:
+                    pend.append((n / fps, fr))
+                    if len(pend) >= self.batch:
+                        flush()
+            flush()
+        finally:
+            cap.release()      # يُحرَّر حتى لو رُمي استثناء أثناء الكشف (كان يبقى مفتوحاً)
         return np.array(out, dtype=np.float32) if out else np.zeros((0, 3), np.float32)

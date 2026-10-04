@@ -68,7 +68,7 @@ def main():
         n2, f2 = SP.clean_files(inc, days=0, keep_prefix=None)
         print(f"🎞️  كل التنزيلات: حُذف {n2} — وفّرنا {SP.human(f2)}")
     if a.outputs_days is not None:
-        n3, f3 = SP.clean_files(out, days=a.outputs_days)
+        n3, f3 = SP.clean_files(out, days=a.outputs_days, keep_suffix=".json")  # يحمي jobs.json/automation_state.json
         print(f"🎬 مخرجات أقدم من {a.outputs_days:g} يوم: حُذف {n3} — وفّرنا {SP.human(f3)}")
     d2 = SP.scan(ROOT, inc, out)
     print("\nبعد التنظيف:")

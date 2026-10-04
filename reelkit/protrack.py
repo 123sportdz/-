@@ -278,9 +278,9 @@ def track_2d(det, cuts, W, H, fps=60.0, rate=15.0, min_conf=0.20):
     acc_all = np.zeros(len(det), bool); rej = []
     for (t0, t1) in segs:
         idx = np.nonzero((det[:, 0] >= t0) & (det[:, 0] < t1) & (det[:, 5] >= eff_conf))[0]
-        n_cand += len(idx)
         if len(idx) < 2:
             continue
+        n_cand += len(idx)          # نحسب فقط المقاطع التي نعالجها فعلاً (وإلا تُنفخ تغطية المرشّحين)
         # بناء مرشّحي كل لحظة (كلهم — الارتباط يقرّر). نمرّر w,h أيضاً لبوّابة الحجم.
         times_u = np.array(sorted(set(det[idx, 0].tolist())))
         cands = {}
@@ -538,6 +538,12 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
     if np.all(np.isnan(x)):
         return np.full(n, np.nan), (np.full(n, np.nan) if y is not None else None)
     x[np.isnan(x)] = np.nanmean(x)
+    if y is not None:
+        # 🛡️ v1.49: مسار y كله NaN (لا كرة أصلاً) كان يمرّر NaN ⇒ تعطيل التأطير الرأسي
+        if np.all(np.isnan(y)):
+            y = None
+        else:
+            y[np.isnan(y)] = np.nanmean(y)
     vx = savgol_vel(x, fps, 9)
     # 🎬 v1.45: قطع المشاهد تُنتج قفزة في x ⇒ savgol_vel يبلّغ سرعة وهمية (2450-3500px/s)
     # فتنطلق الكاميرا لحافة الإطار في بداية اللقطة الجديدة. نصفّر السرعة حول القطع.

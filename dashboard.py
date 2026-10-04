@@ -7,7 +7,7 @@ dashboard.py — لوحة تحكم elhadath-reels (نسخة احترافية)
 
 الإعدادات: config.json أو متغيرات بيئة (BRAND_NAME, TELEGRAM_BOT_TOKEN, …)
 """
-import argparse, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
+import argparse, asyncio, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -134,7 +134,7 @@ def masked(cfg):
 
 # ------------------------------------------------------------------ jobs
 JOBS = {}
-_lock = threading.Lock()
+_lock = threading.RLock()   # reentrant: _persist يُستدعى داخل أقسام مقفلة
 _last_persist = 0.0
 JOB_SEM = threading.BoundedSemaphore(int(os.environ.get("REEL_MAX_JOBS", "1")))   # 🚦 بحد أقصى
 AUTOMATION_STATE_FILE = OUT / "automation_state.json"
@@ -144,22 +144,62 @@ _automation_runtime = {"status": "stopped", "last_cycle": None, "last_error": ""
 
 def _persist(force=True):
     global _last_persist
-    # 📸 انسخ تحت القفل ثم اكتب خارجه — run_job/_create يعدّلان JOBS بلا قفل،
-    # والتسلسل أثناء التعديل يرمي RuntimeError فيبتلعه except وتضيع كتابة الحالة.
-    # 💾 v1.45: كتابة ذّرّية (tmp + os.replace) + خنق: كان يُعاد تسلسل كل jobs.json
-    # لكل سطر سجل (I/O amplification) وقد ينقطع الملف منتصف الكتابة عند انهيار.
+    # 💾 v1.49: التسلسل والكتابة **داخل القفل** وإلى ملف مؤقت فريد.
+    # قبل: نسخة سطحية + كتابة خارج القفل إلى نفس الـtmp ⇒ مع REEL_MAX_JOBS>1
+    # أو خيط اللوحة، يتسابق كاتبان على نفس الملف فيتلف jobs.json، وdict(JOBS)
+    # السطحي قد يتغيّر أثناء json.dumps فيرمي RuntimeError ويضيع الحفظ.
     try:
         now = time.time()
         if not force and now - _last_persist < 1.2:
             return
         with _lock:
-            snap = dict(JOBS)
-        tmp = JOBS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snap, ensure_ascii=False, default=str), encoding="utf-8")
-        os.replace(tmp, JOBS_FILE)
-        _last_persist = now
+            data = json.dumps(JOBS, ensure_ascii=False, default=str)
+            _last_persist = now
+        fd, tmp = tempfile.mkstemp(dir=str(OUT), prefix="jobs.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(data)
+            os.replace(tmp, JOBS_FILE)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     except Exception:
         pass
+
+
+def _snapshot(fn=None):
+    """نسخة آمنة من JOBS تحت القفل (تجنّب RuntimeError أثناء التعديل من خيط آخر)."""
+    with _lock:
+        vals = list(JOBS.items())
+    return fn(vals) if fn else dict(vals)
+
+
+def _kill_proc(p):
+    """يقتل المهمة **ومجموعتها** — reel.py تطلق ffmpeg كأبناء، وقتل الأب وحده
+    يترك ffmpeg حياً يستهلك المعالج/الكرت ويحتجز الملفات."""
+    if p is None or p.poll() is not None:
+        return
+    try:
+        import signal as _sig
+        try:
+            os.killpg(os.getpgid(p.pid), _sig.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            p.terminate()
+        try:
+            p.wait(timeout=6)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(p.pid), _sig.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                p.kill()
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
 
 def _load():
     if JOBS_FILE.exists():
@@ -325,7 +365,7 @@ def run_job(job_id, args):
         def execute(current):
             p = subprocess.Popen(current, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  stdin=subprocess.DEVNULL, bufsize=1, cwd=str(ROOT),
-                                 env=_child_env(), **_TXT)   # stdin مغلق: ffmpeg لا يتعلّق منتظراً إدخالاً
+                                 env=_child_env(), start_new_session=True, **_TXT)   # stdin مغلق + مجموعة عملية خاصة
             PROCS[job_id] = p
             # ⏱️ v1.45: حرس مهلة — مهمة معلّقة (درايفر GPU/ffmpeg) كانت توقف الطابور
             # للأبد (‎p.wait‎ بلا مهلة) كما فعل autopilot سابقاً. نقتلها بعد المهلة.
@@ -334,10 +374,7 @@ def run_job(job_id, args):
             def _kill_on_timeout():
                 if p.poll() is None:
                     timed["v"] = True
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
+                    _kill_proc(p)          # يقتل ffmpeg الأبناء أيضاً
             wd = threading.Timer(max(60, timeout_s), _kill_on_timeout)
             wd.daemon = True
             wd.start()
@@ -526,7 +563,7 @@ ALLOWED_CFG_KEYS = {
     "brand_name", "brand_url", "telegram_token", "telegram_chat", "telegram_channel",
     "youtube_channel_id", "youtube_privacy", "device", "gemini_api_key", "gemini_model",
     "auto_ai_title", "auto_youtube", "auto_telegram", "schedule_peak", "auto_translate",
-    "max_dur", "accent", "tracker", "zoom",
+    "max_dur", "accent", "tracker", "zoom", "no_ai",
     "logo_path", "logo_pos", "logo_scale", "logo_opacity", "logo_plate",
     "logo_radius", "logo_margin", "logo_enabled",
     "tg_api_id", "tg_api_hash", "tg_phone", "tg_session", "tg_proxy", "framing", "vcenter",
@@ -635,7 +672,7 @@ def api_automation_set(payload: dict):
 @app.post("/api/upload_secret")
 async def api_upload_secret(file: UploadFile = File(...)):
     """يرفع ملف اعتماد يوتيوب (client_secret*.json) للمكان الصحيح."""
-    raw = await file.read()
+    raw = await _read_capped(file, 256 * 1024, "ملف الاعتماد أكبر من 256 كيلوبايت")
     try:
         j = json.loads(raw.decode("utf-8"))
     except Exception:
@@ -677,9 +714,11 @@ async def api_upload(file: UploadFile = File(...)):
     # فحص مبكر: نرفض الصور/الملفات التالفة قبل إدخالها إلى الطابور، مع
     # إبقاء رسالة الخطأ مرتبطة بالرفع بدل ظهور "فشل" بعد عدة دقائق.
     try:
-        chk = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                              "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(dest)],
-                             capture_output=True, **_TXT, timeout=60)
+        # 🧵 v1.49: الفحص في خيط منفصل حتى لا يجمّد حلقة الأحداث (كل الواجهة) أثناء ffprobe
+        chk = await asyncio.to_thread(lambda: subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(dest)],
+            capture_output=True, **_TXT, timeout=60))
     except (OSError, subprocess.TimeoutExpired):
         dest.unlink(missing_ok=True)
         raise HTTPException(503, "تعذّر فحص الملف — تأكد أن ffprobe مثبت ويعمل")
@@ -706,6 +745,27 @@ def _path_allowed(p: Path) -> bool:
     return any(s == str(d) or s.startswith(str(d) + os.sep) for d in allow)
 
 
+async def _read_capped(file, max_bytes, err="الملف كبير جداً"):
+    """يقرأ رفعاً بسقف حجم صارم — كان `await file.read()` يحمّل الملف كاملاً في
+    الذاكرة قبل الفحص فيسقط اللوحة (OOM) برفع ضخم."""
+    declared = file.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > max_bytes:
+                raise HTTPException(413, err)
+        except ValueError:
+            pass
+    buf = bytearray()
+    while True:
+        chunk = await file.read(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+        if len(buf) > max_bytes:
+            raise HTTPException(413, err)
+    return bytes(buf)
+
+
 def _safe_public_url(url: str):
     """يرفض العناوين الداخلية/الحلقة المحلية (SSRF) — لا نوقف الأخطاء الأخرى."""
     import ipaddress, socket
@@ -722,7 +782,8 @@ def _safe_public_url(url: str):
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_unspecified or ip.is_multicast):
             raise HTTPException(400, "عنوان شبكة داخلية غير مسموح (SSRF) — استخدم رابطاً عاماً")
 
 
@@ -816,14 +877,20 @@ def _download_to_local(src, caption_in=""):
     else:
         urls = [src]
     dest = INCOMING / f"{uuid.uuid4().hex[:8]}_dl.mp4"
-    from urllib.request import urlopen, Request as RQ
+    from urllib.request import build_opener, HTTPRedirectHandler, Request as RQ
+    # 🛡️ v1.49: نمنع إعادة التوجيه — _safe_public_url يفحص الخطوة الأولى فقط،
+    # فكان 302 إلى 127.0.0.1/169.254.169.254 يلتفّ على الحماية. نرفض أي 3xx.
+    class _NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    _opener = build_opener(_NoRedirect)
     err = None
     max_bytes = MAX_UPLOAD_BYTES
     for url in urls:                       # نجرّب كل الروابط (بعضها يعطي 500)
         try:
             _safe_public_url(url)          # 🛡️ منع SSRF قبل الاتّصال
             total = 0
-            with urlopen(RQ(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=300) as r, \
+            with _opener.open(RQ(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=300) as r, \
                     open(dest, "wb") as f:
                 while True:
                     c = r.read(1 << 16)
@@ -928,10 +995,11 @@ def _create(payload):
     jid = uuid.uuid4().hex[:8]
     out = OUT / f"reel_{jid}.mp4"
     src_url = (payload.get("input") or "").strip() if (payload.get("input") or "").startswith("http") else ""
-    JOBS[jid] = {"id": jid, "input": src, "output": str(out), "caption": caption, "source_url": src_url,
-                 "label": os.path.basename(src), "status": "queued", "stage": "في الانتظار",
-                 "progress": 0, "created": time.time(), "options": payload,
-                 "title": "", "description": "", "tags": [], "publish": {}}
+    with _lock:
+        JOBS[jid] = {"id": jid, "input": src, "output": str(out), "caption": caption, "source_url": src_url,
+                     "label": os.path.basename(src), "status": "queued", "stage": "في الانتظار",
+                     "progress": 0, "created": time.time(), "options": payload,
+                     "title": "", "description": "", "tags": [], "publish": {}}
     _persist()
     def _runner():
         jj = JOBS.get(jid)
@@ -980,14 +1048,20 @@ def api_jobs():
 @app.delete("/api/jobs/{jid}")
 def api_delete(jid: str):
     j = JOBS.get(jid)
-    if j and j.get("status") == "running":          # لا نحذف مهمة تشتغل — أوقفها أولاً
-        api_cancel(jid)
-    j = JOBS.pop(jid, None)
+    # 🔧 v1.49: ننهي **أي** عملية حيّة (running/cancelling/queued) وننتظرها قبل حذف
+    # ملفاتها — كان يُحذف ملف بينما reel.py/ffmpeg يكتبه فيبقى inode معلّقاً (POSIX)
+    # أو يفشل الحذف صامتاً (ويندوز).
+    p = PROCS.pop(jid, None)
+    if p is not None:
+        _kill_proc(p)
+    with _lock:
+        j = JOBS.pop(jid, None)
     if not j:
         raise HTTPException(404, "not found")
     try:
         Path(j["output"]).unlink(missing_ok=True)
         (OUT / f"thumb_{jid}.jpg").unlink(missing_ok=True)
+        (OUT / f"{jid}_thumb.jpg").unlink(missing_ok=True)
     except Exception:
         pass
     _persist()
@@ -1006,18 +1080,10 @@ def api_cancel(jid: str):
         return {"ok": True, "was": "queued"}
     if j.get("status") != "running":
         return {"ok": False, "was": j.get("status")}
-    p = PROCS.get(jid)
     j["status"] = "cancelling"; j["stage"] = "جاري الإيقاف…"
     _persist()
-    if p and p.poll() is None:
-        try:
-            p.terminate()
-            try:
-                p.wait(timeout=6)
-            except Exception:
-                p.kill()
-        except Exception:
-            pass
+    p = PROCS.pop(jid, None)
+    _kill_proc(p)                    # يقتل ffmpeg الأبناء أيضاً (مجموعة العملية)
     return {"ok": True, "was": "running"}
 
 @app.get("/favicon.ico")
@@ -1031,9 +1097,29 @@ def api_thumb(jid: str):
         raise HTTPException(404, "no video")
     tp = OUT / f"thumb_{jid}.jpg"
     if not tp.exists():
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1", "-i", j["output"],
-                        "-frames:v", "1", "-vf", "scale=360:-2", str(tp)],
-                       capture_output=True, timeout=120)   # ملف تالف كان يعلّق الخيط بلا مهلة
+        # v1.49: ملف مؤقت فريد ثم استبدال ذرّي — كتابة ملف ثابت من طلبين متزامنين
+        # كانت تُخدّم صورة نصف مكتوبة وتبقى في كاش المتصفح 24 ساعة. أي فشل = 504/503.
+        fd, tmp = tempfile.mkstemp(dir=str(OUT), prefix=f"thumb_{jid}_", suffix=".jpg")
+        os.close(fd)
+        try:
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1", "-i", j["output"],
+                                "-frames:v", "1", "-vf", "scale=360:-2", tmp],
+                               capture_output=True, timeout=120)
+            if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 500:
+                raise HTTPException(504, "تعذّر توليد الصورة المصغّرة")
+            os.replace(tmp, tp)
+        except HTTPException:
+            raise
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "انتهت مهلة توليد الصورة المصغّرة")
+        except OSError as e:
+            raise HTTPException(503, f"ffmpeg غير متاح: {type(e).__name__}")
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     if not tp.exists():
         raise HTTPException(404, "no thumb")
     return FileResponse(tp, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
@@ -1058,35 +1144,43 @@ def api_job_dispute(jid: str, payload: dict | None = None):
     if not out or not Path(out).exists():
         raise HTTPException(400, "المخرج غير موجود — أكمل المهمة أولاً")
     opts = job.get("options") or {}
+    commentary_txt = payload.get("commentary") or opts.get("commentary_text") or ""
+    has_commentary = bool(commentary_txt or opts.get("commentary") or opts.get("commentary_text_only"))
+    source_txt = payload.get("source") or opts.get("source_credit") or ""
+    has_source = bool(source_txt)
+    brand_name = opts.get("name") or CFG.get("brand_name") or ""
+    has_brand = bool(brand_name) and opts.get("no_brand") is not True
+    cut = opts.get("start") is not None or opts.get("end") is not None
+    dur = job.get("duration") or None
+    max_dur = opts.get("max_dur") or None
+    short = RT.is_short_clip(max_dur=max_dur, duration=dur)
     feats = []
-    if opts.get("commentary") or opts.get("commentary_text_only"):
+    if has_commentary:
         feats.append("تعليق/تحليل أصلي من القناة")
-    if opts.get("source_credit") or payload.get("source"):
-        feats.append("إسناد المصدر داخل الفيديو")
-    if CFG.get("brand_name") or opts.get("name"):
-        feats.append(f"هوية القناة/العلامة: {opts.get('name') or CFG.get('brand_name')}")
-    if opts.get("start") is not None or opts.get("end") is not None:
+    if has_source:
+        feats.append(f"إسناد المصدر داخل الفيديو: {source_txt}")
+    if has_brand:
+        feats.append(f"هوية القناة/العلامة: {brand_name}")
+    if cut:
         feats.append("مقتطف محدد زمنياً")
-    if opts.get("max_dur"):
-        feats.append(f"مدة محدودة {opts.get('max_dur')}s (ليس بثّاً كاملاً)")
+    if max_dur:
+        feats.append(f"سقف المدة {max_dur}s")
     if opts.get("replay") and str(opts.get("replay")).lower() != "off":
         feats.append("إعادة بطيئة معدّلة")
     if opts.get("burst"):
         feats.append("غرافيكس/تراكب نصي أصلي")
-    pkg = RT.build_package(out,
-                           source=payload.get("source") or opts.get("source_credit") or "",
+    pkg = RT.build_package(out, source=source_txt,
                            caption=payload.get("caption") or job.get("caption") or "",
-                           commentary=payload.get("commentary") or "",
+                           commentary=commentary_txt,
                            features=feats, channel=CFG.get("telegram_channel") or "",
-                           max_dur=(f"{opts.get('max_dur')}s" if opts.get("max_dur") else ""))
+                           duration=dur, max_dur=max_dur,
+                           source_credit=has_source, own_brand=has_brand,
+                           commentary_present=has_commentary)
     if not pkg:
         raise HTTPException(500, "تعذّر إنشاء حزمة الاعتراض")
-    present = {"own_commentary": any("تعليق" in f for f in feats),
-               "source_credit": any("إسناد" in f for f in feats),
-               "own_brand": any("هوية" in f for f in feats),
-               "short_clip": bool(opts.get("max_dur")),
-               "rights_package": True,
-               "no_full_match": bool(opts.get("max_dur"))}
+    present = {"own_commentary": has_commentary, "source_credit": has_source,
+               "own_brand": has_brand, "short_clip": short,
+               "rights_package": True, "no_full_match": short}
     return {"ok": True, "package": pkg, "readiness": RT.score(present), "features": feats}
 
 
@@ -1239,13 +1333,11 @@ async def api_logo_upload(file: UploadFile = File(...)):
         raise HTTPException(400, "صيغة غير مدعومة — استخدم PNG (بشفافية) أو JPG")
     safe = re.sub(r"[^\w.-]+", "_", os.path.splitext(name)[0])[:40] or "logo"
     dest = LOGOS_DIR / f"{safe}{ext}"
-    data = await file.read()
-    if len(data) > 12 * 1024 * 1024:
-        raise HTTPException(400, "الملف كبير (الحد 12 ميغا)")
+    data = await _read_capped(file, 12 * 1024 * 1024, "الملف كبير (الحد 12 ميغا)")
     dest.write_bytes(data)
     try:
         from reelkit import graphics as G
-        info = G.logo_info(str(dest))
+        info = await asyncio.to_thread(G.logo_info, str(dest))
     except Exception as e:
         dest.unlink(missing_ok=True)
         raise HTTPException(400, f"ملف صورة غير صالح: {str(e)[:80]}")
@@ -1307,6 +1399,8 @@ async def api_preview(payload: dict):
         raise HTTPException(400, "حدّد مقطعاً أو رابطاً")
     try:
         local, _cap = _download_to_local(src, payload.get("caption", ""))
+    except HTTPException:
+        raise                              # 403/400 الأصلية تبقى كما هي (كانت تُحوَّل كلها إلى 400)
     except Exception as e:
         raise HTTPException(400, f"تعذّر جلب المقطع: {str(e)[:120]}")
     outp = OUT / "preview.mp4"
@@ -1328,8 +1422,10 @@ async def api_preview(payload: dict):
     pv.unlink(missing_ok=True)            # 🧹 احذف مخرجات المعاينة القديمة — لا نقدّم ملفاً بالياً لو فشل الرندر
     outp.unlink(missing_ok=True)
     try:
-        r = subprocess.run([sys.executable, str(ROOT / "reel.py"), *args], cwd=str(ROOT),
-                           capture_output=True, timeout=300, env=_child_env(), **_TXT)
+        # 🧵 رندر المعاينة قد يأخذ دقائق — في خيط منفصل حتى تبقى الواجهة متجاوبة
+        r = await asyncio.to_thread(lambda: subprocess.run(
+            [sys.executable, str(ROOT / "reel.py"), *args], cwd=str(ROOT),
+            capture_output=True, timeout=300, env=_child_env(), **_TXT))
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "انتهت مهلة المعاينة")
     if not pv.exists():
@@ -1422,10 +1518,11 @@ def api_montage(payload: dict):
     if not got:
         raise HTTPException(500, "فشل بناء المونتاج (شوف montage_error.log في مجلد outputs)")
     jid = uuid.uuid4().hex[:8]
-    JOBS[jid] = {"id": jid, "input": "montage", "output": str(outp), "status": "done",
-                 "progress": 100, "stage": "اكتمل (ريل ترتيب)", "log": ["مونتاج مبني"],
-                 "title": title, "created": time.time(),
-                 "caption": ", ".join(j.get("title", "") for j in jobs)}
+    with _lock:
+        JOBS[jid] = {"id": jid, "input": "montage", "output": str(outp), "status": "done",
+                     "progress": 100, "stage": "اكتمل (ريل ترتيب)", "log": ["مونتاج مبني"],
+                     "title": title, "created": time.time(),
+                     "caption": ", ".join(j.get("title", "") for j in jobs)}
     _persist()
     return {"ok": True, "id": jid, "title": title, "path": str(outp)}
 

@@ -9,39 +9,43 @@ def analyze(path, rate=15.0, cut_thresh=0.55, sw=320, sh=180):
     step = max(1, int(round(fps / rate)))
     prev = None; prevhist = None; n = 0
     times = []; cents = []; cuts = []
-    while True:
-        ok, fr = cap.read()
-        if not ok:
-            break
-        n += 1
-        if n % step:
-            continue
-        small = cv2.resize(fr, (sw, sh))
-        g = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
-        hist = cv2.normalize(hist, hist).flatten()
-        if prev is not None:
-            if float(np.linalg.norm(hist - prevhist)) > cut_thresh:
-                cuts.append(n)
-            (dx, dy), _ = cv2.phaseCorrelate(prev.astype(np.float32), g.astype(np.float32))
-            aligned = cv2.warpAffine(prev, np.float32([[1,0,-dx],[0,1,-dy]]), (sw, sh),
-                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-            d = cv2.absdiff(g, aligned)
-            # ignore overlay bands and frame edges
-            d[:int(sh*0.12), :] = 0; d[int(sh*0.88):, :] = 0
-            d[:, :int(sw*0.03)] = 0; d[:, int(sw*0.97):] = 0
-            mask = d > max(8, float(d.mean()) * 2.0)
-            s = int(mask.sum())
-            times.append(n / fps)
-            if s > 50:
-                ys, xs = np.nonzero(mask)
-                cents.append((n/fps, xs.mean()/sw, ys.mean()/sh, s/mask.size))
-            else:
-                cents.append((n/fps, np.nan, np.nan, 0.0))
-        prev = g; prevhist = hist
-    cap.release()
+    try:
+        while True:
+            ok, fr = cap.read()
+            if not ok:
+                break
+            if not W or not H:
+                H, W = fr.shape[:2]          # أبعاد موثوقة من الفريم (CAP_PROP قد تُرجع 0)
+            n += 1
+            if n % step:
+                continue
+            small = cv2.resize(fr, (sw, sh))
+            g = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
+            hist = cv2.normalize(hist, hist).flatten()
+            if prev is not None:
+                if float(np.linalg.norm(hist - prevhist)) > cut_thresh:
+                    cuts.append(n)
+                (dx, dy), _ = cv2.phaseCorrelate(prev.astype(np.float32), g.astype(np.float32))
+                aligned = cv2.warpAffine(prev, np.float32([[1,0,-dx],[0,1,-dy]]), (sw, sh),
+                                         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                d = cv2.absdiff(g, aligned)
+                # ignore overlay bands and frame edges
+                d[:int(sh*0.12), :] = 0; d[int(sh*0.88):, :] = 0
+                d[:, :int(sw*0.03)] = 0; d[:, int(sw*0.97):] = 0
+                mask = d > max(8, float(d.mean()) * 2.0)
+                s = int(mask.sum())
+                times.append(n / fps)
+                if s > 50:
+                    ys, xs = np.nonzero(mask)
+                    cents.append((n/fps, xs.mean()/sw, ys.mean()/sh, s/mask.size))
+                else:
+                    cents.append((n/fps, np.nan, np.nan, 0.0))
+            prev = g; prevhist = hist
+    finally:
+        cap.release()                    # يُحرَّر حتى عند الاستثناء
     return dict(fps=fps, W=W, H=H, step=step, times=np.array(times),
-                cents=np.array(cents), cuts=cuts)
+                cents=np.array(cents, float).reshape(-1, 4), cuts=cuts)
 
 
 def smooth_camera(target, fps, cuts=(), k=3.0, vmax=230.0, amax=520.0, deadzone=95.0):

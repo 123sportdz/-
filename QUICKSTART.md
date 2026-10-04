@@ -224,7 +224,7 @@ python reel.py -i goal.mp4 -o reel.mp4 --tile 640 --tta   # تحكم يدوي
 
 ```bash
 python reel.py -i goal.mp4 -o reel.mp4 --layout split          # شاشة مقسومة
-python reel.py -i goal.mp4 -o reel.mp4 --layout split --no-split-labels   # بلا وسوم WIDE/PLAYER
+python reel.py -i goal.mp4 -o reel.mp4 --layout split --split-labels   # لإظهار وسوم WIDE/PLAYER (مخفية افتراضياً)
 ```
 من اللوحة: **التخطيط → 🪟 شاشة مقسومة**.
 

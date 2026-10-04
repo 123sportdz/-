@@ -15,7 +15,7 @@ py -3 -V
 py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)"
 if errorlevel 1 (
   echo [X] This project needs Python 3.10 or newer. Please install a newer version.
-  pause ^& exit /b 1
+  pause & exit /b 1
 )
 
 where ffmpeg >nul 2>nul

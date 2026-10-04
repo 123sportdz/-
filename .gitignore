@@ -7,6 +7,10 @@ incoming/
 watch/
 state.json
 config.json
+# YouTube OAuth secrets (never commit)
+reelkit/publish/client_secret*.json
+reelkit/publish/token.json
+reelkit/publish/oauth_pending.json
 font_warnings.log
 *.log
 .DS_Store

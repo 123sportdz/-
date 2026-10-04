@@ -519,16 +519,20 @@ def source_credit(img_bgr, text, accent=(60, 60, 230), y=None, size=30, dim=0.72
     جوهره: إظهار أن المادة أصلية لطرف ثالث وأن هذا العمل **تحويلي** (نقد/تحليل/تعليق)،
     وهو ما يدعم اعتراضاً مشروعاً على مطالبة حقوق — لا يُلغي المطالبة بحد ذاته."""
     H, W = img_bgr.shape[:2]
-    if not text:
-        return img_bgr
+    if not str(text or "").strip():
+        return img_bgr                       # نص فارغ/مسافات → لا نرسم مربعاً فارغاً
+    text = str(text).strip()
     pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
     lay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(lay)
     nd = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
     sz = int(size)
-    while sz > 16 and measure_mixed(nd, text, sz, False) > W * 0.86:
+    while sz > 12 and measure_mixed(nd, text, sz, False) > W * 0.86:
         sz -= 2
-    w = measure_mixed(nd, text, sz, False)
+    if measure_mixed(nd, text, sz, False) > W * 0.94:
+        # النص أطول من العرض حتى بأصغر حجم — نقتطع بدل أن يفيض خارج الإطار
+        text = text[:max(8, int(len(text) * W * 0.90 / max(1.0, measure_mixed(nd, text, sz, False))))] + "…"
+    w = min(measure_mixed(nd, text, sz, False), W * 0.94)
     if y is None:
         y = int(H * 0.72)
     pad = 14

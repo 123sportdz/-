@@ -8,13 +8,17 @@
 
 الاستخدام:
     from reelkit import rights
-    rights.build_package("out.mp4", source="...", caption="...", commentary="...")
-    rights.checklist()          # قائمة امتثال للعرض في اللوحة
+    rights.build_package("out.mp4", source="…", commentary="…",
+                         source_credit=True, own_brand=True, short_clip=True)
+    rights.checklist({"own_commentary": True, …})   # قائمة امتثال
 """
 from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+
+# عتبة "مقتطف قصير": 90 ثانية. فوقها لا نصف المقطع بأنه ليس بثّاً كاملاً.
+SHORT_CLIP_MAX_S = 90.0
 
 
 # --------------------------------------------------------------- قائمة الامتثال
@@ -33,7 +37,7 @@ CHECKLIST = [
      "weight": 1},
     {"id": "short_clip",
      "label": "مقتطف قصير (لا يُنشر البث كاملاً)",
-     "hint": "استخدم --start/--end أو --max-dur 58.",
+     "hint": "استخدم --max-dur 58 أو --start/--end.",
      "weight": 2},
     {"id": "rights_package",
      "label": "حزمة الاعتراض موثّقة (ملف _dispute.md)",
@@ -69,23 +73,51 @@ def _clean(s, limit=4000):
     return " ".join(str(s or "").split())[:limit]
 
 
+def is_short_clip(max_dur=None, duration=None) -> bool:
+    """هل المقطع 'مقتطف قصير' فعلاً؟ (لا يكفي تمرير --max-dur بقيمة ضخمة)."""
+    for v in (duration, max_dur):
+        if v in (None, "", 0, "0", "0s"):
+            continue
+        try:
+            sec = float(str(v).rstrip("sS").strip())
+        except (TypeError, ValueError):
+            continue
+        if sec > 0:
+            return sec <= SHORT_CLIP_MAX_S
+    return False
+
+
 def build_package(out_path, *, source="", caption="", commentary="",
-                  features=(), channel="", max_dur="", extra=None):
-    """يبني ملف حزمة الاعتراض `<out>_dispute.md` ويرجّع مساره (أو None عند الفشل)."""
+                  features=(), channel="", duration=None, max_dur=None,
+                  source_credit=None, own_brand=None, commentary_present=None,
+                  rights_package=True):
+    """يبني ملف حزمة الاعتراض `<out>_dispute.md` ويرجّع مساره (أو None عند الفشل).
+
+    القيم المنطقية تُمرَّر صراحةً (source_credit/own_brand/commentary_present) بدل
+    تخمينها من نص العناصر — تخمين النص كان يعطي نتائج مضلّلة (خطأ في التقييم).
+    `short_clip` و`no_full_match` يُحسبان من `duration`/`max_dur` بعتبة حقيقية.
+    """
     try:
         base = os.path.splitext(out_path)[0]
         path = base + "_dispute.md"
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         feats = [str(f) for f in (features or []) if f]
+
+        short_clip = is_short_clip(max_dur=max_dur, duration=duration)
+        has_commentary = bool(commentary) if commentary_present is None else bool(commentary_present)
+        has_source_credit = bool(source) if source_credit is None else bool(source_credit)
+        has_brand = None if own_brand is None else bool(own_brand)
+
         present = {
-            "own_commentary": bool(commentary),
-            "source_credit": any("إسناد" in f or "source" in f.lower() for f in feats),
-            "own_brand": any("هوية" in f or "brand" in f.lower() for f in feats),
-            "short_clip": bool(max_dur),
-            "rights_package": True,
-            "no_full_match": bool(max_dur),
+            "own_commentary": has_commentary,
+            "source_credit": has_source_credit,
+            "own_brand": bool(has_brand),
+            "short_clip": short_clip,
+            "rights_package": bool(rights_package),
+            "no_full_match": short_clip,
         }
         sc = score(present)
+
         lines = []
         lines.append(f"# 🛡️ حزمة اعتراض على مطالبة حقوق — {os.path.basename(out_path)}\n")
         lines.append(f"_أُنشئت: {now}_\n")
@@ -95,8 +127,10 @@ def build_package(out_path, *, source="", caption="", commentary="",
         lines.append(f"- الملف: `{os.path.basename(out_path)}`")
         if source:
             lines.append(f"- المصدر المُسنَد: {source}")
-        if max_dur:
-            lines.append(f"- المدة المحدودة: {max_dur}")
+        if duration:
+            lines.append(f"- مدة المخرج الفعلية: {duration}")
+        elif max_dur:
+            lines.append(f"- سقف المدة المطلوب: {max_dur}")
         lines.append(f"- **درجة الجاهزية التحوّلية (إرشادية): {sc}/100**\n")
 
         lines.append("## 2) عناصر العمل الأصلي/التحويلي المُضاف")
@@ -118,13 +152,17 @@ def build_package(out_path, *, source="", caption="", commentary="",
             lines.append("")
 
         lines.append("## 5) أساس الاعتراض المقترح (للصياغة النهائية)")
-
-        if commentary:
-            lines.append(
-                "أُضيف هذا المقطع ضمن عمل **تحويلي**: تعليق صوتي/تحليل أصلي أنتجه صاحب القناة "
-                "(انظر القسم 3)، مع إسناد المصدر وهوية القناة. المقتطف **قصير ومُنتقى** ويُستخدم "
-                "لغرض النقد/التحليل الرياضي، لا لإعادة بثّ المباراة. أطلب مراجعة المطالبة يدوياً "
-                "وضمن سياق الاستخدام العادل.")
+        if has_commentary:
+            base_txt = ("أُضيف هذا المقطع ضمن عمل **تحويلي**: تعليق صوتي/تحليل أصلي أنتجه "
+                        "صاحب القناة (انظر القسم 3)، مع إسناد المصدر وهوية القناة.")
+            if short_clip:
+                base_txt += (" المقتطف **قصير ومُنتقى** ويُستخدم لغرض النقد/التحليل الرياضي، "
+                             "لا لإعادة بثّ المباراة.")
+            else:
+                base_txt += (" ⚠️ لكن المقطع **غير مُقتَطع** (طوله كامل) — إن كان بثّاً "
+                             "طويلاً فهذا يُضعف الحجّة كثيراً؛ اقتطعه إلى مقتطف قصير.")
+            base_txt += " أطلب مراجعة المطالبة يدوياً وضمن سياق الاستخدام العادل."
+            lines.append(base_txt)
         else:
             lines.append(
                 "⚠️ لا يوجد تعليق أصلي مسجّل لهذا الملف. الاعتراض بلا عمل تحويلي واضح "

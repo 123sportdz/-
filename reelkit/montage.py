@@ -75,7 +75,8 @@ def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
             binput[i] = len(inputs) // 2      # رقم المدخل الفعلي لهذا الشعار (قد يفشل غيره)
             inputs += ["-i", bp]
     n = len(items)
-    audio_ok = all(_has_audio(p) for p in items)
+    has_aud = [_has_audio(p) for p in items]
+    audio_ok = any(has_aud)          # 🔊 صوت إن وُجد لأي مقطع (كان all() يُسكِت المونتاج كله لو نقص صوت واحد)
     parts = []
     for i in range(n):
         parts.append(f"[{i}:v]trim=0:{per:.3f},setpts=PTS-STARTPTS,"
@@ -91,8 +92,14 @@ def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
     parts.append(chain)
     if audio_ok:
         for i in range(n):
-            parts.append(f"[{i}:a]atrim=0:{per:.3f},asetpts=PTS-STARTPTS,"
-                         f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
+            if has_aud[i]:
+                parts.append(f"[{i}:a]atrim=0:{per:.3f},asetpts=PTS-STARTPTS,"
+                             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]")
+            else:
+                # مقطع بلا صوت: صمت بنفس المدة/الصيغة حتى لا ينكسر concat ولا يختفي صوت الباقي
+                parts.append(f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+                             f"atrim=0:{per:.3f},asetpts=PTS-STARTPTS,"
+                             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]")
         parts.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]")
     fc = ";".join(parts)
     maps = ["-map", "[vout]"]
@@ -114,6 +121,10 @@ def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
             with open(os.path.join(workdir, "montage_error.log"), "w", encoding="utf-8") as fh:
                 fh.write((r.stderr or "")[-4000:] if 'r' in dir() else "timeout")
         except Exception:
+            pass
+        try:
+            os.unlink(out)           # لا نترك مخرجاً تالفاً/صفراً في مجلد المخرجات
+        except OSError:
             pass
         return None
     return out

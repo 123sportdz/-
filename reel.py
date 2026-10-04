@@ -796,19 +796,21 @@ def main(argv=None):
         if a.rights_package or a.transformative:
             try:
                 from reelkit import rights as RT
+                brand_on = bool(not a.no_brand and (a.name or a.url))
+                cut = (a.start is not None or a.end is not None)
                 feats = []
                 if commentary_text:
                     feats.append(f"تعليق/تحليل أصلي أنتجته القناة ({len(commentary_text.split())} كلمة)")
                 if a.source_credit:
                     feats.append(f"إسناد المصدر داخل الفيديو: {a.source_credit}")
-                if a.name or a.url:
+                if brand_on:
                     feats.append(f"هوية القناة/العلامة: {a.name or a.url}")
-                if a.start is not None or a.end is not None:
+                if cut:
                     _s0 = f"{a.start:g}s" if a.start is not None else "البداية"
                     _e0 = f"{a.end:g}s" if a.end is not None else "النهاية"
                     feats.append(f"مقتطف محدد زمنياً: {_s0} .. {_e0}")
                 if a.max_dur:
-                    feats.append(f"مدة محدودة بحد أقصى {a.max_dur:g}s (ليس بثّاً كاملاً)")
+                    feats.append(f"سقف المدة {a.max_dur:g}s")
                 if a.replay and str(a.replay).lower() != "off":
                     feats.append("إعادة بطيئة معدّلة (تكوين بصري أصلي)")
                 if a.burst:
@@ -818,10 +820,15 @@ def main(argv=None):
                 pkg = RT.build_package(a.output, source=a.source_credit, caption=a.caption,
                                        commentary=commentary_text, features=feats,
                                        channel=a.channel,
-                                       max_dur=(f"{a.max_dur:g}s" if a.max_dur else ""))
+                                       duration=info.get("duration"),
+                                       max_dur=a.max_dur,
+                                       source_credit=bool(a.source_credit),
+                                       own_brand=brand_on,
+                                       commentary_present=bool(commentary_text))
                 if pkg:
+                    short = RT.is_short_clip(max_dur=a.max_dur, duration=info.get("duration"))
                     log(f"🛡️ حزمة الاعتراض: {pkg}")
-                    log(f"   الجاهزية التحوّلية (إرشادية): {RT.score({'own_commentary': bool(commentary_text), 'source_credit': bool(a.source_credit), 'own_brand': bool(a.name or a.url), 'short_clip': bool(a.max_dur), 'rights_package': True, 'no_full_match': bool(a.max_dur)})}/100")
+                    log(f"   الجاهزية التحوّلية (إرشادية): {RT.score({'own_commentary': bool(commentary_text), 'source_credit': bool(a.source_credit), 'own_brand': brand_on, 'short_clip': short, 'rights_package': True, 'no_full_match': short})}/100")
                 else:
                     log("⚠️  تعذّر إنشاء حزمة الاعتراض")
             except Exception as e:

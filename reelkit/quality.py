@@ -45,12 +45,16 @@ def check(path, expected_w=1080, expected_h=1920, max_duration=0, audio_required
             report["width"] = int(video.get("width") or 0)
             report["height"] = int(video.get("height") or 0)
             report["video_codec"] = video.get("codec_name")
-            raw_fps = video.get("avg_frame_rate") or video.get("r_frame_rate") or "0/1"
-            try:
-                num, den = raw_fps.split("/", 1)
-                report["fps"] = round(float(num) / max(float(den), 1.0), 3)
-            except (ValueError, TypeError, ZeroDivisionError):
-                report["fps"] = 0.0
+            # 🛡️ avg_frame_rate قد يكون "0/0" (قيمة صحيحة الشكل لكن صفرية) — نجرّب الاثنين
+            def _fps(s):
+                try:
+                    n, d = str(s or "").split("/", 1)
+                    d = float(d)
+                    return float(n) / d if d and float(n) > 0 else 0.0
+                except (ValueError, TypeError, ZeroDivisionError):
+                    return 0.0
+            report["fps"] = round(max(_fps(video.get("avg_frame_rate")),
+                                      _fps(video.get("r_frame_rate"))), 3)
         if audio:
             report["audio_codec"] = audio.get("codec_name")
         report["duration"] = round(float((data.get("format") or {}).get("duration") or 0), 2)
@@ -62,7 +66,7 @@ def check(path, expected_w=1080, expected_h=1920, max_duration=0, audio_required
             report["issues"].append("معدل الإطارات غير صالح")
         if video and expected_w and expected_h and (report["width"], report["height"]) != (expected_w, expected_h):
             report["issues"].append(f"الأبعاد {report['width']}x{report['height']} بدل {expected_w}x{expected_h}")
-        if max_duration and report["duration"] > float(max_duration) + 1.0:
+        if max_duration and report["duration"] > float(max_duration) + max(0.25, 0.02 * float(max_duration)):
             report["issues"].append("المدة تتجاوز الحد المطلوب")
         report["ok"] = report["video"] and not report["issues"]
     except Exception as exc:
