@@ -112,7 +112,8 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
     if SPLIT:
         top_h = min(int(round(out_w * H / W)), out_h // 2)
         bot_h = out_h - top_h - 4
-        p_w = min(W, int(round(H * out_w / max(bot_h, 1))))
+        # مساحة أوسع حول اللاعب تمنع التصاقه بالحافة عند الحركة.
+        p_w = min(W, int(round(H * out_w / max(bot_h, 1) * 1.18)))
         p_half = p_w / 2
 
     tmp_video = tmp_path or (os.path.splitext(out_path)[0] + "_video.mp4")
@@ -127,7 +128,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
 
     cap = cv2.VideoCapture(video)
-    n = 0; cache = {"bg": None}; last_mode = None
+    n = 0; cache = {"bg": None}; last_mode = None; split_cx = None
     hist = collections.deque(maxlen=45)
     nan = float("nan")
     try:
@@ -154,6 +155,15 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                 if px is None:
                     px = W / 2
                 px = max(p_half, min(W - p_half, px))
+                # تنعيم مستقل لكاميرا اللاعب؛ لا نقفز مباشرة بين كشوفات
+                # ByteTrack المتباعدة، مع حد أقصى للحركة في كل فريم.
+                if split_cx is None:
+                    split_cx = px
+                else:
+                    delta = max(-max(18.0, W * 0.045),
+                                min(max(18.0, W * 0.045), px - split_cx))
+                    split_cx += delta * 0.34
+                px = split_cx
                 cx0 = int(round(px - p_half)); cx0 = max(0, min(W - p_w, cx0))
                 canvas[top_h + 4:] = cv2.resize(fr[:, cx0:cx0 + p_w], (out_w, bot_h),
                                                 interpolation=cv2.INTER_CUBIC)
@@ -234,8 +244,11 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                 y_l3 = int(out_h * float(brand_y)) - 200
                 G.lower_third(canvas, commentary_text, y=max(10, y_l3), accent=accent)
             if brand_name or brand_url:
+                # 76% تقع فوق الأرجل في اللوحة السفلية للشاشة المقسومة.
+                brand_y_eff = 0.90 if SPLIT else brand_y
                 canvas = G.draw_brand(canvas, brand_name, brand_url, accent=accent,
-                                      y=int(out_h * float(brand_y)))
+                                      y=int(out_h * float(brand_y_eff)),
+                                      scale=(0.72 if SPLIT else 1.0))
             if logo is not None:
                 canvas = logo.apply(canvas)
 

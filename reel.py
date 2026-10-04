@@ -113,7 +113,8 @@ def main(argv=None):
     ap.add_argument("--preset", default="medium")
     ap.add_argument("--layout", choices=["single", "split"], default="single",
                     help="single = ريل عادي | split = شاشة مقسومة (فوق اللقطة الواسعة، تحت تقريب على اللاعب)")
-    ap.add_argument("--no-split-labels", action="store_true", help="إخفاء وسوم WIDE/PLAYER")
+    ap.add_argument("--split-labels", action="store_true",
+                    help="إظهار وسوم WIDE/PLAYER (مخفية افتراضياً لإخراج أنظف)")
     ap.add_argument("--commentary", action="store_true",
                     help="🎙️ تعليق عربي مولّد (إنتاجك الخاص) بدل الاعتماد على صوت القناة")
     ap.add_argument("--caption", default="", help="كابشن المصدر (يحسّن التعليق والعنوان)")
@@ -728,7 +729,7 @@ def main(argv=None):
                       brand_name=("" if a.no_brand else a.name),
                       brand_url=("" if a.no_brand else a.url),
                       use_trail=not a.no_trail, crf=a.crf, preset=a.preset,
-                      layout=a.layout, player_x=player_x, split_labels=not a.no_split_labels,
+                      layout=a.layout, player_x=player_x, split_labels=a.split_labels,
                       accent=accent_rgb, ball_color=ball_bgr, brand_y=a.brand_y,
                       logo=logo_layer,
                       score_box=score_box, score_scale=a.score_scale,

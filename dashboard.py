@@ -1916,7 +1916,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         <option value="action">🎯 حركة اللعب</option></select></div>
       <div><label>التخطيط</label><select id="layout">
         <option value="single">ريل عادي (كاميرا واحدة)</option>
-        <option value="split">🪟 شاشة مقسومة (واسعة + اللاعب)</option></select></div>
+        <option value="split">🪟 شاشة مقسومة نظيفة (واسعة + اللاعب)</option></select></div>
       <div><label>محرّك التتبّع</label><select id="tracker">
         <option value="auto">🎯 تلقائي (احترافي إن أمكن)</option>
         <option value="pro">🏆 احترافي (2D + RTS + جسر القالب)</option>
