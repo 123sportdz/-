@@ -8,7 +8,7 @@
 
 | المتطلب | كيف تجيبه |
 |---|---|
-| **Python 3.10+** | python.org — في ويندوز علّم على ✅ **Add Python to PATH** وقت التنصيب |
+| **Python 3.11 – 3.13** | python.org — في ويندوز علّم على ✅ **Add Python to PATH** وقت التنصيب. ⚠️ **لا تستخدم 3.14** (torch لا يدعمها بعد) |
 | **FFmpeg** | ويندوز: `winget install Gyan.FFmpeg` — لينكس: `sudo apt install ffmpeg` |
 | **Tesseract** (اختياري، للعنوان التلقائي) | ويندوز: `winget install UB-Mannheim.TesseractOCR` — لينكس: `sudo apt install tesseract-ocr tesseract-ocr-ara` |
 | **كرت رسومات (اختياري)** | بدونه يشتغل بس أبطأ 10-20 مرة. للـRTX: نصّب نسخة CUDA من PyTorch |
@@ -22,13 +22,17 @@
 ### ويندوز
 ```bat
 cd elhadath-reels
-.\install.bat          # ← في PowerShell لازم .\  (في CMD: install.bat فقط)
+.\install.bat          # ← يختار Python المتوافق + ينصّب CUDA تلقائياً لو عندك RTX
+.\start.bat            # ← يشغّل اللوحة (يصلّح المكتبات الناقصة وحده)
 ```
+> ⚠️ شغّل دائمًا بـ `start.bat` — يفعّل `.venv` تلقائياً. تشغيل `python doctor.py`
+> بمفسّر نظامي قد يبلّغ "مكتبات مفقودة" كذباً. للإصلاح التلقائي: `python doctor.py --fix`.
+
 أو يدوياً:
 ```bat
-py -3 -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   :: RTX (أو cpu)
 pip install -r requirements.txt
 ```
 

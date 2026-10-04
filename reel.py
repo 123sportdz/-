@@ -265,7 +265,7 @@ def main(argv=None):
                 cap = (start or 0) + eff_max
                 if end is None or end > cap:
                     end = cap
-                    log(f"✂️  --max-dur {a.max_dur:g}s → المقطع سينتهي عند {end:g}s")
+                    log(f"✂️  سقف المدة {a.max_dur:g}s → المقطع حتى {end:g}s (أو نهاية المصدر)")
         if start is not None and end is not None and end <= start:
             sys.exit(f"❌ خطأ: --end ({end:g}s) يجب أن يكون أكبر من --start ({start:g}s)")
         if start or end:

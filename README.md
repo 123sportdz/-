@@ -6,11 +6,15 @@
 ---
 
 > 🚀 **مستعجل؟** راجع **[QUICKSTART.md](QUICKSTART.md)** — دليل مختصر خطوة بخطوة.
-> تشغيل سريع: `install.sh` / `install.bat` ثم `start.sh` / `start.bat`.
+> 🆕 **v1.50 — تنصيب وتشغيل تلقائي بالكامل:**
+> - ويندوز: `install.bat` ← يختار Python المتوافق + ينصّب CUDA تلقائياً لو عندك RTX، ثم `start.bat`.
+> - لينكس/ماك: `./install.sh` ثم `./start.sh`. (start يصلّح المكتبات الناقصة وحده)
+> - عند أي مشكلة: `python doctor.py --fix` (يصلّح تلقائياً) ثم `python doctor.py` للتقرير.
 >
+> ✅ **v1.50** — أتمتة كاملة + تشخيص واعٍ بالبيئة (يكشف `.venv` وPython 3.14 غير المدعوم).
 > ✅ **v1.49** — جولة إصلاح شاملة (~35 نقطة موثّقة باختبار): منع SSRF عبر إعادة التوجيه،
 > قفل/إلغاء ينهي `ffmpeg` الأبناء، كتابة `jobs.json` ذرّية، تصحيح منطق حزمة الحقوق
-> وإزالة تشويه الشاشة المقسومة، وإصلاح المونتاج عند اختلاف الصوت. التفاصيل في [CHANGELOG.md](CHANGELOG.md).
+> وإزالة تشويه الشاشة المقسومة، وإصلاح المونتاج عند اختلاف الصوت.
 > ✅ **v1.48** — 🛡️ **وضع المحتوى التحويلي + حزمة الاعتراض**: تعليق أصلي + إسناد مصدر
 > + مولّد حزمة اعتراض (`--transformative` / `--source-credit` / `--rights-package`)
 > وزر في اللوحة. لا تلاعب ببصمة المحتوى — توثيق مشروع فقط.
@@ -24,15 +28,30 @@
 
 ## 1) التثبيت
 
-**المتطلبات:** Python 3.10+ ، ffmpeg (يفضّل نسخة فيها `libdav1d` لتفكيك AV1)، ~3-4 GB RAM.
+**المتطلبات:** Python **3.11 – 3.13** (⚠️ 3.14 غير مدعوم من torch)، ffmpeg (يفضّل نسخة فيها `libdav1d`)، ~3-4 GB RAM.
 كرت رسومات (GPU) **اختياري** — يشتغل على CPU، بس GPU يسرّع الكشف 10-20 مرة.
 
+### ✅ الطريقة الأتوماتيكية (موصى بها)
+```bat
+install.bat        :: ويندوز: يختار Python المتوافق + ينصّب CUDA تلقائياً لو عندك RTX + يفحص
+start.bat          :: يشغّل اللوحة (وينصّب/يصلّح تلقائياً لو ناقص)
+```
+```bash
+./install.sh       # لينكس/ماك
+./start.sh
+```
+> 🩺 إذا واجهت أي مشكلة: `python doctor.py --fix` (يصلّح تلقائياً) ثم `python doctor.py --report`.
+> ⚠️ شغّل المشروع **دائماً داخل `.venv`** (start.* يفعل ذلك تلقائياً) — تشغيل `doctor.py`
+> بمفسّر نظامي قد يُبلغ "مكتبات مفقودة" كذباً.
+
+### 🔧 الطريقة اليدوية
 ```bash
 # 1) ffmpeg  (Ubuntu/Debian)
 sudo apt-get update && sudo apt-get install -y ffmpeg
 
-# 2) pytorch نسخة CPU (خفيفة) — للـGPU راجع pytorch.org
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 2) pytorch — CUDA إن عندك NVIDIA (أسرع 10-20×) وإلا CPU
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   # RTX
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu  # CPU
 
 # 3) باقي المكتبات
 pip install -r requirements.txt

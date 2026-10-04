@@ -22,26 +22,87 @@ def need(x):
 def say(icon, title, detail=""):
     print(f"{icon} {title}" + (f"  ({detail})" if detail else ""))
 
+
+# --------------------------------------------------------------- 🧭 أدوات الأتمتة
+PY_MAX_SAFE = (3, 13)      # torch لا يوفّر حزماً لـ3.14 حتى الآن
+
+def _venv_python():
+    """مفسّر بيئة المشروع .venv لو موجوداً (ويندوز/بوذيكس)."""
+    for p in (ROOT / ".venv" / "Scripts" / "python.exe", ROOT / ".venv" / "bin" / "python"):
+        if p.exists():
+            return str(p)
+    return None
+
+def _same_py(a, b):
+    try:
+        return os.path.abspath(a) == os.path.abspath(b)
+    except Exception:
+        return False
+
+def _pkg_importable(py, mod):
+    try:
+        r = subprocess.run([py, "-c", f"import {mod}"], capture_output=True, timeout=180)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def _nvidia_smi():
+    """اسم كرت NVIDIA عبر nvidia-smi — يعمل بلا torch (ضروري لاقتراح نسخة CUDA الصحيحة)."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return ""
+    try:
+        r = subprocess.run([exe, "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=20)
+        return (r.stdout or "").strip().splitlines()[0].strip() if r.stdout.strip() else ""
+    except Exception:
+        return ""
+
 def check_python():
     v = sys.version_info
-    # الحقيقة: dashboard.py يستخدم PEP 604 (dict | None) بلا __future__ ⇒ 3.9 ينهار عند الاستيراد.
-    say(OK if v >= (3, 10) else BAD, f"Python {v.major}.{v.minor}.{v.micro}", platform.platform())
+    # dashboard.py يستخدم PEP 604 (dict | None) بلا __future__ ⇒ 3.9 ينهار عند الاستيراد.
+    # وtorch لا يصدر حزماً لـ3.14 ⇒ 3.14 يمنع التشغيل فعلياً ولو بدت النسخة "أحدث".
     if v < (3, 10):
-        issues.append("نصّب Python 3.10 أو أحدث (المشروع يحتاج 3.10+ فعلاً)")
-    if v >= (3, 13):
-        say(WARN, "نسخة Python جديدة جداً", "بعض المكتبات (lap) قد ما تجي لها حزم جاهزة")
-        need("لو صرت مشاكل في التنصيب: استخدم Python 3.11 أو 3.12")
+        say(BAD, f"Python {v.major}.{v.minor}.{v.micro}", platform.platform())
+        issues.append("نصّب Python 3.11 أو 3.12 (المشروع يحتاج 3.10+ فعلاً)")
+    elif v > PY_MAX_SAFE:
+        say(BAD, f"Python {v.major}.{v.minor}.{v.micro}", "أحدث من 3.13 — torch لا يوفّر حزماً لها")
+        issues.append("Python 3.14+ غير مدعوم من torch ⇒ نصّب 3.12 (أو 3.11) وصنع به .venv")
+    elif v >= (3, 13):
+        say(WARN, f"Python {v.major}.{v.minor}.{v.micro}", "مقبولة لكن 3.12 أكثر استقراراً للمكتبات")
+    else:
+        say(OK, f"Python {v.major}.{v.minor}.{v.micro}", platform.platform())
+    # 🧭 إن وُجدت بيئة .venv والمشروع يعمل بمفسّر آخر، فهذا أشهر سبب لـ"مكتبات مفقودة" كذباً.
+    vpy = _venv_python()
+    if vpy and not _same_py(vpy, sys.executable):
+        vv = "?"
+        try:
+            r = subprocess.run([vpy, "-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"],
+                               capture_output=True, text=True, timeout=60)
+            vv = (r.stdout or "").strip() or "?"
+        except Exception:
+            pass
+        say(WARN, "فيه بيئة .venv مستقلة", f"Python {vv} — اعمل بها لتفادي \"مفقود\" الكاذب")
+        need(f"شغّل الفحص بمفسّر البيئة: \"{vpy}\" doctor.py   (أو فعّل .venv أولاً)")
 
 def check_pkgs():
     req = {"torch": None, "torchvision": None, "ultralytics": None, "cv2": "opencv-python-headless",
            "numpy": None, "PIL": "pillow", "fastapi": None, "uvicorn": None}
+    vpy = _venv_python()
     for mod, pipname in req.items():
         try:
             m = importlib.import_module(mod)
             say(OK, f"{mod}", getattr(m, "__version__", ""))
+            continue
         except Exception:
-            say(BAD, f"{mod} مفقود", f"pip install {pipname or mod}")
-            issues.append(f"pip install {pipname or mod}")
+            pass
+        # 🧭 نفس الوحدة موجودة في .venv؟ إذن ال\"فقدان\" سببه المفسّر لا الحزمة.
+        if vpy and not _same_py(vpy, sys.executable) and _pkg_importable(vpy, mod):
+            say(WARN, f"{mod}", "موجود في .venv — المفسّر الحالي فقط لا يراه")
+            need(f"شغّل المشروع بمفسّر البيئة: \"{vpy}\"  (بدل python النظامي)")
+            continue
+        say(BAD, f"{mod} مفقود", f"pip install {pipname or mod}")
+        issues.append(f"pip install {pipname or mod}")
     for mod, note in [("arabic_reshaper", "pip install arabic-reshaper"),
                       ("bidi", "pip install python-bidi"),
                       ("pytesseract", "pip install pytesseract"),
@@ -59,8 +120,40 @@ def check_torch():
         cuda = torch.cuda.is_available()
         say(OK if cuda else WARN, "CUDA" + (" متاح 🚀" if cuda else " غير متاح — المعالجة على CPU (أبطأ)"),
             torch.cuda.get_device_name(0) if cuda else "الحل: نصّب نسخة CUDA من torch")
+        if not cuda:
+            gpu = _nvidia_smi()
+            if gpu:
+                need(f"عندك {gpu} لكن torch نسخة CPU — نصّب CUDA:  "
+                     f"pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121")
     except Exception:
-        pass
+        # torch غير مستورد — نكشف الكرت عبر nvidia-smi ونعطي الأمر الدقيق المناسب
+        gpu = _nvidia_smi()
+        if gpu:
+            need(f"كرت {gpu} موجود لكن torch غير مثبّت — "
+                 "نصّب نسخة CUDA: pip install torch torchvision --index-url "
+                 "https://download.pytorch.org/whl/cu121")
+
+
+def do_fix():
+    """🔧 إصلاح تلقائي: يثبّت الحزم الناقصة بمفسّر البيئة المناسب (CUDA إن وُجد كرت)."""
+    vpy = _venv_python() or sys.executable
+    gpu = _nvidia_smi()
+    index = ("https://download.pytorch.org/whl/cu121" if gpu
+             else "https://download.pytorch.org/whl/cpu")
+    print(f"🔧 إصلاح تلقائي باستخدام: {vpy}" + (f"  (CUDA: {gpu})" if gpu else "  (CPU)"))
+    steps = []
+    if not _pkg_importable(vpy, "torch"):
+        steps.append([vpy, "-m", "pip", "install", "torch", "torchvision", "--index-url", index])
+    steps.append([vpy, "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")])
+    for cmd in steps:
+        print("  →", " ".join(cmd[:6]), "…", flush=True)
+        try:
+            r = subprocess.run(cmd, timeout=3600)
+            if r.returncode != 0:
+                print(f"  ⚠️ فشل الأمر (exit {r.returncode})")
+        except Exception as e:
+            print(f"  ⚠️ تعذّر: {type(e).__name__}: {e}")
+    print("🔧 انتهى الإصلاح — أعد تشغيل الفحص للتأكد.")
 
 def check_ffmpeg():
     exe = shutil.which("ffmpeg")
@@ -373,9 +466,14 @@ def run_all(quick=False, network=True):
 def main():
     ap = argparse.ArgumentParser(description="فحص المشروع / تقرير للأخطاء")
     ap.add_argument("--quick", action="store_true", help="بدون فحص الشبكة")
+    ap.add_argument("--fix", action="store_true",
+                    help="🔧 يصلّح تلقائياً: يثبّت الحزم الناقصة (CUDA إن وُجد كرت) ثم يفحص")
     ap.add_argument("--report", nargs="?", const="doctor_report.txt",
                     help="اكتب تقرير كامل في ملف (الافتراضي doctor_report.txt)")
     a = ap.parse_args()
+    if a.fix:
+        do_fix()
+        print()
     if a.report:
         import io, contextlib
         buf = io.StringIO()

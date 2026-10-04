@@ -1,63 +1,87 @@
 @echo off
 chcp 65001 >nul
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 echo ==============================
-echo  elhadath-reels - Installation
+echo  elhadath-reels - Installation (auto)
 echo ==============================
 
-where py >nul 2>nul
-if errorlevel 1 (
-  echo [X] Python not found. Install Python 3.10+ from python.org
-  echo     IMPORTANT: tick "Add Python to PATH" during setup.
+rem ---------------------------------------------------------------
+rem 1) اختيار Python متوافق مع torch (3.12 / 3.11 / 3.13)
+rem    ملاحظة مهمة: torch لا يصدر حزماً لـ Python 3.14 ⇒ نتجاهله.
+rem ---------------------------------------------------------------
+set "PY="
+for %%V in (3.12 3.11 3.13) do (
+  if not defined PY (
+    py -%%V -c "import sys" >nul 2>nul && set "PY=py -%%V"
+  )
+)
+if not defined PY (
+  where python >nul 2>nul && (
+    python -c "import sys;raise SystemExit(0 if (3,10)<=sys.version_info[:2]<=(3,13) else 1)" >nul 2>nul && set "PY=python"
+  )
+)
+if not defined PY (
+  echo [X] ما لقيت Python متوافق ^(3.11 / 3.12 / 3.13^).
+  echo     نصّب Python 3.12 من python.org وفعّل "Add Python to PATH".
+  echo     سبب: torch لا يوفّر حزماً لـ Python 3.14 بعد.
   pause & exit /b 1
 )
-py -3 -V
-py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)"
-if errorlevel 1 (
-  echo [X] This project needs Python 3.10 or newer. Please install a newer version.
-  pause & exit /b 1
-)
+echo [OK] Python: & %PY% -V
 
 where ffmpeg >nul 2>nul
 if errorlevel 1 (
-  echo [!] ffmpeg not found. Install it:  winget install Gyan.FFmpeg
-  echo     then close and reopen this window.
+  echo [!] ffmpeg غير موجود. نصّبه:  winget install Gyan.FFmpeg
+  echo     ثم أغلق النافذة وافتحها من جديد.
 ) else (
-  echo [OK] ffmpeg found
+  echo [OK] ffmpeg موجود
 )
 
 where tesseract >nul 2>nul
 if errorlevel 1 (
-  echo [i] tesseract not found - auto-title will use the Telegram caption instead ^(fine^)
+  echo [i] tesseract غير موجود - العنوان التلقائي سيستخدم الكابشن ^(كافي^)
 ) else (
-  echo [OK] tesseract found
+  echo [OK] tesseract موجود
 )
 
 echo.
-echo --^> creating virtual env .venv
-py -3 -m venv .venv
+echo --^> إنشاء البيئة .venv
+%PY% -m venv .venv
 call .venv\Scripts\activate.bat
 python -m pip install --quiet --upgrade pip
 
-echo --^> installing PyTorch (CPU) ...  ^(for CUDA see QUICKSTART.md^)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+rem ---------------------------------------------------------------
+rem 2) PyTorch: CUDA تلقائياً لو فيه كرت NVIDIA (RTX)، وإلا CPU
+rem ---------------------------------------------------------------
+set "TORCH_INDEX=https://download.pytorch.org/whl/cpu"
+where nvidia-smi >nul 2>nul
+if not errorlevel 1 (
+  set "TORCH_INDEX=https://download.pytorch.org/whl/cu121"
+  echo [OK] كرت NVIDIA موجود --^> تنصيب نسخة CUDA ^(تسريع 10-20×^)
+) else (
+  echo [i] لا يوجد كرت NVIDIA --^> نسخة CPU
+)
+echo --^> تنصيب PyTorch ...  ^(قد يأخذ عدة دقائق^)
+pip install torch torchvision --index-url !TORCH_INDEX!
 
-echo --^> installing the rest
+echo --^> تنصيب بقية المكتبات
 pip install --quiet -r requirements.txt
 
-echo --^> checking
-python -c "import torch, ultralytics, cv2, numpy, fastapi, PIL; print('  torch', torch.__version__); print('  ultralytics', ultralytics.__version__); print('  opencv', cv2.__version__)"
-
-if exist models\ball_detector.pt (echo [OK] ball_detector.pt) else (echo [X] models\ball_detector.pt missing)
-
+if not exist models\ball_detector.pt (
+  echo [X] models\ball_detector.pt مفقود - أعد فك ضغط الحزمة كاملة
+) else (
+  echo [OK] كاشف الكرة موجود
+)
 if not exist config.json (
   copy config.example.json config.json >nul
-  echo [OK] created config.json  - edit it with your brand name/handle
+  echo [OK] أنشأت config.json - عدّله باسمك وهاندلك
 )
 
 echo.
-echo Done! To run:
-echo    .venv\Scripts\activate
-echo    python dashboard.py        (http://127.0.0.1:8000)
+echo --^> التحقق النهائي
+python -c "import torch,ultralytics,cv2,numpy,fastapi,PIL;print('  torch',torch.__version__,'| CUDA',torch.cuda.is_available());print('  ultralytics',ultralytics.__version__,'| opencv',cv2.__version__)"
+python doctor.py --quick
+
 echo.
-pause
+echo ✅ تم! للتشغيل:  start.bat
+if /i not "%~1"=="--auto" pause

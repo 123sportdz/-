@@ -3288,6 +3288,11 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-auto-port", action="store_true", help="لا تبحث عن منفذ فاضٍ")
     a = ap.parse_args()
+    # 🧭 لو وُجدت .venv ونحن نعمل بمفسّر آخر، فهذا أشهر سبب لظهور "مكتبات مفقودة"
+    # رغم أنها مثبّتة (شوهد في تقرير مستخدم: Python 3.14 بينما المشروع في .venv).
+    _venv = ROOT / ".venv"
+    if _venv.exists() and os.path.abspath(sys.prefix) != os.path.abspath(str(_venv)):
+        print("⚠️  اللوحة تعمل بمفسّر خارج .venv — لو ظهرت مكتبات مفقودة شغّل start.bat/start.sh", flush=True)
     port = a.port if a.no_auto_port else _free_port(a.host, a.port)
     if port != a.port:
         print(f"⚠️  المنفذ {a.port} مشغول — استخدمنا {port}", flush=True)
