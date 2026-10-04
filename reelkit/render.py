@@ -92,7 +92,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
            commentary_text="", commentary_show=True, tmp_path=None,
            cam_y=None, zoom=None, ball_y=None, burst_t=None, burst_text="هدف!",
            ball_color=None, brand_y=0.76, score_box=None, score_scale=1.75,
-           logo=None):
+           logo=None, source_credit=""):
     fps = fps or info["fps"]; W = info["W"]; H = info["H"]
     crop_w = min(W, int(round(H * 9 / 16))); crop_h = H
     orois = OV.rois(W, H) if remove_watermarks else []
@@ -243,6 +243,10 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                 # فوق شعار القناة مباشرة (وكلاهما فوق منطقة أزرار شورتس)
                 y_l3 = int(out_h * float(brand_y)) - 200
                 G.lower_third(canvas, commentary_text, y=max(10, y_l3), accent=accent)
+            if source_credit:
+                # 🛡️ سطر إسناد المصدر فوق شريط الهوية (عمل تحويلي موثّق)
+                canvas = G.source_credit(canvas, source_credit, accent=accent_bgr,
+                                         y=int(out_h * (0.90 if SPLIT else float(brand_y))) - 72)
             if brand_name or brand_url:
                 # 76% تقع فوق الأرجل في اللوحة السفلية للشاشة المقسومة.
                 brand_y_eff = 0.90 if SPLIT else brand_y

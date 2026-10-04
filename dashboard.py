@@ -1038,6 +1038,58 @@ def api_thumb(jid: str):
         raise HTTPException(404, "no thumb")
     return FileResponse(tp, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
+@app.get("/api/rights/checklist")
+def api_rights_checklist():
+    """🛡️ قائمة امتثال المحتوى التحويلي (إرشادية — ليست رأياً قانونياً)."""
+    from reelkit import rights as RT
+    return {"checklist": RT.checklist(), "disclaimer":
+            "هذه إرشادات تقنية لبناء عمل تحويلي موثّق، وليست رأياً قانونياً ولا ضماناً لقبول أي اعتراض."}
+
+
+@app.post("/api/jobs/{jid}/dispute")
+def api_job_dispute(jid: str, payload: dict | None = None):
+    """🛡️ يبني حزمة اعتراض (توثيق العمل الأصلي/التحويلي) لمهمة مكتملة."""
+    from reelkit import rights as RT
+    payload = payload or {}
+    job = JOBS.get(jid) or {}
+    if not job:
+        raise HTTPException(404, "job not found")
+    out = job.get("output")
+    if not out or not Path(out).exists():
+        raise HTTPException(400, "المخرج غير موجود — أكمل المهمة أولاً")
+    opts = job.get("options") or {}
+    feats = []
+    if opts.get("commentary") or opts.get("commentary_text_only"):
+        feats.append("تعليق/تحليل أصلي من القناة")
+    if opts.get("source_credit") or payload.get("source"):
+        feats.append("إسناد المصدر داخل الفيديو")
+    if CFG.get("brand_name") or opts.get("name"):
+        feats.append(f"هوية القناة/العلامة: {opts.get('name') or CFG.get('brand_name')}")
+    if opts.get("start") is not None or opts.get("end") is not None:
+        feats.append("مقتطف محدد زمنياً")
+    if opts.get("max_dur"):
+        feats.append(f"مدة محدودة {opts.get('max_dur')}s (ليس بثّاً كاملاً)")
+    if opts.get("replay") and str(opts.get("replay")).lower() != "off":
+        feats.append("إعادة بطيئة معدّلة")
+    if opts.get("burst"):
+        feats.append("غرافيكس/تراكب نصي أصلي")
+    pkg = RT.build_package(out,
+                           source=payload.get("source") or opts.get("source_credit") or "",
+                           caption=payload.get("caption") or job.get("caption") or "",
+                           commentary=payload.get("commentary") or "",
+                           features=feats, channel=CFG.get("telegram_channel") or "",
+                           max_dur=(f"{opts.get('max_dur')}s" if opts.get("max_dur") else ""))
+    if not pkg:
+        raise HTTPException(500, "تعذّر إنشاء حزمة الاعتراض")
+    present = {"own_commentary": any("تعليق" in f for f in feats),
+               "source_credit": any("إسناد" in f for f in feats),
+               "own_brand": any("هوية" in f for f in feats),
+               "short_clip": bool(opts.get("max_dur")),
+               "rights_package": True,
+               "no_full_match": bool(opts.get("max_dur"))}
+    return {"ok": True, "package": pkg, "readiness": RT.score(present), "features": feats}
+
+
 @app.post("/api/jobs/{jid}/suggest_title")
 def api_suggest(jid: str, payload: dict | None = None):
     payload = payload or {}
@@ -2726,6 +2778,7 @@ function jobCard(j){
         ${j.quality_report.ok?'✅ فحص الجودة سليم':'⚠️ '+esc((j.quality_report.issues||[]).join(' · '))}</div>`:""}
       <div class="acts">
         ${done?`<button class="btn sec sm" onclick="openJob('${j.id}')">👁 مراجعة ونشر</button>
+          <button class="btn gray sm" title="توثيق العمل الأصلي/التحويلي لاعتراض مشروع" onclick="dispute('${j.id}')">🛡️ حزمة اعتراض</button>
           ${j.media?`<a href="${j.media}" download><button class="btn gray sm">⬇ تحميل</button></a>`:""}`:""}
         ${j.status==="running"?`<button class="btn sec sm" onclick="liveLog('${j.id}')">📟 مباشر</button>
           <button class="btn gray sm" style="color:#ff9aa2" onclick="cancelJob('${j.id}')">⏹ إيقاف</button>`:""}
@@ -2757,6 +2810,13 @@ async function del(id){
 async function rerun(id){
   const r=await fetch("/api/jobs/"+id+"/rerun",{method:"POST"});
   if(r.ok){toast("أُعيدت المعالجة","ok");poll();}else toast("تعذر","err");
+}
+async function dispute(id){
+  const r=await (await fetch("/api/jobs/"+id+"/dispute",{method:"POST"})).json().catch(()=>({}));
+  if(r && r.ok){
+    toast("🛡️ حزمة الاعتراض جاهزة — الجاهزية التحوّلية "+r.readiness+"/100","ok");
+    alert("حُفظت الحزمة بجانب الريل:\n"+r.package+"\n\nعناصر العمل الأصلي/التحويلي:\n- "+r.features.join("\n- ")+"\n\n⚠️ إرشادية فقط وليست رأياً قانونياً.");
+  } else toast("تعذّر إنشاء الحزمة: "+((r&&r.detail)||""),"err");
 }
 async function cancelJob(id){
   if(!confirm("⏹ إيقاف هذه المهمة؟"))return;

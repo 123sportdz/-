@@ -165,6 +165,13 @@ def main(argv=None):
                     help="لوحة النتيجة: auto = كشف تلقائي | x1,y1,x2,y2 نُسبية | off")
     ap.add_argument("--score-scale", type=float, default=1.75, help="تكبير اللوحة")
     ap.add_argument("--no-audio", action="store_true")
+    ap.add_argument("--source-credit", default="",
+                    help="🛡️ سطر إسناد المصدر يُرسم فوق شريط الهوية (عمل تحويلي موثّق)")
+    ap.add_argument("--transformative", action="store_true",
+                    help="🛡️ وضع المحتوى التحويلي: يفعّل الإسناد + يولّد حزمة اعتراض ويتحقق من عناصر العمل الأصلي")
+    ap.add_argument("--rights-package", action="store_true",
+                    help="🛡️ يولّد ملف <out>_dispute.md (توثيق العمل الأصلي/التحويلي) بجانب الريل")
+    ap.add_argument("--channel", default="", help="اسم القناة/الناشر في حزمة الاعتراض")
     ap.add_argument("--keep-temp", action="store_true")
     ap.add_argument("-q", "--quiet", action="store_true")
     a = ap.parse_args(argv)
@@ -666,6 +673,14 @@ def main(argv=None):
 
         # ---------- 🎙️ التعليق العربي المولّد ----------
         voice_wav = None; commentary_text = ""; voice_engine = "-"
+        if a.transformative:
+            # 🛡️ وضع المحتوى التحويلي: يفرض عناصر العمل الأصلي (تعليق + إسناد) التي تبني
+            # أساساً حقيقياً لأي اعتراض لاحق. لا يتلاعب بأي بصمة ولا يخفي شيئاً.
+            if not a.source_credit:
+                a.source_credit = "المصدر: البث الأصلي — استخدام تحويلي (نقد وتحليل)"
+            if not (a.commentary or a.commentary_text_only):
+                a.commentary = True
+                log("🛡️ وضع تحويلي: فعّلت التعليق الأصلي (أقوى عنصر تحويلي)")
         if a.commentary or a.commentary_text_only:
             log("      🎙️ صياغة التعليق العربي …")
             try:
@@ -723,6 +738,8 @@ def main(argv=None):
                 log(f"      ⚠️ تعذّر تحديد اللحظة المفتاحية ({type(e).__name__}: {str(e)[:60]})")
 
         log(f"[6/6] rendering {out_w}x{out_h} ({'شاشة مقسومة' if a.layout=='split' else 'ريل عادي'}) …")
+        if a.source_credit:
+            log(f"🛡️ إسناد المصدر: {a.source_credit}")
         n = RD.render(readable, audio, a.output, dict(info, W=info["width"], H=info["height"]),
                       cam, mode, bx, det, out_w=out_w, out_h=out_h,
                       remove_watermarks=not a.keep_watermarks,
@@ -738,6 +755,7 @@ def main(argv=None):
                       burst_t=(t_key if a.burst else None), burst_text=a.goal_text,
                       voice_wav=voice_wav, duck=a.voice_duck,
                       commentary_text=commentary_text, commentary_show=bool(commentary_text),
+                      source_credit=a.source_credit,
                       progress=None if a.quiet else (lambda s: print(s, flush=True)))
         if a.replay and str(a.replay).lower() != "off" and t_key is not None:
             try:
@@ -773,6 +791,41 @@ def main(argv=None):
                 log(f"🖼️  صورة مصغّرة: {tpath}  (1280x720)")
             except Exception as e:
                 log(f"⚠️  تعذّر إنشاء الصورة المصغّرة ({type(e).__name__}: {str(e)[:80]})")
+
+        # 🛡️ حزمة الاعتراض: توثيق عناصر العمل الأصلي/التحويلي لحملة نزاع مشروعة
+        if a.rights_package or a.transformative:
+            try:
+                from reelkit import rights as RT
+                feats = []
+                if commentary_text:
+                    feats.append(f"تعليق/تحليل أصلي أنتجته القناة ({len(commentary_text.split())} كلمة)")
+                if a.source_credit:
+                    feats.append(f"إسناد المصدر داخل الفيديو: {a.source_credit}")
+                if a.name or a.url:
+                    feats.append(f"هوية القناة/العلامة: {a.name or a.url}")
+                if a.start is not None or a.end is not None:
+                    _s0 = f"{a.start:g}s" if a.start is not None else "البداية"
+                    _e0 = f"{a.end:g}s" if a.end is not None else "النهاية"
+                    feats.append(f"مقتطف محدد زمنياً: {_s0} .. {_e0}")
+                if a.max_dur:
+                    feats.append(f"مدة محدودة بحد أقصى {a.max_dur:g}s (ليس بثّاً كاملاً)")
+                if a.replay and str(a.replay).lower() != "off":
+                    feats.append("إعادة بطيئة معدّلة (تكوين بصري أصلي)")
+                if a.burst:
+                    feats.append("غرافيكس/انفجار هدف وتراكب نصي أصلي")
+                if a.score and str(a.score).lower() != "off":
+                    feats.append("لوحة نتيجة مُعاد تركيبها")
+                pkg = RT.build_package(a.output, source=a.source_credit, caption=a.caption,
+                                       commentary=commentary_text, features=feats,
+                                       channel=a.channel,
+                                       max_dur=(f"{a.max_dur:g}s" if a.max_dur else ""))
+                if pkg:
+                    log(f"🛡️ حزمة الاعتراض: {pkg}")
+                    log(f"   الجاهزية التحوّلية (إرشادية): {RT.score({'own_commentary': bool(commentary_text), 'source_credit': bool(a.source_credit), 'own_brand': bool(a.name or a.url), 'short_clip': bool(a.max_dur), 'rights_package': True, 'no_full_match': bool(a.max_dur)})}/100")
+                else:
+                    log("⚠️  تعذّر إنشاء حزمة الاعتراض")
+            except Exception as e:
+                log(f"⚠️  حزمة الاعتراض تعذّرت ({type(e).__name__}: {str(e)[:70]})")
     finally:
         if a.keep_temp:
             print(f"temp kept: {workdir}")
