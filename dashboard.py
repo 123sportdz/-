@@ -382,7 +382,9 @@ def run_job(job_id, args):
                 dims = str(next((args[i + 1] for i, x in enumerate(args) if x == "--out-size"), "1080x1920"))
                 ew, eh = (int(x) for x in dims.lower().split("x", 1))
                 md = float(next((args[i + 1] for i, x in enumerate(args) if x == "--max-dur"), "0"))
-                job["quality_report"] = quality_check(job["output"], ew, eh, md)
+                source_had_audio = "audio=yes" in " ".join(job.get("log") or [])
+                job["quality_report"] = quality_check(job["output"], ew, eh, md,
+                                                       audio_required=source_had_audio)
                 if not job["quality_report"]["ok"]:
                     job["log"] = (job.get("log") or []) + ["⚠️ فحص الجودة: " + "; ".join(job["quality_report"]["issues"])]
             except Exception as e:
@@ -672,6 +674,18 @@ async def api_upload(file: UploadFile = File(...)):
     except Exception:
         dest.unlink(missing_ok=True)
         raise
+    # فحص مبكر: نرفض الصور/الملفات التالفة قبل إدخالها إلى الطابور، مع
+    # إبقاء رسالة الخطأ مرتبطة بالرفع بدل ظهور "فشل" بعد عدة دقائق.
+    try:
+        chk = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                              "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(dest)],
+                             capture_output=True, **_TXT, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        dest.unlink(missing_ok=True)
+        raise HTTPException(503, "تعذّر فحص الملف — تأكد أن ffprobe مثبت ويعمل")
+    if chk.returncode != 0 or not chk.stdout.strip():
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "الملف المرفوع ليس فيديو صالحاً أو تالف")
     return {"path": str(dest), "name": name}
 
 def _path_allowed(p: Path) -> bool:
@@ -718,10 +732,20 @@ def _download_to_local(src, caption_in=""):
     if not src.startswith("http"):
         # 🛡️ v1.45: كان أي نص يُقبل كمسار محلي → مع فتح اللوحة على الشبكة يصير
         # قراءة/معالجة أي ملف على الجهاز. نسمح بالمشروع فقط (+ REEL_ALLOW_DIRS).
-        p = Path(src)
-        if p.exists() and not _path_allowed(p):
+        p = Path(src).expanduser()
+        # لا نترك المسار غير الموجود يمر إلى الطابور؛ كان الخطأ يظهر لاحقاً
+        # داخل reel.py كمهمة فاشلة بلا سبب واضح للمستخدم.
+        if not p.exists() or not p.is_file():
+            raise HTTPException(400, "الملف المحلي غير موجود أو ليس ملفاً صالحاً")
+        if not _path_allowed(p):
             raise HTTPException(403, "مسار خارج مجلد المشروع — أضِف مجلدك إلى REEL_ALLOW_DIRS للسماح")
-        return src, caption
+        return str(p), caption
+    # urlopen يقبل مخططات أخرى مثل file://؛ اللوحة لا تحتاجها، ومنعها
+    # يغلق مساراً غير متوقع قبل أن يبدأ التنزيل.
+    from urllib.parse import urlparse
+    scheme = (urlparse(src).scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise HTTPException(400, "الرابط يجب أن يبدأ بـ http:// أو https://")
     urls = []
     chan = mid = None
     _ck = None                            # 🔧 يُقرأ في نهاية الدالة لكل الروابط (مو بس تيليجرام) — لازم يُعرَّف دائماً
@@ -2233,6 +2257,10 @@ const fmtB=n=>!n?"—":(n>1e9?(n/1e9).toFixed(1)+" GB":n>1e6?(n/1e6).toFixed(1)+
 const fmtT=s=>!s?"—":(s<60?Math.round(s)+" ث":Math.floor(s/60)+" د "+Math.round(s%60)+" ث");
 function toast(msg,kind=""){const d=document.createElement("div");d.className="toast "+kind;d.textContent=msg;
  $("toasts").appendChild(d);setTimeout(()=>d.remove(),4200);}
+window.addEventListener("unhandledrejection",e=>{
+  const msg=String(e.reason?.message||e.reason||"خطأ غير متوقع");
+  toast("⚠️ "+msg,"err");
+});
 let CFG={},JOBS=[],CUR=null;
 
 /* ---------- tabs ---------- */

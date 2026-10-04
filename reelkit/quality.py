@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-def check(path, expected_w=1080, expected_h=1920, max_duration=0):
+def check(path, expected_w=1080, expected_h=1920, max_duration=0, audio_required=False):
     """Return a small, serializable QA report; never raises for a bad media file."""
     p = Path(path)
     report = {
@@ -15,6 +15,10 @@ def check(path, expected_w=1080, expected_h=1920, max_duration=0):
         "size": p.stat().st_size if p.is_file() else 0,
         "video": False,
         "audio": False,
+        "audio_required": bool(audio_required),
+        "video_codec": None,
+        "audio_codec": None,
+        "fps": 0.0,
         "width": None,
         "height": None,
         "duration": 0.0,
@@ -40,10 +44,23 @@ def check(path, expected_w=1080, expected_h=1920, max_duration=0):
         if video:
             report["width"] = int(video.get("width") or 0)
             report["height"] = int(video.get("height") or 0)
+            report["video_codec"] = video.get("codec_name")
+            raw_fps = video.get("avg_frame_rate") or video.get("r_frame_rate") or "0/1"
+            try:
+                num, den = raw_fps.split("/", 1)
+                report["fps"] = round(float(num) / max(float(den), 1.0), 3)
+            except (ValueError, TypeError, ZeroDivisionError):
+                report["fps"] = 0.0
+        if audio:
+            report["audio_codec"] = audio.get("codec_name")
         report["duration"] = round(float((data.get("format") or {}).get("duration") or 0), 2)
         if not video:
             report["issues"].append("لا يوجد مسار فيديو")
-        elif expected_w and expected_h and (report["width"], report["height"]) != (expected_w, expected_h):
+        if audio_required and not audio:
+            report["issues"].append("اختفى مسار الصوت من المخرج")
+        if video and report["fps"] <= 0:
+            report["issues"].append("معدل الإطارات غير صالح")
+        if video and expected_w and expected_h and (report["width"], report["height"]) != (expected_w, expected_h):
             report["issues"].append(f"الأبعاد {report['width']}x{report['height']} بدل {expected_w}x{expected_h}")
         if max_duration and report["duration"] > float(max_duration) + 1.0:
             report["issues"].append("المدة تتجاوز الحد المطلوب")
