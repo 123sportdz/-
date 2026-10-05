@@ -115,7 +115,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
            voice_wav=None, duck=0.22, voice_gain=1.9, voice_delay_ms=500,
            commentary_text="", commentary_show=True, tmp_path=None,
            cam_y=None, zoom=None, ball_y=None, burst_t=None, burst_text="هدف!",
-           ball_color=None, brand_y=0.76, score_box=None, score_scale=1.75,
+           ball_color=None, brand_y=0.76, brand_scale=1.0, score_box=None, score_scale=1.75,
            logo=None, source_credit=""):
     fps = fps or info["fps"]; W = info["W"]; H = info["H"]
     crop_w = min(W, int(round(H * 9 / 16))); crop_h = H
@@ -292,7 +292,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
             if brand_name or brand_url:
                 canvas = G.draw_brand(canvas, brand_name, brand_url, accent=accent,
                                       y=int(out_h * float(_brand_y_eff)),
-                                      scale=(0.72 if SPLIT else 1.0))
+                                      scale=(0.72 if SPLIT else 1.0) * float(brand_scale))
             if logo is not None:
                 canvas = logo.apply(canvas)
 

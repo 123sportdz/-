@@ -82,6 +82,8 @@ def main(argv=None):
     ap.add_argument("--url", default="", help="brand url / handle under the name")
     ap.add_argument("--brand-y", type=float, default=0.76,
                     help="موضع شريط الهوية (0.76 = فوق أزرار يوتيوب شورتس)")
+    ap.add_argument("--brand-scale", type=float, default=1.0,
+                    help="حجم شريط الهوية (1.0 افتراضي، 0.62 أصغر وأنظف)")
     ap.add_argument("--logo", default=None,
                     help="مسار صورة الشعار (PNG شفاف مستحسن) — يُركَّب على كل فريم")
     ap.add_argument("--logo-pos", default=None,
@@ -788,6 +790,7 @@ def main(argv=None):
                       use_trail=not a.no_trail, crf=a.crf, preset=a.preset,
                       layout=a.layout, player_x=player_x, split_labels=a.split_labels,
                       accent=accent_rgb, ball_color=ball_bgr, brand_y=a.brand_y,
+                      brand_scale=max(0.4, min(1.4, float(a.brand_scale))),
                       logo=logo_layer,
                       score_box=score_box, score_scale=a.score_scale,
                       cam_y=cam_y, zoom=zoom,
