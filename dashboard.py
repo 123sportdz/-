@@ -1907,11 +1907,11 @@ HTML = r"""<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 :root{
  --bg:#0b0f14; --bg2:#0f151c; --card:#131a23; --card2:#182231; --bd:#222e3d; --bd2:#2c3a4d;
  --tx:#e8eef6; --mut:#8ea0b5; --acc:#e63946; --acc2:#ff5a67; --ok:#25d07a; --warn:#f0b429; --blu:#3b82f6;
- --r:14px; --sh:0 6px 24px rgba(0,0,0,.35);
+ --cyan:#36d1dc; --violet:#826cff; --r:16px; --sh:0 10px 30px rgba(0,0,0,.35);
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
-body{background:radial-gradient(1200px 600px at 80% -10%,#16202c 0%,var(--bg) 55%) no-repeat,var(--bg);
+body{background:radial-gradient(900px 520px at 82% -8%,rgba(54,209,220,.12),transparent 62%),radial-gradient(850px 520px at 8% 18%,rgba(130,108,255,.09),transparent 64%),var(--bg);
  color:var(--tx);font:15px/1.65 Cairo,"Segoe UI",Tahoma,system-ui,sans-serif;min-height:100vh}
 a{color:inherit;text-decoration:none}
 .revbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:9px}
@@ -1921,11 +1921,12 @@ a{color:inherit;text-decoration:none}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#26313f;border-radius:9px}
 /* ---------- header ---------- */
 header{display:flex;align-items:center;gap:14px;padding:14px 22px;position:sticky;top:0;z-index:40;
- background:rgba(11,15,20,.82);backdrop-filter:blur(14px);border-bottom:1px solid var(--bd)}
+ background:rgba(11,15,20,.76);backdrop-filter:blur(18px);border-bottom:1px solid rgba(54,209,220,.12)}
 .brand{display:flex;align-items:center;gap:11px;font-weight:800;font-size:17px}
 .logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(140deg,var(--acc),#7a1420);
  display:grid;place-items:center;font-size:19px;font-weight:900;box-shadow:0 4px 14px rgba(230,57,70,.35)}
 .logo svg{width:21px;height:21px;fill:#fff}
+.brand>div:last-child{letter-spacing:.1px}
 .chips{display:flex;gap:7px;flex-wrap:wrap;margin-inline-start:auto}
 .chip{font-size:12px;padding:5px 11px;border-radius:20px;border:1px solid var(--bd2);background:var(--card2);
  display:flex;align-items:center;gap:6px;color:var(--mut)}
@@ -1938,13 +1939,28 @@ nav{display:flex;gap:6px;padding:0 22px;border-bottom:1px solid var(--bd);backgr
 nav button{background:none;border:0;color:var(--mut);font:inherit;font-weight:600;padding:14px 15px;
  cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px}
 nav button:hover{color:var(--tx)}
-nav button.act{color:#fff;border-bottom-color:var(--acc)}
+nav button.act{color:#fff;border-bottom-color:var(--cyan);background:linear-gradient(180deg,rgba(54,209,220,.08),transparent)}
 /* ---------- layout ---------- */
 main{max-width:1500px;margin:0 auto;padding:22px}
+.hero{position:relative;overflow:hidden;display:grid;grid-template-columns:1.45fr .85fr;gap:18px;align-items:center;
+ background:linear-gradient(115deg,rgba(24,34,49,.96),rgba(14,23,33,.9));border:1px solid rgba(54,209,220,.22);
+ border-radius:22px;padding:24px 26px;margin-bottom:22px;box-shadow:0 18px 50px rgba(0,0,0,.28)}
+.hero:after{content:"";position:absolute;width:260px;height:260px;border-radius:50%;background:rgba(54,209,220,.12);filter:blur(4px);left:-90px;bottom:-150px;pointer-events:none}
+.eyebrow{color:var(--cyan);font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px}
+.hero h1{font-size:clamp(22px,3vw,34px);line-height:1.25;margin:0 0 8px;letter-spacing:-.5px}
+.hero p{color:#aab8ca;margin:0;max-width:660px;font-size:13.5px}
+.hero-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.hero-actions .btn{margin:0;width:auto}
+.hero-side{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;position:relative;z-index:1}
+.kpi{background:rgba(8,13,19,.48);border:1px solid var(--bd2);border-radius:14px;padding:13px 14px}
+.kpi b{font-size:22px;display:block;line-height:1.2}.kpi span{font-size:11px;color:var(--mut)}
+.health{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#a9b8c9;background:rgba(8,13,19,.55);border:1px solid var(--bd2);border-radius:30px;padding:6px 10px;margin-top:14px}
+.health i{display:block;width:8px;height:8px;border-radius:50%;background:var(--mut)}.health.ok{color:#9fe8c4;border-color:#1d5c3e}.health.ok i{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+@media(max-width:760px){.hero{grid-template-columns:1fr;padding:20px}.hero-side{grid-template-columns:repeat(4,1fr)}.kpi{padding:10px 8px}.kpi b{font-size:18px}.kpi span{font-size:10px}}
 .grid{display:grid;grid-template-columns:minmax(360px,430px) 1fr;gap:20px;align-items:start}
 @media(max-width:1050px){.grid{grid-template-columns:1fr}}
-.card{background:linear-gradient(180deg,var(--card),var(--bg2));border:1px solid var(--bd);border-radius:var(--r);
- padding:18px;box-shadow:var(--sh)}
+.card{background:linear-gradient(180deg,rgba(19,26,35,.96),rgba(15,21,28,.96));border:1px solid var(--bd);border-radius:var(--r);
+ padding:18px;box-shadow:var(--sh);transition:border-color .2s,transform .2s}
+.card:hover{border-color:#35475d}
 .card h2{margin:0 0 14px;font-size:15px;display:flex;align-items:center;gap:9px;color:#cfdcec}
 .card h2 .num{width:22px;height:22px;border-radius:7px;background:var(--card2);border:1px solid var(--bd2);
  display:grid;place-items:center;font-size:12px;color:var(--mut)}
@@ -1960,6 +1976,7 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);box-sh
 .btn:hover{filter:brightness(1.12);transform:translateY(-1px)}
 .btn:active{transform:none}
 .btn.sec{background:linear-gradient(140deg,#2f6fe0,#1e4ba8)}
+.btn.cyan{background:linear-gradient(140deg,#1c9ca8,#146b82)}
 .btn.gray{background:#26313f;border:1px solid var(--bd2);font-weight:600}
 .btn.sm{margin:0;padding:8px 12px;width:auto;font-size:13px;border-radius:9px}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
@@ -1977,6 +1994,7 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);box-sh
 .stat{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:13px 15px}
 .stat b{display:block;font-size:21px;font-weight:800}
 .stat span{font-size:12px;color:var(--mut)}
+.stat{position:relative;overflow:hidden}.stat:after{content:"";position:absolute;inset:auto -20px -30px auto;width:90px;height:90px;border-radius:50%;background:rgba(54,209,220,.05)}
 .toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .toolbar input{flex:1;min-width:180px}
 .job{background:linear-gradient(180deg,var(--card),var(--bg2));border:1px solid var(--bd);border-radius:var(--r);
@@ -2046,6 +2064,24 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
 </nav>
 
 <main>
+<section class="hero" aria-label="ملخص التشغيل">
+  <div>
+    <div class="eyebrow">ELHADATH · REEL STUDIO</div>
+    <h1>حوّل لحظات المباراة إلى ريل احترافي</h1>
+    <p>اختَر المقطع، اضبط الكادر، شاهد معاينة حقيقية، ثم راقب الجودة والنشر من مكان واحد.</p>
+    <div id="healthPill" class="health"><i></i><span>جارٍ فحص جاهزية المصنع…</span></div>
+    <div class="hero-actions">
+      <button class="btn cyan sm" onclick="focusNew()">＋ مقطع جديد</button>
+      <button class="btn gray sm" onclick="focusJobs()">فتح مركز المهام</button>
+    </div>
+  </div>
+  <div class="hero-side" aria-label="إحصاءات سريعة">
+    <div class="kpi"><b id="hTotal">0</b><span>كل المهام</span></div>
+    <div class="kpi"><b id="hDone">0</b><span>جاهزة للنشر</span></div>
+    <div class="kpi"><b id="hRun">0</b><span>قيد المعالجة</span></div>
+    <div class="kpi"><b id="hQueue">0</b><span>في الانتظار</span></div>
+  </div>
+</section>
 <!-- ============ NEW ============ -->
 <section id="tab-new" class="grid">
   <div class="card">
@@ -2411,6 +2447,16 @@ window.addEventListener("unhandledrejection",e=>{
   toast("⚠️ "+msg,"err");
 });
 let CFG={},JOBS=[],CUR=null;
+function focusNew(){document.querySelector('nav button[data-tab="new"]').click();window.scrollTo({top:0,behavior:"smooth"});}
+function focusJobs(){document.querySelector('nav button[data-tab="jobs"]').click();window.scrollTo({top:0,behavior:"smooth"});}
+function updateOverview(st){
+  const total=+st.total||0, done=+st.done||0, run=+st.running||0, failed=+st.failed||0;
+  const queue=Math.max(0,total-done-run-failed);
+  [[$("hTotal"),total],[$("hDone"),done],[$("hRun"),run],[$("hQueue"),queue]].forEach(([el,v])=>{if(el)el.textContent=v;});
+  const pill=$("healthPill"); if(!pill)return;
+  const label=run?`المصنع يعمل الآن · ${run} مهمة قيد المعالجة`:queue?`المصنع جاهز · ${queue} مهام في الانتظار`:"المصنع جاهز لاستقبال مقطع جديد";
+  pill.classList.add("ok"); pill.querySelector("span").textContent=label;
+}
 
 /* ---------- tabs ---------- */
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
@@ -2836,6 +2882,7 @@ async function poll(){
   try{
     JOBS=await (await fetch("/api/jobs")).json();
     const st=await (await fetch("/api/stats")).json();
+    updateOverview(st);
     $("nJobs").textContent=st.total;
     $("sTotal").textContent=st.total;$("sDone").textContent=st.done;
     $("sRun").textContent=st.running;$("sFail").textContent=st.failed;
