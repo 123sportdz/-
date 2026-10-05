@@ -8,6 +8,21 @@ echo ==============================
 echo.
 
 rem ---------------------------------------------------------------
+rem 0) If a working .venv already exists, reuse it (no Python hunt).
+rem ---------------------------------------------------------------
+if exist .venv\Scripts\python.exe (
+  .venv\Scripts\python.exe -c "import torch, ultralytics, cv2, fastapi" >nul 2>nul
+  if not errorlevel 1 (
+    echo [OK] existing .venv is ready - nothing to install.
+    call .venv\Scripts\activate.bat
+    python doctor.py --quick
+    if /i not "%~1"=="--auto" pause
+    exit /b 0
+  )
+  echo [!] .venv exists but is incomplete - it will be rebuilt.
+)
+
+rem ---------------------------------------------------------------
 rem 1) Pick a torch-compatible Python (3.12 / 3.11 / 3.13)
 rem    torch does NOT support Python 3.14 yet, so we skip it.
 rem ---------------------------------------------------------------
@@ -37,6 +52,11 @@ if errorlevel 1 (
   echo [i] tesseract not found - auto title will use the Telegram caption instead.
 ) else (
   echo [OK] tesseract found
+)
+
+if exist .venv (
+  echo [!] removing the old/incomplete .venv ...
+  rmdir /s /q .venv
 )
 
 echo.
@@ -83,7 +103,11 @@ exit /b 0
 :nopy
 echo [X] No compatible Python found (need 3.11 / 3.12 / 3.13).
 echo     torch does not support Python 3.14 yet.
-echo     Install Python 3.12 from python.org and tick "Add Python to PATH".
-echo     then run install.bat again.
+echo.
+echo     Python versions detected by the launcher:
+py -0p
+echo.
+echo     Install Python 3.12 from python.org, tick "Add Python to PATH",
+echo     then run install.bat again.  (Do NOT use Python 3.14.)
 pause
 exit /b 1
