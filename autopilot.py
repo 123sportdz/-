@@ -121,6 +121,27 @@ def process(post, a, state):
         title = s.get("title") or f"ريل جديد #{tag}"
         print(f"  ✎ العنوان: {title}", flush=True)
 
+    # 🛡️ بوّابة تحويلية: لا ننشر تلقائياً عملاً ضعيف التحويل — تحمي القناة من المطالبات
+    gate = int(getattr(a, "min_transformative", 0) or CFG.get("min_transformative") or 0)
+    if a.upload != "none" and gate > 0:
+        try:
+            from reelkit import rights as RT
+            short = bool(a.start or a.end)
+            tscore = RT.score({"own_commentary": bool(a.commentary),
+                               "source_credit": bool(CFG.get("source_credit")),
+                               "own_brand": bool(a.name or CFG.get("brand_name")),
+                               "short_clip": short, "rights_package": True,
+                               "no_full_match": short})
+        except Exception:
+            tscore = 0
+        if tscore < gate:
+            print(f"  ⛔ رفض النشر التلقائي: الجاهزية التحوّلية {tscore} < {gate} "
+                  f"(فعّل --commentary و --start/--end، أو خفّض min_transformative)", flush=True)
+            state[key] = {"title": title, "output": str(out), "at": time.time(),
+                          "skipped": "transformative_gate", "score": tscore}
+            save_state(state)
+            return out
+
     if a.upload in ("telegram", "both") and CFG.get("telegram_token") and CFG.get("telegram_chat"):
         try:
             TelegramBot(CFG["telegram_token"], CFG["telegram_chat"]).send_video(str(out), caption=title)
@@ -159,6 +180,8 @@ def main():
     ap.add_argument("--upload", default="none", choices=["none","telegram","youtube","both"])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-ai", action="store_true", help="بلا Gemini (استخدم الكابشن/OCR فقط)")
+    ap.add_argument("--min-transformative", type=int, default=0,
+                    help="🛡️ ارفض النشر التلقائي إلا إذا بلغت الجاهزية التحوّلية هذا الحد (0=معطّل)")
     a = ap.parse_args()
     from reelkit.publish.telegram import parse_telegram_ref
     chan, _ = parse_telegram_ref(a.channel)     # يوحّد @name / رابط t.me لاسم قناة نظيف قبل بناء المسارات

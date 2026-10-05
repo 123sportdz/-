@@ -16,6 +16,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reelkit import ffio, analysis, detect, track as TK, render as RD, subject as SB
+from reelkit import cache
 from reelkit import ai as AI, voice as VO
 
 
@@ -172,6 +173,9 @@ def main(argv=None):
     ap.add_argument("--rights-package", action="store_true",
                     help="🛡️ يولّد ملف <out>_dispute.md (توثيق العمل الأصلي/التحويلي) بجانب الريل")
     ap.add_argument("--channel", default="", help="اسم القناة/الناشر في حزمة الاعتراض")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="تعطيل كاش الكشف (أعد الكشف من الصفر حتى لو المصدر نفسه)")
+    ap.add_argument("--clear-cache", action="store_true", help="امسح كاش الكشف واخرج")
     ap.add_argument("--keep-temp", action="store_true")
     ap.add_argument("-q", "--quiet", action="store_true")
     a = ap.parse_args(argv)
@@ -181,6 +185,11 @@ def main(argv=None):
             print(*m, flush=True)
 
     t0 = time.time()
+    if a.clear_cache:
+        import shutil as _sh
+        _sh.rmtree(cache.root(), ignore_errors=True)
+        print(f"🧹 مُسح كاش الكشف: {cache.root()}")
+        return
     out_w, out_h = a.out_size
     if not os.path.exists(a.input):
         sys.exit(f"input not found: {a.input}")
@@ -383,7 +392,22 @@ def main(argv=None):
                 log(f"⚠️  تعذّر كشف اللوحة ({type(e).__name__})")
 
         log(f"[2/6] analyzing scenes / camera …")
-        an = analysis.analyze(readable)
+        _use_cache = cache.enabled() and not a.no_cache
+        _sig = cache.file_sig(readable)
+        _akey = cache.make_key("analysis", _sig, {"rate": 15.0}) if _use_cache else None
+        an = cache.load_npz("analysis", _akey) if _akey else None
+        if an is not None:
+            an = {"fps": float(an["fps"]), "W": int(an["W"]), "H": int(an["H"]),
+                  "step": int(an["step"]), "times": an["times"], "cents": an["cents"],
+                  "cuts": an["cuts"].tolist()}
+            log(f"      💾 تحليل المشاهد من الكاش")
+        else:
+            an = analysis.analyze(readable)
+            if _akey:
+                cache.save_npz("analysis", _akey, {
+                    "fps": np.float64(an["fps"]), "W": np.int64(an["W"]), "H": np.int64(an["H"]),
+                    "step": np.int64(an["step"]), "times": np.asarray(an["times"]),
+                    "cents": np.asarray(an["cents"]), "cuts": np.asarray(an["cuts"], dtype=np.int64)})
         log(f"      {len(an['cuts'])} scene cuts")
 
         log(f"[3/6] detecting the ball @ {a.rate:g} Hz  (جودة: {q}"
@@ -393,8 +417,17 @@ def main(argv=None):
             a.tile = int(round(info["height"] * 0.66 / 16) * 16)   # ~480 لمقطع 720p
         bd = detect.BallDetector(a.ball_model, conf=a.ball_conf, imgsz=a.imgsz, device=a.device,
                                  tile=a.tile, overlap=a.tile_overlap, tta=a.tta, batch=a.batch)
-        det = bd.scan(readable, rate=a.rate, fps=info["fps"])
-        log(f"      {len(det)} raw detections")
+        _bkey = (cache.make_key("ball", _sig, {"rate": a.rate, "imgsz": a.imgsz,
+                  "conf": a.ball_conf, "tile": a.tile, "overlap": a.tile_overlap,
+                  "tta": a.tta, "model": cache.model_sig(a.ball_model)}) if _use_cache else None)
+        det = cache.load("ball", _bkey) if _bkey else None
+        if det is not None:
+            log(f"      💾 كشف الكرة من الكاش: {len(det)} كشفاً (بلا إعادة كشف)")
+        else:
+            det = bd.scan(readable, rate=a.rate, fps=info["fps"])
+            if _bkey:
+                cache.save("ball", _bkey, det)
+            log(f"      {len(det)} raw detections")
         # 🔁 شفاء ذاتي (مسار كلاسيكي فقط): لو الكشف ضعيف نعيد بجودة أعلى.
         # مسار pro يستخدم الشفاء بالتغطية بعد التتبّع (أدق — v1.44).
         use_pro = a.tracker in ("auto", "pro") and a.subject == "ball"
@@ -420,7 +453,14 @@ def main(argv=None):
 
         log(f"[4/6] detecting players (shot layout) …")
         pd = detect.PersonDetector(device=a.device, batch=a.batch)
-        person = pd.scan(readable, rate=4.0, fps=info["fps"])
+        _pkey = cache.make_key("person", _sig, {"rate": 4.0, "imgsz": 640}) if _use_cache else None
+        person = cache.load("person", _pkey) if _pkey else None
+        if person is not None:
+            log(f"      💾 كشف اللاعبين من الكاش: {len(person)} كشفاً")
+        else:
+            person = pd.scan(readable, rate=4.0, fps=info["fps"])
+            if _pkey:
+                cache.save("person", _pkey, person)
 
         log(f"[5/6] tracking + camera …")
         n_frames = len(an["times"]) * an["step"] + 2

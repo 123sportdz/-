@@ -52,31 +52,55 @@ def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=
                 dur = _nf / _vf
         except Exception:
             dur = 0.0
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", tmp_video]
+    head = ["ffmpeg", "-v", "error", "-y", "-i", tmp_video]
     idx = 1; bg_i = vo_i = None
-    if have_bg: cmd += ["-i", audio]; bg_i = idx; idx += 1
-    if have_vo: cmd += ["-i", voice_wav]; vo_i = idx; idx += 1
-    if have_bg and have_vo:
-        fc = (f"[{bg_i}:a]volume={duck},aformat=channel_layouts=stereo[bg];"
-              f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
-              f"aformat=channel_layouts=stereo[vo];"
-              f"[bg][vo]amix=inputs=2:duration=first:normalize=0[a]")
-        cmd += ["-filter_complex", fc, "-map", "0:v", "-map", "[a]"]
-    elif have_bg:
-        cmd += ["-filter_complex", f"[{bg_i}:a]volume=1.0[a]", "-map", "0:v", "-map", "[a]"]
-    else:
-        cmd += ["-filter_complex",
-                f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,apad[a]", "-map", "0:v", "-map", "[a]"]
-    cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    if have_bg: head += ["-i", audio]; bg_i = idx; idx += 1
+    if have_vo: head += ["-i", voice_wav]; vo_i = idx; idx += 1
+    tail = ["-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
     if dur > 0:
-        cmd += ["-t", f"{dur:.3f}"]        # بديل آمن عن -shortest
+        tail += ["-t", f"{dur:.3f}"]        # بديل آمن عن -shortest
     else:
         # بلا مدة معلومة لا نبني الأمر: ‎-shortest مع apad و -c:v copy يعلّق ffmpeg
         raise RuntimeError("تعذّر قياس مدة الفيديو الوسيط — أوقفت مزج الصوت بدل أمر قد يعلّق ffmpeg")
-    cmd += ["-movflags", "+faststart", out_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    if r.returncode != 0 or not os.path.exists(out_path):
-        raise RuntimeError("فشل مزج الصوت:\n" + (r.stderr or "")[-800:])
+    tail += ["-movflags", "+faststart", out_path]
+
+    # 🔊 v1.51: sidechain ducking — التعليق يخفض صوت الجمهور **فقط أثناء الكلام**،
+    # فيهدر الهدف (أقوى لحظة عاطفية) بكامل قوته. قبل كان يُخفض المصدر كله إلى 22%.
+    # مع تراجع تلقائي للأسلوب القديم لو فشلsidechain في نسخة ffmpeg قديمة.
+    variants = []
+    if have_bg and have_vo:
+        variants.append((
+            f"[{bg_i}:a]aformat=sample_rates=48000:channel_layouts=stereo[bg0];"
+            f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,aformat=sample_rates=48000:channel_layouts=stereo,"
+            f"volume={voice_gain},asplit=2[vo][vosc];"
+            f"[bg0][vosc]sidechaincompress=threshold=0.03:ratio=12:attack=15:release=350:makeup=1[bgd];"
+            f"[bgd][vo]amix=inputs=2:duration=first:normalize=0[a]",
+            ["-map", "0:v", "-map", "[a]"]))
+        variants.append((
+            f"[{bg_i}:a]volume={duck},aformat=channel_layouts=stereo[bg];"
+            f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
+            f"aformat=channel_layouts=stereo[vo];"
+            f"[bg][vo]amix=inputs=2:duration=first:normalize=0[a]",
+            ["-map", "0:v", "-map", "[a]"]))
+    elif have_bg:
+        variants.append((f"[{bg_i}:a]volume=1.0[a]", ["-map", "0:v", "-map", "[a]"]))
+    else:
+        variants.append((f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,apad[a]",
+                         ["-map", "0:v", "-map", "[a]"]))
+
+    last_err = ""
+    for fc, maps in variants:
+        cmd = head + ["-filter_complex", fc, *maps, *tail]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if r.returncode == 0 and os.path.exists(out_path):
+            break
+        last_err = (r.stderr or "")[-800:]
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+    else:
+        raise RuntimeError("فشل مزج الصوت:\n" + last_err)
     try:
         os.remove(tmp_video)          # على ويندوز قد يكون الملف ما زال مقفولاً لحظةً
     except OSError:

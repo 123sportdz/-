@@ -367,6 +367,15 @@ def check_space():
         else:
             say(OK, "بقايا مجلدات عمل", SP.human(d["leftovers_size"]) + " (نظيف)")
         say(OK, "المجلد المؤقت", "داخل المشروع: " + d["work_temp"] + "  (ما يعبّي C:)")
+        # 💾 كاش الكشف (يسرّع إعادة الرندر على نفس المصدر)
+        try:
+            from reelkit import cache as _c
+            cs = _c.size_bytes()
+            say(OK, "كاش الكشف", (f"{_c.human(cs) if hasattr(_c, 'human') else str(round(cs/1048576,1))+' MB'}"
+                                   f"  ⟵ للتسريع: أعد الرندر على نفس المقطع بلا إعادة كشف")
+                if _c.enabled() else "مُعطّل (REEL_CACHE=0)")
+        except Exception:
+            pass
     except Exception as e:
         say(WARN, "مساحة الأقراص", f"تعذّر الفحص ({str(e)[:60]})")
 

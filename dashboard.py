@@ -570,7 +570,7 @@ ALLOWED_CFG_KEYS = {
     "replay", "hook", "burst", "batch",
     "automation_enabled", "automation_interval", "automation_limit", "automation_upload",
     "automation_quality", "automation_layout", "automation_subject",
-    "automation_source", "automation_folder",
+    "automation_source", "automation_folder", "min_transformative", "source_credit",
 }
 
 

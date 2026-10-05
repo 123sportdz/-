@@ -45,5 +45,7 @@
   "automation_layout": "single",
   "automation_subject": "ball",
   "automation_source": "telegram",
-  "automation_folder": "watch"
+  "automation_folder": "watch",
+  "min_transformative": 0,
+  "source_credit": ""
 }
