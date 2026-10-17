@@ -2856,10 +2856,14 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <button class="btn sec sm" onclick="montage()">🏆 ريل الترتيب (أفضل 3)</button>
     <button class="btn gray sm" onclick="retryFailed()">🔁 إعادة الفاشلة</button>
     <button class="btn gray sm" onclick="clearFinished()">🧹 حذف المكتملة</button>
-    <select id="flt" style="max-width:170px" onchange="renderJobs()">
+    <select id="flt" style="max-width:170px" onchange="renderJobs()" aria-label="تصفية حسب الحالة">
       <option value="">كل الحالات</option><option value="done">مكتملة</option>
       <option value="running">قيد المعالجة</option><option value="failed">فاشلة</option>
       <option value="queued">في الانتظار</option></select>
+    <select id="srt" style="max-width:190px" onchange="renderJobs()" aria-label="ترتيب المهام">
+      <option value="new">🆕 الأحدث أولاً</option><option value="old">🕒 الأقدم أولاً</option>
+      <option value="dur">⏱ الأطول مدةً</option><option value="time">⚙️ الأطول معالجةً</option></select>
+    <button class="btn gray sm" title="تصدير سجل المهام إلى ملف CSV" onclick="exportJobsCsv()">📊 تصدير CSV</button>
   </div>
   <div id="jobs"></div>
 </section>
@@ -3689,7 +3693,10 @@ async function poll(){
     $("nJobs").textContent=st.total;
     $("sTotal").textContent=st.total;$("sDone").textContent=st.done;
     $("sRun").textContent=st.running;$("sFail").textContent=st.failed;
-    if($("sQueue"))$("sQueue").textContent=Object.values(JOBS).filter(j=>j.status==="queued").length;
+    if($("sQueue"))$("sQueue").textContent=Object.values(JOBS).filter(j=>j.status==="queued").length;    const counts={done:st.done,running:st.running,failed:st.failed,queued:Object.values(JOBS).filter(j=>j.status==="queued").length};
+    const flt=$("flt");if(flt)Array.from(flt.options).forEach(o=>{
+      const base=o.dataset.label||o.textContent.replace(/\s*\(\d+\)$/,"");
+      o.dataset.label=base;o.textContent=(o.value&&counts[o.value]!==undefined)?base+" ("+counts[o.value]+")":base;});
     renderJobs();renderRecent();updateLive();
   }catch(e){}
   setTimeout(poll,2500);
@@ -3722,7 +3729,7 @@ function jobCard(j){
       <div class="bar"><i style="width:${j.progress||0}%"></i></div>
       <div style="font-size:12px;color:var(--mut)">${esc((j.label||"").slice(0,70))}</div>
       ${j.quality_report?`<div style="font-size:12px;color:${j.quality_report.ok?'var(--ok)':'var(--warn)'};margin-top:5px">
-        ${j.quality_report.ok?'✅ فحص الجودة سليم':'⚠️ '+esc((j.quality_report.issues||[]).join(' · '))}</div>`:""}
+        ${j.quality_report.ok?'✅ فحص الجودة سليم':'⚠️ '+esc((j.quality_report.issues||[]).join(' · '))}</div>`:""}      ${publishBadge(j)}
       <div class="acts">
         ${done?`<button class="btn sec sm" onclick="openJob('${j.id}')">👁 مراجعة ونشر</button>
           <button class="btn gray sm" title="تصدير معلومات الإنتاج للمراجعة؛ لا تثبت حق الاستخدام" onclick="dispute('${j.id}')">🛡️ معلومات الإنتاج</button>
@@ -3737,8 +3744,40 @@ function jobCard(j){
         <pre>${esc(j.log.slice(-40).join("\n"))}</pre></details>`:""}
     </div></div>`;
 }
+function publishBadge(j){
+  const y=(j.publish||{}).youtube;
+  if(!y||!y.id)return"";
+  const bits=[{private:"خاص",unlisted:"غير مدرج",public:"عام"}[y.privacy]||y.privacy];
+  const st=String(y.status||"");
+  if(st.includes("blocked"))bits.push("محجوب ⛔");
+  else if(st.includes("restricted"))bits.push("قيود جغرافية ⚠️");
+  else if(st.includes("processed"))bits.push("معالَج ✅");
+  else if(st)bits.push("قيد المعالجة ⏳");
+  if(y.region_restriction&&Array.isArray(y.region_restriction.blocked)&&y.region_restriction.blocked.length)bits.push("محجوب في "+y.region_restriction.blocked.length+" دولة");
+  return `<div style="font-size:12px;color:var(--mut);margin-top:5px">▶️ YouTube: ${esc(bits.filter(Boolean).join(" · ")||"مرفوع")}</div>`;
+}
+function sortJobs(list){
+  const mode=$("srt")?$("srt").value:"new", num=v=>Number(v)||0;
+  const arr=[...list];
+  if(mode==="old")arr.sort((a,b)=>num(a.created)-num(b.created));
+  else if(mode==="dur")arr.sort((a,b)=>num(b.duration)-num(a.duration));
+  else if(mode==="time")arr.sort((a,b)=>num(b.elapsed)-num(a.elapsed));
+  else arr.sort((a,b)=>num(b.created)-num(a.created));
+  return arr;
+}
+function exportJobsCsv(){
+  const rows=[["id","title","status","duration_sec","size_bytes","created","youtube_id","youtube_privacy"]];
+  JOBS.forEach(j=>rows.push([j.id,j.title||j.label||"",j.status,j.duration||"",j.size||"",
+    j.created?new Date(j.created*1000).toISOString():"",
+    ((j.publish||{}).youtube||{}).id||"",((j.publish||{}).youtube||{}).privacy||""]));
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}));
+  a.download="elhadath-jobs-"+new Date().toISOString().slice(0,10)+".csv";a.click();
+  URL.revokeObjectURL(a.href);toast("تم تصدير سجل المهام","ok");
+}
 function renderJobs(){
-  const list=JOBS.filter(matches);
+  const list=sortJobs(JOBS.filter(matches));
   $("jobs").innerHTML=list.length?list.map(jobCard).join(""):
     '<div class="empty">ما فيه مهام مطابقة</div>';
 }
@@ -4281,6 +4320,14 @@ async function saveSet(){
 
 loadCfg();poll();
 initScoutReview();
+document.addEventListener("keydown",e=>{
+  if(e.ctrlKey||e.metaKey||e.altKey)return;
+  const tag=(e.target.tagName||"").toLowerCase();
+  if(tag==="input"||tag==="textarea"||tag==="select"||e.target.isContentEditable)return;
+  if(e.key==="/"){const q=$("q");if(q){q.focus();e.preventDefault();}}
+  else if(e.key==="n"||e.key==="N")document.querySelector('nav button[data-tab="new"]').click();
+  else if(e.key==="j"||e.key==="J")document.querySelector('nav button[data-tab="jobs"]').click();
+});
 if(new URLSearchParams(location.search).get("tab")==="set")document.querySelector('nav button[data-tab="set"]').click();
 renderPosPicker();
 try{initLogoDrop();}catch(e){}
