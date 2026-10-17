@@ -883,6 +883,13 @@ def main(argv=None):
                                               H=info["height"], half_v=half_v)
             log(f"      🎯 الإطار: {fsel} (منطقة ميتة {deadzone:.0f}px)"
                 + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
+            if pro is not None:
+                try:
+                    _miss = PT.frame_miss_pct(pro.get("x"), pro.get("y"), cam, cam_y=cam_y,
+                                              half_w=crop_w0 / 2.0, half_h=half_v)
+                    log(f"      🎯 خروج الكرة عن الكادر: {_miss:.1f}% من فريمات المسار")
+                except Exception:
+                    pass
             if cam is None or np.all(np.isnan(cam)):
                 cam = np.full(n_frames, info["width"] / 2.0)
         else:

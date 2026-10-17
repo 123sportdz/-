@@ -35,6 +35,37 @@ def _hold_fill(a):
     return a
 
 
+def _gap_fill(a, fps, max_gap_s=1.2):
+    """🎬 v1.67: استيفاء خطي للفجوات القصيرة فقط (≤ max_gap_s)، والحمل للفجوات الطويلة.
+    الحمل الصافي يصنع «هضبة ثم قفزة» عند حواف الفجوة ⇒ نقطة اهتزاز واضحة في الكاميرا
+    (ثاني مشتقة عالية). الاستيفاء الخطي على الفجوات القصيرة يملاها بحركة متّسقة،
+    والفجوات الطويلة تبقى حملًا لأن الاستقراء فوقها يرسم كرة وهمية (نفس سبب
+    `_series` في reel.py بحد أقصى للفجوة)."""
+    a = np.asarray(a, float).copy()
+    bad = np.isnan(a)
+    if not bad.any():
+        return a
+    n = len(a)
+    max_run = max(1, int(round(max_gap_s * max(1e-6, fps))))
+    i = 0
+    while i < n:
+        if not bad[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and bad[j]:
+            j += 1
+        run = j - i
+        if run <= max_run and i > 0 and j < n:
+            a0, a1 = a[i - 1], a[j]
+            for k in range(i, j):
+                w = (k - i + 1) / (run + 1)
+                a[k] = a0 + (a1 - a0) * w
+        i = j
+    # الفجوات الطويلة وعند الأطراف: حمل كما كان — بلا كرة وهمية
+    return _hold_fill(a)
+
+
 def one_euro(x, fps, min_cutoff=1.1, beta=0.035, d_cutoff=1.0):
     """مرشّح One Euro: تنعيم قوي عند الحركة البطيئة، استجابة عالية عند السريعة."""
     x = np.asarray(x, float)
@@ -525,7 +556,7 @@ def template_bridge(video, trk, fps, W, H, max_gap=2.2, search=(90, 60), thresh=
 
 # ---------------------------------------------------------------- 5) الكاميرا
 def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.0, amax=3400.0,
-                      half=None, W=None, H=None, half_v=None):
+                      half=None, W=None, H=None, half_v=None, deadzone_v=60.0):
     """كاميرا بثّ: تسبق الهدف بـlead، تنعيم One Euro، منطقة ميتة، وحدود فيزيائية.
     يرجّع (cam_x, cam_y) لكل فريم.
     ⚙️ v1.44: رُفع سقف السرعة/التسارع (245/560 ← 1200/3400 بكسل/ث). السقف القديم كان
@@ -533,17 +564,19 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
     انحراف 30.4% ← 15.7% على هجمة حقيقية) والهدوء بقي نفسه في اللعب البطيء
     (المنطقة الميتة + One Euro يحكمان، والاهتزاز انخفض فعلاً 1.61 ← 0.97px)."""
     n = len(bx)
-    x = _hold_fill(np.asarray(bx, float).copy())
-    y = _hold_fill(np.asarray(by, float).copy()) if by is not None else None
+    x = np.asarray(bx, float).copy()
+    y = np.asarray(by, float).copy() if by is not None else None
     if np.all(np.isnan(x)):
         return np.full(n, np.nan), (np.full(n, np.nan) if y is not None else None)
-    x[np.isnan(x)] = np.nanmean(x)
+    # 🎬 v1.67: استيفاء خطي للفجوات القصيرة بدل الحمل الصافي — يقتل هضبة/قفزة
+    # عند حواف الفجوة ويخفض اهتزاز الكاميرا قياسًا.
+    x = _gap_fill(x, fps)
     if y is not None:
         # 🛡️ v1.49: مسار y كله NaN (لا كرة أصلاً) كان يمرّر NaN ⇒ تعطيل التأطير الرأسي
         if np.all(np.isnan(y)):
             y = None
         else:
-            y[np.isnan(y)] = np.nanmean(y)
+            y = _gap_fill(y, fps)
     vx = savgol_vel(x, fps, 9)
     # 🎬 v1.45: قطع المشاهد تُنتج قفزة في x ⇒ savgol_vel يبلّغ سرعة وهمية (2450-3500px/s)
     # فتنطلق الكاميرا لحافة الإطار في بداية اللقطة الجديدة. نصفّر السرعة حول القطع.
@@ -580,14 +613,31 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
                     vy[lo:hi] = 0.0
             except Exception:
                 pass
-        cam_y = one_euro(y + lead * vy, fps, min_cutoff=0.9, beta=0.02)
+        ty = one_euro(y + lead * vy, fps, min_cutoff=0.9, beta=0.02)
+        # 🎬 v1.67: منطقة ميتة عمودية — الكاميرا لا تتحرك لأي اهتزاز رأسي صغير
+        # (اللاعب يقفز/الكرة ترتد قليلًا) وتتبع فقط الحركة الكبيرة، بنفس منطق المحور الأفقي.
+        if deadzone_v and deadzone_v > 0:
+            cam_y = np.empty(n); vel_y = 0.0
+            cam_y[0] = ty[0]
+            for i in range(1, n):
+                if i in cutset:
+                    cam_y[i] = ty[i]; vel_y = 0.0; continue
+                dy = ty[i] - cam_y[i - 1]
+                dy_eff = dy - np.clip(dy, -deadzone_v, deadzone_v)
+                des_y = np.clip(2.4 * dy_eff, -vmax, vmax)
+                vel_y += np.clip(des_y - vel_y, -amax * dt, amax * dt)
+                cam_y[i] = cam_y[i - 1] + vel_y * dt
+        else:
+            cam_y = ty
         if half_v is not None and H:
             cam_y = np.clip(cam_y, half_v, H - half_v)      # حدود الإطار العمودي
     return cam, cam_y
 
 
-def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None):
-    """تقريب درامي حسب سرعة الكرة (punch-in ناعم)."""
+def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None, cuts=()):
+    """تقريب درامي حسب سرعة الكرة (punch-in ناعم).
+    🎬 v1.67: `cuts` — سرعة وهمية حول القطع كانت تُطلق punch-in مفاجئاً عند بداية
+    اللقطة الجديدة؛ نصفّر معدّل التقريب حول كل قطع كي يبدأ التقريب من القاعدة."""
     s = np.asarray(speed_px, float)
     if ref is None:
         ref = np.nanpercentile(s, 88) if np.any(np.isfinite(s)) else 0.0
@@ -596,7 +646,36 @@ def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None):
     r = np.clip(s / (ref * 1.6), 0.0, 1.0)
     r = _hold_fill(np.where(np.isfinite(r), r, 0.0))
     z = base + (maxz - base) * r
-    return one_euro(z, fps, min_cutoff=0.5, beta=0.01)
+    z = one_euro(z, fps, min_cutoff=0.5, beta=0.01)
+    # 🎬 v1.67: بعد التنعيم نُثبّت التقريب على القاعدة حول كل قطع — سرعة وهمية عبر
+    # القطع كانت تُطلق punch-in مفاجئاً في أول لقطة جديدة (نفس منطق تصفير vx).
+    n = len(s)
+    if cuts:
+        try:
+            for c in [int(c) for c in cuts if 0 <= int(c) < n]:
+                lo, hi = max(0, c - 5), min(n, c + 6)
+                z[lo:hi] = base
+        except Exception:
+            pass
+    return z
+
+
+def frame_miss_pct(bx, by, cam, cam_y=None, half_w=None, half_h=None):
+    """🎯 v1.67: نسبة الفريمات التي تكون فيها الكرة **خارج كادر الكاميرا**.
+    أهم مقياس جودة تأطير من وجهة نظر المشاهد: كل فريم خارجه = كرة مفقودة.
+    يُحسب فقط حيث يوجد موقع حقيقي للكرة (NaN لا يُحسب ضدها)."""
+    x = np.asarray(bx, float); c = np.asarray(cam, float)
+    m = np.isfinite(x) & np.isfinite(c)
+    if half_w is None or not m.any():
+        return 0.0
+    miss = np.zeros(len(x), bool)
+    miss[m] = np.abs(x[m] - c[m]) > float(half_w)
+    if by is not None and cam_y is not None and half_h is not None:
+        y = np.asarray(by, float); cy = np.asarray(cam_y, float)
+        my = m & np.isfinite(y) & np.isfinite(cy)
+        if my.any():
+            miss[my] |= np.abs(y[my] - cy[my]) > float(half_h)
+    return float(miss[m].mean() * 100)
 
 
 # ---------------------------------------------------------------- 6) تقرير QA
@@ -625,7 +704,7 @@ def to_grid(trk, rate, duration=None, t0=0.0):
     return out
 
 
-def qa_report(trk, cam, fps, rejected, bridged=0):
+def qa_report(trk, cam, fps, rejected, bridged=0, cam_y=None, half_w=None, half_h=None):
     x = trk["x"]; n = len(x)
     ok = ~np.isnan(x)
     gaps = []
@@ -640,6 +719,9 @@ def qa_report(trk, cam, fps, rejected, bridged=0):
         gaps.append(run)
     camc = cam[~np.isnan(cam)]
     jitter = float(np.mean(np.abs(np.diff(camc, 2)))) if len(camc) > 2 else 0.0
+    miss = frame_miss_pct(trk.get("x"), trk.get("y"), cam, cam_y=cam_y,
+                          half_w=half_w, half_h=half_h) if half_w is not None else 0.0
     return dict(coverage=float(ok.mean() * 100), longest_gap=(max(gaps) / fps if gaps else 0.0),
                 jitter_px=jitter, rejected=len(rejected), bridged=int(bridged),
+                frame_miss_pct=miss,
                 n=int(n))
