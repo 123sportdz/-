@@ -6,6 +6,7 @@
 ---
 
 > 🚀 **مستعجل؟** راجع **[QUICKSTART.md](QUICKSTART.md)** — دليل مختصر خطوة بخطوة.
+> 🧭 **نقطة استئناف العمل:** راجع **[PROJECT_STATUS_AR.md](PROJECT_STATUS_AR.md)** لمعرفة ما أُنجز وما تبقى وخطوات الجلسة القادمة.
 > 🆕 **تنصيب وتشغيل تلقائي بالكامل:**
 > - الأسرع (عندك `uv`؟): `bootstrap.bat` ← يجلب Python 3.12 بنفسه + CUDA، ثم `start.bat`.
 > - ويندوز: `install.bat` ← يختار Python المتوافق + ينصّب CUDA تلقائياً لو عندك RTX، ثم `start.bat`.
