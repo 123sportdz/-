@@ -244,7 +244,7 @@ class YouTubeUploader:
 
     def upload(self, path, title, description="", tags=(), privacy="private",
                category_id=CATEGORY_SPORTS, made_for_kids=False, publish_at=None,
-               expected_channel_id=None, thumbnail=None):
+               expected_channel_id=None, thumbnail=None, contains_synthetic_media=False):
         path = os.fspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"ملف الفيديو غير موجود: {path}")
@@ -262,7 +262,10 @@ class YouTubeUploader:
         body = {
             "snippet": {"title": title[:100], "description": description[:5000],
                         "tags": list(tags)[:30], "categoryId": category_id},
-            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids},
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids,
+                        # YouTube requires this disclosure for realistic altered/synthetic
+                        # content. Normal crops, subtitles and color grading do not imply it.
+                        "containsSyntheticMedia": bool(contains_synthetic_media)},
         }
         if publish_at:
             # يوتيوب يرفض publishAt إلا مع خصوصية private ⇒ HTTP 400 مضمون لو public

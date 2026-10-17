@@ -77,6 +77,20 @@ def test_upload_defaults_to_private_and_returns_video(tmp_path, monkeypatch):
 
     assert result["id"] == "abcdefghijk"
     assert videos.insert_kwargs["body"]["status"]["privacyStatus"] == "private"
+    assert videos.insert_kwargs["body"]["status"]["containsSyntheticMedia"] is False
+
+
+def test_upload_can_disclose_realistic_synthetic_media(tmp_path, monkeypatch):
+    install_google_stubs(monkeypatch)
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"video")
+    videos = FakeVideos({"id": "abcdefghijk"})
+    uploader = YouTubeUploader()
+    monkeypatch.setattr(uploader, "_service", lambda: FakeYouTube(videos))
+
+    uploader.upload(output, "Synthetic analysis", contains_synthetic_media=True)
+
+    assert videos.insert_kwargs["body"]["status"]["containsSyntheticMedia"] is True
 
 
 def test_upload_stops_on_expected_channel_mismatch(tmp_path, monkeypatch):

@@ -27,3 +27,28 @@ def test_rights_document_records_facts_without_claiming_legal_clearance(tmp_path
     assert "لا ترسل هذا النص كما هو" in text
     assert "لا تمنح بحد ذاتها ترخيصاً" in text
     assert "أطلب مراجعة المطالبة" not in text
+
+
+def test_youtube_rights_gate_rejects_unverified_public_publish():
+    result = rights.validate_youtube_publish({
+        "rights_basis": "unknown",
+        "source_reference": "match.mp4",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "rights_acknowledged": True,
+    }, privacy="public")
+    assert result["ok"] is False
+    assert any("أساس استخدام" in item for item in result["errors"])
+
+
+def test_youtube_rights_gate_accepts_reviewed_license():
+    result = rights.validate_youtube_publish({
+        "rights_basis": "licensed",
+        "source_reference": "https://example.test/source",
+        "evidence_reference": "license-2026-01.pdf",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "rights_acknowledged": True,
+    }, privacy="unlisted")
+    assert result["ok"] is True

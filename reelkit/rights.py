@@ -18,6 +18,16 @@ from datetime import datetime, timezone
 # عتبة "مقتطف قصير": 90 ثانية. فوقها لا نصف المقطع بأنه ليس بثّاً كاملاً.
 SHORT_CLIP_MAX_S = 90.0
 
+# أساس الاستخدام الذي يمكن للمستخدم توثيقه لنفسه. لا يعني اختيار أي قيمة أن
+# البرنامج أصدر حكماً قانونياً؛ الغرض هو منع النشر العام بلا مراجعة واعية.
+RIGHTS_BASES = {
+    "own": "أملك حقوق الصورة والصوت",
+    "licensed": "لدي ترخيص/عقد يغطي النشر على YouTube",
+    "permission": "لدي إذن مكتوب من صاحب الحقوق",
+    "public_domain": "المادة في الملك العام أو بترخيص يسمح بهذا الاستخدام",
+    "unknown": "غير متأكد — أحتاج مراجعة قبل النشر العام",
+}
+
 
 # --------------------------------------------------------------- قائمة الامتثال
 CHECKLIST = [
@@ -65,6 +75,49 @@ def score(present=None) -> int:
     total = sum(i["weight"] for i in CHECKLIST) or 1
     got = sum(i["weight"] for i in CHECKLIST if present.get(i["id"]))
     return int(round(got * 100 / total))
+
+
+def validate_youtube_publish(present=None, privacy="private") -> dict:
+    """تحقق تشغيلي قبل إرسال الفيديو إلى YouTube.
+
+    هذا ليس فحص ملكية ولا رأياً قانونياً. YouTube يفحص الصوت والصورة حتى في
+    الرفع الخاص؛ لذلك نطلب إقراراً واضحاً ومراجعاً للمصدر، ونمنع العام/غير
+    المدرج عندما لا يوجد أساس استخدام موثق. الرفع الخاص يبقى متاحاً للمراجعة
+    فقط مع تنبيه أن Content ID قد يضع مطالبة عليه.
+    """
+    p = present or {}
+    privacy = str(privacy or "private").strip().lower()
+    basis = str(p.get("rights_basis") or "unknown").strip().lower()
+    source = _clean(p.get("source_reference"), 1000)
+    evidence = _clean(p.get("evidence_reference"), 1000)
+    errors = []
+    if privacy not in {"private", "unlisted", "public"}:
+        errors.append("خصوصية YouTube غير صالحة")
+    if not p.get("rights_acknowledged"):
+        errors.append("يجب تأكيد قراءة تنبيه حقوق النشر")
+    if not p.get("visual_rights_confirmed"):
+        errors.append("يجب مراجعة حقوق المحتوى المرئي")
+    if not p.get("audio_rights_confirmed"):
+        errors.append("يجب مراجعة حقوق الصوت/الموسيقى")
+    if not source:
+        errors.append("أدخل مصدر الصورة أو مرجعها للتتبّع")
+    if basis not in RIGHTS_BASES:
+        errors.append("اختر أساس استخدام واضحاً")
+    if basis in {"licensed", "permission"} and not evidence:
+        errors.append("أدخل مرجع الترخيص أو الإذن (رابط/مسار/رقم عقد)")
+    if privacy in {"public", "unlisted"} and basis in {"unknown", ""}:
+        errors.append("لا يمكن النشر العام أو غير المدرج دون أساس استخدام موثق")
+    if privacy in {"public", "unlisted"} and not p.get("evidence_reviewed"):
+        errors.append("يجب تأكيد مراجعة مستند أو مرجع الحقوق قبل النشر")
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "basis": RIGHTS_BASES.get(basis, basis),
+        "privacy": privacy,
+        "review_only": privacy == "private" and basis == "unknown",
+        "warning": ("الرفع الخاص لا يمنع Content ID؛ راجع YouTube Studio قبل تغيير الخصوصية."
+                    if privacy == "private" else "هذا الإقرار لا يلغي المطالبات ولا يثبت fair use."),
+    }
 
 
 def _clean(s, limit=4000):

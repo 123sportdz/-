@@ -1515,7 +1515,7 @@ def api_thumb(jid: str):
 def api_rights_checklist():
     """🛡️ عناصر توثيق اختيارية؛ لا تحدد الملكية أو الإذن ولا تمنع المطالبات."""
     from reelkit import rights as RT
-    return {"checklist": RT.checklist(), "disclaimer":
+    return {"checklist": RT.checklist(), "rights_bases": RT.RIGHTS_BASES, "disclaimer":
             "هذه العناصر لا تثبت ملكية المحتوى أو الإذن بإعادة نشره، ولا تضمن قبول اعتراض أو منع Content ID. احصل على ترخيص مكتوب وافحص القيود في YouTube Studio قبل النشر العام."}
 
 
@@ -1620,8 +1620,16 @@ def api_suggest(jid: str, payload: dict | None = None):
     _persist()
     return s
 
-def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None):
+def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     result = {}
+    rights = rights or {}
+    if "youtube" in targets:
+        from reelkit import rights as RT
+        gate = RT.validate_youtube_publish(rights, privacy=privacy)
+        if not gate["ok"]:
+            result["youtube"] = {"ok": False, "code": "rights_gate",
+                                  "error": " | ".join(gate["errors"]),
+                                  "details": gate}
     # 🔧 تحقق من صيغة الجدولة **قبل** أي رفع — كان strptime يعمل بعد رفع يوتيوب
     # فيُبلَّغ «فشل» رغم أن الفيديو صار على القناة فعلاً (v1.44).
     if publish_at:
@@ -1637,12 +1645,13 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None):
             result["telegram"] = {"ok": True, "message_id": r.get("message_id")}
         except Exception as e:
             result["telegram"] = {"ok": False, "error": str(e)}
-    if "youtube" in targets:
+    if "youtube" in targets and "youtube" not in result:
         try:
             from reelkit.publish.youtube import YouTubeUploader
             r = YouTubeUploader().upload(job["output"], title, desc, tags, privacy=privacy,
                                          publish_at=publish_at,
-                                         expected_channel_id=CFG.get("youtube_channel_id") or None)
+                                         expected_channel_id=CFG.get("youtube_channel_id") or None,
+                                         contains_synthetic_media=bool(rights.get("contains_synthetic_media")))
             item = {"ok": True, "id": r.get("id"), "url": f"https://youtu.be/{r.get('id')}"}
             if publish_at:
                 item["scheduled_for"] = publish_at
@@ -1652,6 +1661,14 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None):
         except Exception as e:
             result["youtube"] = {"ok": False, "error": str(e)}
     job.setdefault("publish", {}).update(result)
+    if "youtube" in targets:
+        job["rights_review"] = {
+            "basis": rights.get("rights_basis", "unknown"),
+            "source_reference": rights.get("source_reference", ""),
+            "evidence_reference": rights.get("evidence_reference", ""),
+            "contains_synthetic_media": bool(rights.get("contains_synthetic_media")),
+            "privacy": privacy,
+        }
     job.update(title=title, description=desc, tags=tags)
     _persist()
     return result
@@ -1666,6 +1683,14 @@ def api_publish(jid: str, payload: dict):
         raise HTTPException(400, "المقطع لسه ما خلص")
     targets = payload.get("targets", [])
     privacy = payload.get("privacy", CFG.get("youtube_privacy", "private"))
+    rights = payload.get("rights") or {}
+    if "youtube" in targets:
+        from reelkit import rights as RT
+        gate = RT.validate_youtube_publish(rights, privacy=privacy)
+        if not gate["ok"]:
+            return {"youtube": {"ok": False, "code": "rights_gate",
+                                 "error": " | ".join(gate["errors"]),
+                                 "details": gate}}
     publish_at = None
     mode = str(payload.get("schedule") or ("peak" if CFG.get("schedule_peak") else "now"))
     if mode == "peak" and "youtube" in targets:
@@ -1677,7 +1702,7 @@ def api_publish(jid: str, payload: dict):
     return _do_publish(job, targets,
                        payload.get("title") or job.get("title") or "مقطع رياضي",
                        payload.get("description", ""), payload.get("tags", []),
-                       privacy, publish_at=publish_at)
+                       privacy, publish_at=publish_at, rights=rights)
 
 def _logo_list():
     out = []
@@ -3735,7 +3760,7 @@ function openJob(id){
         <div class="acts">
           <button class="btn sec sm" onclick="sug('${j.id}')">✨ اقترح عنوان</button>
           <button class="btn sm" onclick="pub('${j.id}',['telegram'])">📤 تيليجرام</button>
-          <button class="btn sm" onclick="pub('${j.id}',['youtube'])">▶️ يوتيوب</button>
+          <button class="btn sm" onclick="pub('${j.id}',['youtube'])">▶️ مراجعة YouTube</button>
         </div>
         <div id="m_res"></div>
         <div class="warn">⚠️ رفع يوتيوب عبر API يبقى <b>private</b> حتى يجتاز مشروعك تدقيق YouTube.</div>
@@ -3764,15 +3789,37 @@ async function sug(id){
   $("m_res").innerHTML=`<div class="warn">OCR: <span style="direction:ltr;display:inline-block">${esc((r.raw_ocr||"—").slice(0,80))}</span></div>`;
 }
 async function pub(id,targets){
+  if(targets.includes("youtube")){
+    $("m_res").innerHTML=`<div class="warn" style="border-color:#c59b45">
+      <b>🛡️ بوابة حقوق الصورة والصوت</b>
+      <p style="margin:6px 0">YouTube يفحص الصوت والصورة آلياً. القص أو الشعار أو الإسناد لا يمنح ترخيصاً ولا يضمن إزالة المطالبة.</p>
+      <div class="mgrid" style="margin-top:8px"><div><label>وضع الرفع</label><select id="pub_privacy">
+        <option value="private">خاص — مراجعة أولية (موصى به)</option><option value="unlisted">غير مدرج — بعد مراجعة الحقوق</option><option value="public">عام — بعد توثيق الحقوق</option></select></div>
+        <div><label>أساس استخدام المحتوى</label><select id="rights_basis">
+          <option value="unknown">غير متأكد / يحتاج مراجعة</option><option value="own">أملك حقوق الصورة والصوت</option><option value="licensed">لدي ترخيص يغطي YouTube</option><option value="permission">لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain">ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
+      <label>مصدر الصورة أو مرجعها</label><input id="rights_source" placeholder="رابط المصدر أو اسم الملف/المباراة">
+      <label>مرجع الترخيص أو الإذن (إن وجد)</label><input id="rights_evidence" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
+      <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_visual"> راجعت حق استخدام المحتوى المرئي</label>
+      <label style="display:block"><input type="checkbox" id="rights_audio"> راجعت حق استخدام الصوت والموسيقى</label>
+      <label style="display:block"><input type="checkbox" id="rights_reviewed"> راجعت مستند/مرجع الحقوق قبل النشر</label>
+      <label style="display:block"><input type="checkbox" id="rights_synthetic"> يحتوي الفيديو على تغيير واقعي أو توليد اصطناعي قد يضلل المشاهد</label>
+      <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_ack"> قرأت التنبيه: هذا لا يثبت الملكية ولا يقرر fair use ولا يمنع Content ID</label>
+      <div class="acts" style="margin-top:10px"><button class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)})">متابعة الرفع بعد المراجعة</button> <a class="btn gray sm" href="https://studio.youtube.com" target="_blank">فتح YouTube Studio</a></div></div>`;
+    return;
+  }
+  await submitPub(id,targets);
+}
+async function submitPub(id,targets){
+  const rights={rights_basis:$("rights_basis")?.value||"unknown",source_reference:$("rights_source")?.value||"",evidence_reference:$("rights_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
   const body={targets,title:$("m_title").value,description:$("m_desc").value,
-    tags:$("m_tags").value.split(",").map(s=>s.trim()).filter(Boolean)};
-  $("m_res").innerHTML='<div class="warn"><span class="spin"></span> جاري النشر…</div>';
+    tags:$("m_tags").value.split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
+  $("m_res").innerHTML='<div class="warn"><span class="spin"></span> جاري الرفع بعد فحص الحقوق…</div>';
   const r=await (await fetch(`/api/jobs/${id}/publish`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
   $("m_res").innerHTML=Object.entries(r).map(([k,v])=>v.ok
     ? `<div class="warn" style="border-color:#1d5c3e;color:#9fe8c4">✅ ${k}: تم ${v.url?`— <a href="${v.url}" target="_blank">${v.url}</a>`:""}</div>`
     : `<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${k}: ${esc(v.error)}</div>`).join("");
-  toast("انتهت عملية النشر","ok");poll();
+  toast("انتهت عملية النشر أو المراجعة","ok");poll();
 }
 
 /* ---------- settings ---------- */
