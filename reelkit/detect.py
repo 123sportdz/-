@@ -7,11 +7,7 @@ v1.39 — دعم احترافي لكروت الرسومات (RTX):
   * شفاء ذاتي من امتلاء الذاكرة (OOM): نصفّي الدفعة ونكمل.
   * CPU يبقى على المسار المتسلسل القديم (الدفعات لا تفيده).
 """
-import numpy as np, os, warnings as _warnings
-
-# ultralytics 8.4+ تطبع تحذير إهمال عن معامل half في كل استدعاء — نسكته مرة واحدة
-_warnings.filterwarnings("ignore", message=".*half.*deprecated.*")
-_warnings.filterwarnings("ignore", message=".*'half' is deprecated.*")
+import numpy as np, os, re
 
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BALL_MODEL = os.path.join(PKG_ROOT, "models", "ball_detector.pt")
@@ -53,6 +49,41 @@ def pick_device(device=None):
     if dev.isdigit() or dev.startswith("cuda"):
         return (dev, cuda_ok, gpu_name)
     return (dev, False, "")
+
+
+def device_report(device=None):    return (dev, False, "")
+
+
+def precision_kwargs(enabled, version=None):
+    if not enabled:
+        return {}
+    if version is None:
+        try:
+            from ultralytics import __version__ as version
+        except Exception:
+            version = "0"
+    match = re.match(r"^(\d+)\.(\d+)", str(version).strip())
+    if not match:
+        return {"half": True}
+    major, minor = map(int, match.groups())
+    return {"quantize": 16} if (major, minor) >= (8, 4) else {"half": True}
+
+
+def release_gpu_memory():
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        return True
+    except Exception:
+        return False
 
 
 def device_report(device=None):
@@ -109,8 +140,8 @@ class BallDetector:
         self.conf, self.imgsz = conf, imgsz
         self.device, self.is_cuda, self.gpu_name = pick_device(device)
         self.tile, self.overlap, self.tta = int(tile or 0), overlap, bool(tta)
-        # FP16 على CUDA افتراضياً (يُطفأ بـ half=False صراحةً)
         self.half = bool(self.is_cuda) if half is None else bool(half)
+        self.precision = precision_kwargs(self.half)
         # حجم الدفعة: 0 = تلقائي (8 على GPU — يكفي لإشباع RTX 3060 حتى مع التقطيع، 1 على CPU)
         self.batch = int(batch or 0) or (8 if self.is_cuda else 1)
         self._warmed = False
@@ -122,8 +153,7 @@ class BallDetector:
             return []
         kw = dict(imgsz=self.imgsz, conf=self.conf, iou=0.5, device=self.device,
                   augment=self.tta, batch=len(imgs), verbose=False)
-        if self.half:
-            kw["half"] = True            # نمرّرها فقط عند التفعيل (تفادي تحذير الإهمال)
+        kw.update(self.precision)
         try:
             return self.model.predict(imgs, **kw)
         except Exception as e:
@@ -133,8 +163,10 @@ class BallDetector:
                 mid = len(imgs) // 2
                 return self._predict_batch(imgs[:mid]) + self._predict_batch(imgs[mid:])
             if "out of memory" in msg and not self.half:
-                self.half = True                       # فعّل FP16 كملاذ أخير
-                kw["half"] = True; kw["batch"] = 1
+                self.half = True
+                self.precision = precision_kwargs(True)
+                kw.update(self.precision)
+                kw["batch"] = 1
                 return self.model.predict(imgs, **kw)
             raise
 
@@ -171,11 +203,13 @@ class BallDetector:
         keep = _nms(boxes, scores) if len(boxes) > 1 else range(len(boxes))
         return [(*boxes[i], scores[i]) for i in keep]
 
-    def scan(self, video_path, rate=15.0, fps=None, progress=None):
+    def scan(self, video_path, rate=15.0, fps=None, progress=None, t0=0.0, t1=None):
         """returns Nx6 array (t, x, y, bw, bh, conf) sampled at `rate` Hz.
 
         على GPU: يقرأ الفريمات المطلوبة ويرسلها **دفعات** (مع تفكيك القطع داخل الدفعة)
         فيشتغل الـGPU بكامل طاقته بدل انتظار صورة-صورة.
+        t0/t1: نافذة زمنية اختيارية (ثوانٍ، على خط زمن المصدر) — للكشّاف السريع
+        على مقاطع مرشّحة بدل فكّ المباراة كاملة.
         """
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -183,6 +217,9 @@ class BallDetector:
         step = max(1, int(round(fps / rate)))
         n = 0; out = []
         pend = []                                       # [(t, frame)] بانتظار الدفعة
+        if t0 and t0 > 0:
+            cap.set(cv2.CAP_PROP_POS_MSEC, float(t0) * 1000.0)
+            n = int(round(float(t0) * fps))             # الأزمنة تبقى على خط زمن المصدر
 
         def flush():
             if not pend:
@@ -222,6 +259,8 @@ class BallDetector:
                 if n % step:
                     continue
                 t = n / fps
+                if t1 is not None and t > float(t1):
+                    break                               # نهاية نافذة الكشّاف
                 if self.batch <= 1:
                     # المسار المتسلسل (CPU) — كما كان
                     if not self._warmed:
@@ -250,6 +289,7 @@ class PersonDetector:
         self.conf, self.imgsz = conf, imgsz
         self.device, self.is_cuda, _ = pick_device(device)
         self.half = bool(self.is_cuda)
+        self.precision = precision_kwargs(self.half)
         self.batch = int(batch or 0) or (8 if self.is_cuda else 1)
 
     def _predict_batch(self, imgs):
@@ -257,8 +297,7 @@ class PersonDetector:
             return []
         kw = dict(imgsz=self.imgsz, conf=self.conf, classes=[0], device=self.device,
                   batch=len(imgs), verbose=False)
-        if self.half:
-            kw["half"] = True
+        kw.update(self.precision)
         try:
             return self.model.predict(imgs, **kw)
         except Exception as e:

@@ -14,7 +14,19 @@ reelkit/publish/token.json
 reelkit/publish/oauth_pending.json
 font_warnings.log
 *.log
+.zo-bridge-state/
+.browser-bridge-state/
 .DS_Store
 # keep logo library dir but not uploaded logos
 logo_library/*
 !logo_library/.gitkeep
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/

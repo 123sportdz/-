@@ -21,7 +21,10 @@ API = "https://api.telegram.org"
 
 
 def _get(url, timeout=30, retries=3):
-    """GET مع إعادة محاولة (شبكات المشغّلين/الكاش الوسيط تتذبذب)."""
+    """GET مع إعادة محاولة (شبكات المشغّلين/الكاش الوسيط تتذبذب).
+    لا نعيد المحاولة على أخطاء العميل 4xx — لن تُصلحها إعادة، وكانت تكلّف
+    3 طلبات + ~4 ثوانٍ تأخير بلا فائدة (قناة غير موجودة مثلاً)."""
+    import urllib.error
     last = None
     for i in range(max(1, retries)):
         try:
@@ -31,6 +34,12 @@ def _get(url, timeout=30, retries=3):
                 "Accept-Language": "ar,en;q=0.8"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500:
+                raise
+            last = e
+            if i < retries - 1:
+                time.sleep(1.2 * (2 ** i))
         except Exception as e:
             last = e
             if i < retries - 1:
@@ -39,21 +48,52 @@ def _get(url, timeout=30, retries=3):
 
 
 def _post_multipart(url, fields, file_field, file_path, timeout=300):
+    """رفع متدفق عبر http.client — كان يقرأ الفيديو كاملاً في الذاكرة (حتى 50MB+)
+    وكان رفض HTTP يضيّع رسالة تلغرام الواصفة («الملف أكبر من 50MB» مثلاً)."""
+    import http.client
     boundary = "----reelkit" + os.urandom(12).hex()
-    parts = []
-    for k, v in fields.items():
-        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
+    head = b"".join(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
+        for k, v in fields.items())
     name = os.path.basename(file_path)
-    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
-                 f"filename=\"{name}\"\r\nContent-Type: video/mp4\r\n\r\n".encode())
-    head = b"".join(parts)
+    head += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+             f"filename=\"{name}\"\r\nContent-Type: video/mp4\r\n\r\n").encode()
     tail = f"\r\n--{boundary}--\r\n".encode()
-    data = head + open(file_path, "rb").read() + tail
-    req = urllib.request.Request(url, data=data, headers={
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Content-Length": str(len(data))})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    fsize = os.path.getsize(file_path)
+    u = urllib.parse.urlparse(url)
+    # HTTP vs HTTPS حسب المخطط: كان مثبّتاً على HTTPSConnection فيفشل مع
+    # سيرفر Bot API محلي (TELEGRAM_API على http) — شائع للتشغيل بلا حدود حجم.
+    if u.scheme == "http":
+        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    else:
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
+    resp = None
+    try:
+        conn.putrequest("POST", u.path + ("?" + u.query if u.query else ""))
+        conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+        conn.putheader("Content-Length", str(len(head) + fsize + len(tail)))
+        conn.endheaders()
+        conn.send(head)
+        with open(file_path, "rb") as fh:
+            while True:
+                chunk = fh.read(1 << 16)
+                if not chunk:
+                    break
+                conn.send(chunk)
+        conn.send(tail)
+        resp = conn.getresponse()
+        body = resp.read()
+    finally:
+        conn.close()
+    if resp is None or resp.status >= 400:
+        desc = ""
+        try:
+            desc = (json.loads(body) or {}).get("description") or ""
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"telegram HTTP {getattr(resp, 'status', '?')}: {desc or body[:200]!r}")
+    return json.loads(body)
 
 
 class TelegramBot:
@@ -66,6 +106,16 @@ class TelegramBot:
         if not chat_id:
             raise ValueError("chat_id is required")
         caption = (caption or "")[:1024]      # حد Bot API للكابشن 1024 حرف — الزيادة ترجع 400
+        # حد Bot API الرسمي 50MB (سيرفر محلي يرفعه لـ2GB عبر TELEGRAM_MAX_MB)
+        try:
+            limit_mb = int(os.environ.get("TELEGRAM_MAX_MB", "49"))
+        except ValueError:
+            limit_mb = 49
+        size_mb = os.path.getsize(path) / 1e6
+        if size_mb > limit_mb:
+            raise RuntimeError(
+                f"الفيديو {size_mb:.0f}MB أكبر من حد بوت تيليجرام ({limit_mb}MB) — "
+                f"ارفع crf/قلّص المدة، أو استخدم النشر بحساب المستخدم (2GB)")
         res = _post_multipart(f"{API}/bot{self.token}/sendVideo",
                               {"chat_id": chat_id, "caption": caption,
                                "supports_streaming": str(supports_streaming).lower()},
@@ -76,17 +126,25 @@ class TelegramBot:
 
     def send_message(self, text, chat_id=None, disable_web_page_preview=True):
         chat_id = chat_id or self.chat_id
+        if not chat_id:
+            raise ValueError("chat_id is required")     # كان يرسل chat_id=None حرفياً
         text = (text or "")[:4096]            # حد Bot API للنص 4096 حرف
         q = urllib.parse.urlencode({"chat_id": chat_id, "text": text,
                                     "disable_web_page_preview": str(disable_web_page_preview).lower()})
-        return json.loads(_get(f"{API}/bot{self.token}/sendMessage?{q}"))
+        res = json.loads(_get(f"{API}/bot{self.token}/sendMessage?{q}"))
+        if not res.get("ok"):
+            raise RuntimeError(f"telegram error: {res.get('description') or res}")
+        return res["result"]
 
     def get_updates(self, offset=None, limit=20):
         q = {"limit": limit}
         if offset is not None:
             q["offset"] = offset
-        return json.loads(_get(f"{API}/bot{self.token}/getUpdates?"
-                               + urllib.parse.urlencode(q)))["result"]
+        res = json.loads(_get(f"{API}/bot{self.token}/getUpdates?"
+                              + urllib.parse.urlencode(q)))
+        if not res.get("ok"):                  # كان يرمي KeyError خاماً عند رد خطأ
+            raise RuntimeError(f"telegram error: {res.get('description') or res}")
+        return res["result"]
 
 
 class ChannelFeed:
@@ -177,6 +235,18 @@ class ChannelFeed:
         """روابط فيديو **هذه الرسالة فقط** من صفحة الرسالة المفردة."""
         return list((self._page_map(self._post_html(mid)).get(int(mid)) or {}).get("videos") or [])
 
+    def _msg_slice(self, h, mid):
+        """مقطع HTML الخاص بالرسالة وحدها: من مرساتها إلى مرساة الرسالة التالية.
+        الصفحة المفردة تعرض الرسائل المجاورة — وأخذ نص «آخر بلوك» كان ينسب
+        نص رسالة أخرى لهذه الرسالة (عنوان/كابشن لفيديو مختلف!)."""
+        posts = [(m.start(), int(m.group(1))) for m in
+                 re.finditer(r'data-post="[^/]+/(\d+)"', h)]
+        for i, (pos, pid) in enumerate(posts):
+            if pid == int(mid):
+                end = posts[i + 1][0] if i + 1 < len(posts) else len(h)
+                return h[pos:end]
+        return ""
+
     def post_meta(self, mid):
         """(روابط الفيديو, نص الرسالة, المدة) من صفحة الرسالة المفردة — **لهذه الرسالة فقط**."""
         h = self._post_html(mid)
@@ -185,7 +255,8 @@ class ChannelFeed:
         mp = self._page_map(h).get(int(mid)) or {}
         vids = list(mp.get("videos") or [])
         dur = mp.get("duration") or ""
-        body = h.split('tgme_widget_message_text')[-1] if 'tgme_widget_message_text' in h else ""
+        seg = self._msg_slice(h, mid)
+        body = seg.split('tgme_widget_message_text')[-1] if 'tgme_widget_message_text' in seg else ""
         if body:
             body = re.sub(r"<br\s*/?>", "\n", body.split("</div>")[0])
             body = re.sub(r"<[^>]+>", "", body)
@@ -194,7 +265,7 @@ class ChannelFeed:
             body = re.sub(r"This media is not supported[^\n]*", " ", body)
             body = re.sub(r"\s{2,}", " ", body).strip(" .|،>")
             if self.channel:
-                body = re.sub(self.channel, " ", body, flags=re.I)
+                body = re.sub(re.escape(self.channel), " ", body, flags=re.I)
         return vids, body, dur
 
     def _parse(self, html):
@@ -207,6 +278,7 @@ class ChannelFeed:
             body = chunk[1].split("tgme_widget_message_wrap")[0]
             vids = re.findall(r'<video[^>]+src="([^"]+)"', body) or \
                    re.findall(r'<source[^>]+src="([^"]+)"', body)
+            vids = [_html.unescape(v) for v in vids]   # &amp; في الرابط يكسر التنزيل
             text = re.sub(r"<br\s*/?>", "\n", body)
             text = re.sub(r'data-view="[^"]*"', " ", text)
             text = re.sub(r"<[^>]+>", "", text)
@@ -219,7 +291,7 @@ class ChannelFeed:
             text = re.sub(r"[❤🔥👍😂🤬👏😮🤍🎯]{1,2}\s*\d+", " ", text)
             text = unquote(text).replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", '"')
             if self.channel:
-                text = re.sub(self.channel, " ", text, flags=re.I)
+                text = re.sub(re.escape(self.channel), " ", text, flags=re.I)
             text = re.sub(r"\b\d{1,2}:\d{2}\b", " ", text)
             text = re.sub(r"\s{2,}", " ", text).strip(" .|،>")
             is_vid = bool(vids) or bool(self.VIDEO_HINT.search(body)) or \
@@ -335,9 +407,11 @@ class ChannelFeed:
             h = _get(url).decode("utf-8", "ignore")
             vids = re.findall(r'<video[^>]+src="([^"]+)"', h) or \
                    re.findall(r'<source[^>]+src="([^"]+)"', h)
+            vids = [_html.unescape(v) for v in vids]
             if vids:
                 return dict(message_id=mid, text=(p or {}).get("text", ""),
-                            video=vids[0], url=f"https://t.me/{self.channel}/{mid}")
+                            video=vids[0], videos=vids, is_video=True, duration="",
+                            url=f"https://t.me/{self.channel}/{mid}")
         except Exception:
             pass
         if p:
@@ -349,13 +423,17 @@ class ChannelFeed:
             f"اسحبه على صندوق «مقطع جديد» في اللوحة.")
 
     def download(self, url, dest, progress=None):
-        """Stream a t.me video URL to dest. يقبل رابطاً أو قائمة روابط (يجرّبها بالترتيب)."""
+        """Stream a t.me video URL to dest. يقبل رابطاً أو قائمة روابط (يجرّبها بالترتيب).
+        ينزّل إلى ‎.part ثم ينقل ذرّياً (ملف جزئي كان يبقى في dest بعد الفشل)،
+        ويتحقق من Content-Length: عتبة «>20000 بايت» القديمة كانت ترفض مقطعاً
+        صغيراً سليماً وتقبل ملفاً مقطوعاً كبيراً."""
         urls = url if isinstance(url, (list, tuple)) else [url]
         last = None
         for u in urls:
+            part = dest + ".part"
             try:
                 req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+                with urllib.request.urlopen(req, timeout=120) as r, open(part, "wb") as f:
                     total = int(r.headers.get("Content-Length") or 0)
                     done = 0
                     while True:
@@ -365,10 +443,18 @@ class ChannelFeed:
                         f.write(chunk); done += len(chunk)
                         if progress and total:
                             progress(done / total)
-                if os.path.exists(dest) and os.path.getsize(dest) > 20000:
-                    return dest
+                if total and done < total:
+                    raise RuntimeError(f"تنزيل ناقص: {done}/{total} بايت")
+                if not total and done <= 20000:
+                    raise RuntimeError(f"الملف المنزّل صغير ({done} بايت) بلا Content-Length")
+                os.replace(part, dest)
+                return dest
             except Exception as e:
                 last = e
+                try:
+                    os.unlink(part)
+                except OSError:
+                    pass
                 continue
         if last:
             raise last
@@ -398,12 +484,18 @@ def fetch_post(channel_or_url, message_id=None):
         raise ValueError("رابط/قناة تيليجرام غير صالح")
     feed = ChannelFeed(chan)
     if mid:
-        p = feed.post(mid)
-        if p.get("video"):
-            return p
+        err = None
+        try:
+            p = feed.post(mid)
+            if p.get("video"):
+                return p
+        except Exception as e:
+            err = e                          # كان الرمي هنا يجعل حلقة latest الاحتياطية ميتة
         for q in feed.latest(limit=10):      # fallback: ابحث في آخر الرسائل
-            if q["message_id"] == mid:
+            if q["message_id"] == mid and q.get("video"):
                 return q
+        if err:
+            raise err
         raise RuntimeError(f"ما لقيت فيديو في الرسالة {mid}")
     posts = feed.latest(limit=1)
     if not posts:

@@ -5,7 +5,7 @@
   "telegram_chat": "",
   "telegram_channel": "",
   "youtube_privacy": "private",
-  "youtube_channel_id": "",
+  "youtube_channel_id": "UCTIN753Wd_5nxlOuHvuOhdg",
   "device": "",
   "batch": 0,
   "gemini_api_key": "",
@@ -43,9 +43,17 @@
   "automation_upload": "none",
   "automation_quality": "auto",
   "automation_layout": "single",
-  "automation_subject": "ball",
+  "automation_subject": "action",
   "automation_source": "telegram",
   "automation_folder": "watch",
   "min_transformative": 0,
-  "source_credit": ""
+  "source_credit": "",
+  "encoder": "auto",
+  "captions": "auto",
+  "goals": 0,
+  "goals_montage": false,
+  "bot_token": "",
+  "bot_allowed_chats": [],
+  "bot_notify": true,
+  "dashboard_url": "http://127.0.0.1:8000"
 }

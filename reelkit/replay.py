@@ -109,7 +109,7 @@ def _atempo_chain(rate):
 
 
 def add_replay(reel, out, t_key, workdir=None, slow=0.5, punch=1.12, pre=1.3, post=1.7,
-               badge_text="إعادة", crf=20, preset="medium", timeout=1200):
+               badge_text="إعادة", crf=20, preset="medium", timeout=1200, encoder="auto"):
     """يبني نسخة فيها إعادة بطيئة للحظة t_key. يرجّع مسار الملف الجديد أو None."""
     dur = _dur(reel)
     if dur <= 0:
@@ -167,8 +167,10 @@ def add_replay(reel, out, t_key, workdir=None, slow=0.5, punch=1.12, pre=1.3, po
         maps = ["-map", "[vout]", "-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
     else:
         maps = ["-map", "[vout]", "-an"]
+    from . import encode as ENC
+    _enc, _vargs = ENC.video_args(encoder, crf=crf, preset=preset)
     cmd = (["ffmpeg", "-v", "error", "-y", *inp, "-filter_complex", fc, *maps,
-            "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
+            *_vargs, "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", out])
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -178,6 +180,25 @@ def add_replay(reel, out, t_key, workdir=None, slow=0.5, punch=1.12, pre=1.3, po
         except OSError:
             pass
         return None
+    if (r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 20000) \
+            and ENC.should_retry_x264(_enc, getattr(r, "stderr", "")):
+        # v1.64: نفس شفاء الرندر — نفاد ذاكرة/تعذّر NVENC ⇒ إعادة واحدة على libx264
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        _enc, _vargs = ENC.video_args("cpu", crf=crf, preset=preset)
+        cmd = (["ffmpeg", "-v", "error", "-y", *inp, "-filter_complex", fc, *maps,
+                *_vargs, "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", out])
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+            return None
     if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 20000:
         try:
             os.unlink(out)               # نحذف المخرج الجزئي حتى لا يبقى في مجلد المخرجات

@@ -40,6 +40,11 @@ def load_state():
 def save_state(s):
     # 💾 كتابة ذرّية — انقطاع منتصف الكتابة كان يفسد state.json (تفقد كل السجل)
     try:
+        # سقف نمو: كان يتضخم مدخلاً لكل رسالة للأبد (حتى «skipped») — نبقي آخر 5000
+        if len(s) > 5000:
+            keep = sorted(s.items(), key=lambda kv: (kv[1] or {}).get("at", 0)
+                          if isinstance(kv[1], dict) else 0)[-5000:]
+            s.clear(); s.update(keep)
         tmp = STATE.with_suffix(".tmp")
         tmp.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, STATE)
@@ -95,12 +100,30 @@ def process(post, a, state):
     try:
         # مهلة سخية لكن محدودة — الطيار بلا مراقب، وعملية معلّقة كانت توقف كل الدورات القادمة.
         # (UTF-8 إجباري: سجلات reel.py عربية وكونسول ويندوز cp1256 يكسر القراءة)
+        # Popen بجلسة مستقلة: subprocess.run(timeout=) يقتل reel.py فقط ويترك ffmpeg
+        # يتيماً يتراكم عبر الدورات — kill_tree يقتل الشجرة كلها (ويندوز وPOSIX).
         env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-        r = subprocess.run(cmd, cwd=str(ROOT), timeout=7200, env=env)   # المخرجات مباشرة مثل السابق
-    except subprocess.TimeoutExpired:
-        print("     ⏱️ انتهت مهلة المعالجة (ساعتان) — تخطّى"); return None
-    if r.returncode != 0:
-        print("     فشلت المعالجة"); return None
+        from reelkit import ffio as FFIO
+        proc = FFIO.popen_session(cmd, cwd=str(ROOT), env=env)   # المخرجات مباشرة مثل السابق
+        try:
+            rc = proc.wait(timeout=7200)
+        except subprocess.TimeoutExpired:
+            FFIO.kill_tree(proc)
+            rc = None
+    except subprocess.TimeoutExpired:        # احتياط إضافي (لا يُفترض الوصول إليه)
+        rc = None
+    # ⛔ سجّل الفشل في الحالة: بلا هذا لا يُكتب state[key] فتعيد الدورة التالية
+    # تنزيل مئات الميغا ومعالجتها للمقطع الفاشل نفسه — كل فاصل، للأبد.
+    if rc is None:
+        print("     ⏱️ انتهت مهلة المعالجة (ساعتان) — تخطّى")
+        state[key] = {"error": "timeout", "retries": int((state.get(key) or {}).get("retries", 0)) + 1, "at": time.time()}
+        save_state(state)
+        return None
+    if rc != 0:
+        print("     فشلت المعالجة")
+        state[key] = {"error": f"exit {rc}", "retries": int((state.get(key) or {}).get("retries", 0)) + 1, "at": time.time()}
+        save_state(state)
+        return None
 
     brand = a.name or CFG.get("brand_name", "")
     cap = post.get("text", "")
@@ -151,9 +174,23 @@ def process(post, a, state):
     if a.upload in ("youtube", "both"):
         try:
             from reelkit.publish.youtube import YouTubeUploader
+            # 🕓 جدولة الذروة: بدل النشر الفوري في منتصف الليل، نحجز أقرب خانة ذروة
+            # (publishAt يرفعه خاصاً وينشره في الموعد — يوتيوب يتولى التوقيت)
+            publish_at = None
+            if getattr(a, "peak", False) or CFG.get("schedule_peak"):
+                try:
+                    from reelkit import schedule as SCH
+                    nxt = SCH.next_slot()
+                    publish_at = SCH.iso_utc(nxt)
+                    print(f"  🕓 مجدول لذروة: {SCH.describe(nxt)}")
+                except Exception as e:
+                    print(f"  ⚠️ الجدولة تعذّرت ({type(e).__name__}) — نشر فوري")
+            # publishAt يفرض privacy=private من جهة يوتيوب — نمرّرها صراحة بدل خطأ API
             r = YouTubeUploader().upload(str(out), title, s.get("description", ""), s.get("tags") or [],
-                                         privacy=CFG.get("youtube_privacy","private"),
-                                         expected_channel_id=CFG.get("youtube_channel_id") or None)
+                                         privacy=("private" if publish_at else
+                                                  CFG.get("youtube_privacy","private")),
+                                         expected_channel_id=CFG.get("youtube_channel_id") or None,
+                                         publish_at=publish_at)
             print(f"  ✓ يوتيوب: https://youtu.be/{r.get('id')}")
         except Exception as e:
             print(f"  ✗ يوتيوب: {e}")
@@ -167,7 +204,7 @@ def main():
     ap.add_argument("--interval", type=int, default=300, help="كل كم ثانية يفحص (0=مرة واحدة)")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--limit", type=int, default=5, help="كم رسالة أخيرة يفحص")
-    ap.add_argument("--subject", default="ball", choices=["ball","player","action"])
+    ap.add_argument("--subject", default="action", choices=["ball","player","action"])
     ap.add_argument("--name", default=""); ap.add_argument("--url", default="")
     ap.add_argument("--rate", type=float, default=15.0); ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--start"); ap.add_argument("--end")
@@ -182,6 +219,8 @@ def main():
     ap.add_argument("--no-ai", action="store_true", help="بلا Gemini (استخدم الكابشن/OCR فقط)")
     ap.add_argument("--min-transformative", type=int, default=0,
                     help="🛡️ ارفض النشر التلقائي إلا إذا بلغت الجاهزية التحوّلية هذا الحد (0=معطّل)")
+    ap.add_argument("--peak", action="store_true",
+                    help="🕓 جدولة النشر لأقرب ذروة مشاهدة بدل النشر الفوري (publishAt)")
     a = ap.parse_args()
     from reelkit.publish.telegram import parse_telegram_ref
     chan, _ = parse_telegram_ref(a.channel)     # يوحّد @name / رابط t.me لاسم قناة نظيف قبل بناء المسارات

@@ -152,6 +152,7 @@ def _find(cands, label, verify=True):
 
 _FONT_CACHE = {}
 _SAFE_CACHE = {}
+_TRUETYPE_CACHE = {}
 _WARNED = set()
 
 def _cache_put(cache, key, val, cap=1024):
@@ -159,6 +160,16 @@ def _cache_put(cache, key, val, cap=1024):
     if len(cache) >= cap:
         cache.clear()
     cache[key] = val
+
+def _tt(path, size):
+    """ImageFont.truetype مؤقتة بالذاكرة: التحميل من القرص كان يتكرر **لكل فريم**
+    في حلقة الرندر (شريط الهوية/الكابشن/الإسناد) — عشرات تحليلات TTF بالثانية."""
+    key = (path, int(size))
+    f = _TRUETYPE_CACHE.get(key)
+    if f is None:
+        f = ImageFont.truetype(path, int(size))
+        _cache_put(_TRUETYPE_CACHE, key, f, cap=64)
+    return f
 
 
 def _all_candidates(bold=True):
@@ -324,7 +335,7 @@ def measure_mixed(d, text, size, bold=True):
     if has_raqm():
         path, ready = resolve_text(text, bold)
         if path and ready == text and _arabic_pref(path):
-            font = ImageFont.truetype(path, int(size))
+            font = _tt(path, size)
             runs = _split_runs(text)
             kw = {"direction": "rtl"} if (runs and runs[0][1]) else {}
             try:
@@ -342,12 +353,15 @@ def _prep_mixed(d, text, size, bold=True):
         path, ready = resolve_run(rtext, bold=bold, rtl=rtl)
         if not path:
             continue
-        font = ImageFont.truetype(path, int(size))
+        font = _tt(path, size)
         kw = {"direction": "rtl"} if (rtl and has_raqm()) else {}
         try:
             w = d.textlength(ready, font=font, **kw)
         except TypeError:
-            w = d.textlength(ready, font=font)
+            try:
+                w = d.textlength(ready, font=font)
+            except Exception:                # الاحتياط نفسه كان غير محمي (Pillow قديمة)
+                w = font.getbbox(ready)[2]
         except Exception:
             w = font.getbbox(ready)[2]
         out.append((ready, font, w, rtl))
@@ -391,7 +405,7 @@ def draw_mixed(d, text, x_center, y_top, size=40, bold=True, fill=(255, 255, 255
     if has_raqm():
         path, ready = resolve_text(text, bold)
         if path and ready == text and _arabic_pref(path):
-            font = ImageFont.truetype(path, int(size))
+            font = _tt(path, size)
             kw = {"direction": "rtl"} if runs[0][1] else {}
             try:
                 w = d.textlength(text, font=font, **kw)
@@ -422,7 +436,7 @@ def draw_text(img, xy, text, size=40, bold=True, fill=(255, 255, 255, 255), anch
     path, ready = resolve_text(text, bold)
     if not path:
         return None
-    f = ImageFont.truetype(path, int(size))
+    f = _tt(path, size)
     d = ImageDraw.Draw(img)
     kw = {"anchor": anchor} if anchor else {}
     if has_raqm() and ready == text and _split_runs(text)[:1] and _split_runs(text)[0][1]:
@@ -440,7 +454,7 @@ def _font(size, bold=True):
     key = (size, bold)
     if key not in _FONT_CACHE:
         path = _find(_CANDIDATES_BOLD if bold else _CANDIDATES_REG, "bold" if bold else "regular")
-        _FONT_CACHE[key] = ImageFont.truetype(path, size)
+        _cache_put(_FONT_CACHE, key, ImageFont.truetype(path, size), cap=64)
     return _FONT_CACHE[key]
 
 
@@ -479,45 +493,75 @@ def ar(text):
     except ImportError:
         return text
 
-BRAND_Y = 0.76          # فوق منطقة أزرار يوتيوب شورتس (أسفل ~16% من الشاشة)
+BRAND_Y = 0.065
 
 
 def draw_brand(img_bgr, name="", url="", accent=(60, 60, 230), y=None, scale=1.0):
-    """شريط الهوية: لوحة + خط ملوّن + الاسم + الرابط.
-    كل مقطع بخطه (العربية بخط عربي واللاتينية بخط لاتيني) — بلا مربعات."""
+    """Compact top-right channel bug; source action stays visible."""
     H, W = img_bgr.shape[:2]
     if y is None:
         y = int(H * float(os.environ.get("REEL_BRAND_Y", BRAND_Y)))
+    scale = max(0.55, min(1.2, float(scale)))
+    margin = max(16, int(W * 0.035))
+    max_text_w = max(96, int(W * 0.42))
+    nd = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+
+    def fit(text, size, bold):
+        text = str(text or "").strip()
+        size = max(12, int(size))
+        while text:
+            prepared = _prep_mixed(nd, text, size, bold)
+            width = sum(part[2] for part in prepared)
+            if width <= max_text_w:
+                return text, prepared, width, size
+            if size > 12:
+                size = max(12, size - 2)
+            elif len(text) > 8:
+                text = text[:-2].rstrip() + "…"
+            else:
+                break
+        return "", [], 0, size
+
+    name, nm, name_w, ns = fit(name, 30 * scale, True)
+    url, um, url_w, us = fit(url, 16 * scale, False)
+    if not nm and not um:
+        return img_bgr
+
+    pad_x = max(12, int(W * 0.014))
+    pad_y = max(8, int(H * 0.006))
+    gap = max(2, int(H * 0.002)) if nm and um else 0
+    name_h = int(ns * 1.25) if nm else 0
+    url_h = int(us * 1.35) if um else 0
+    plate_h = pad_y * 2 + name_h + gap + url_h
+    accent_w = max(4, int(W * 0.004))
+    content_w = max(name_w, url_w)
+    plate_w = content_w + pad_x * 2 + accent_w + 12
+    right = W - margin
+    left = max(margin, right - plate_w)
+    top = max(margin, min(int(y), H - margin - plate_h))
+
     pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
     lay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(lay)
-    nd = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
-    ns, us = int(64 * scale), int(34 * scale)
-    nm = _prep_mixed(nd, name, ns, True) if name else []
-    um = _prep_mixed(nd, url, us, False) if url else []
-    w_name = sum(p[2] for p in nm)
-    w_url = sum(p[2] for p in um)
-    w = max(w_name, w_url, 160)
-    y_url = y + 20 + int(ns * 1.35)
-    cx = W // 2
-    plate_h = int(max(y_url + us * 1.5, y + 150) - (y - 24))
-    plate = Image.new("RGBA", (int(w) + 60, plate_h), (0, 0, 0, 0))
-    ImageDraw.Draw(plate).rounded_rectangle(
-        [0, 0, plate.size[0] - 1, plate.size[1] - 1], 26, fill=(0, 0, 0, 95))
-    lay.alpha_composite(plate, (cx - plate.size[0] // 2, y - 24))
-    d.rounded_rectangle([cx - w // 2 - 8, y - 16, cx + w // 2 + 8, y + 6], 6, fill=accent + (255,))
+    d.rounded_rectangle([left, top, right, top + plate_h], 16,
+                        fill=(7, 12, 18, 150), outline=(255, 255, 255, 42), width=1)
+    accent_right = right - pad_x // 2
+    accent_left = accent_right - accent_w
+    d.rounded_rectangle([accent_left, top + pad_y, accent_right, top + plate_h - pad_y],
+                        max(2, accent_w // 2), fill=accent + (255,))
+    text_right = accent_left - 10
     if nm:
-        _blit_mixed(d, nm, _split_runs(name)[0][1], cx, y + 20, (255, 255, 255, 255))
+        _blit_mixed(d, nm, _split_runs(name)[0][1], text_right - name_w, top + pad_y,
+                    (248, 250, 252, 255), align="left")
     if um:
-        _blit_mixed(d, um, _split_runs(url)[0][1], cx, y_url, (232, 232, 232, 225))
+        _blit_mixed(d, um, _split_runs(url)[0][1], text_right - url_w,
+                    top + pad_y + name_h + gap, (198, 210, 224, 235), align="left")
     out = Image.alpha_composite(pil, lay).convert("RGB")
     return cv2.cvtColor(np.array(out), cv2.COLOR_RGB2BGR)
 
 
 def source_credit(img_bgr, text, accent=(60, 60, 230), y=None, size=30, dim=0.72):
-    """🛡️ سطر إسناد المصدر (Attribution) — يُرسم فوق شريط الهوية.
-    جوهره: إظهار أن المادة أصلية لطرف ثالث وأن هذا العمل **تحويلي** (نقد/تحليل/تعليق)،
-    وهو ما يدعم اعتراضاً مشروعاً على مطالبة حقوق — لا يُلغي المطالبة بحد ذاته."""
+    """Draw a source label only; attribution does not grant permission or establish fair use."""
     H, W = img_bgr.shape[:2]
     if not str(text or "").strip():
         return img_bgr                       # نص فارغ/مسافات → لا نرسم مربعاً فارغاً
@@ -532,6 +576,9 @@ def source_credit(img_bgr, text, accent=(60, 60, 230), y=None, size=30, dim=0.72
     if measure_mixed(nd, text, sz, False) > W * 0.94:
         # النص أطول من العرض حتى بأصغر حجم — نقتطع بدل أن يفيض خارج الإطار
         text = text[:max(8, int(len(text) * W * 0.90 / max(1.0, measure_mixed(nd, text, sz, False))))] + "…"
+        # أعد الاقتطاع على القياس الفعلي: التقدير بالأحرف قد يبقي النص أعرض من اللوحة
+        while len(text) > 9 and measure_mixed(nd, text, sz, False) > W * 0.92:
+            text = text[:max(8, int(len(text) * 0.9) - 1)] + "…"
     w = min(measure_mixed(nd, text, sz, False), W * 0.94)
     if y is None:
         y = int(H * 0.72)
@@ -646,17 +693,115 @@ def goal_burst(canvas, t_rel, text="هدف!", accent=(40, 40, 240), y_frac=0.30)
     return cv2.cvtColor(np.array(out), cv2.COLOR_RGB2BGR)
 
 
-def ball_marker(canvas, pt, color=(0, 235, 255), r=17):
-    """حلقة حول الكرة الحالية — تجعلها واضحة فوراً للمشاهد."""
+_CAP_CACHE = {}
+
+
+def _blit_stroke(d, prepared, runs_rtl, x_center, y_top, fill, stroke, stroke_fill):
+    """نسخة _blit_mixed بحدّ خارجي (stroke) — تُبقي الكابشن مقروءاً فوق أي خلفية."""
+    if not prepared:
+        return 0
+    total = sum(p[2] for p in prepared)
+    cur = (x_center + total / 2) if runs_rtl else (x_center - total / 2)
+    for p in prepared:
+        ready, font, w = p[0], p[1], p[2]
+        rtl = p[3] if len(p) > 3 else False
+        if runs_rtl:
+            cur -= w; px = cur
+        else:
+            px = cur; cur += w
+        kw = {"direction": "rtl"} if (rtl and has_raqm()) else {}
+        try:
+            d.text((px, y_top), ready, font=font, fill=fill, anchor="la",
+                   stroke_width=stroke, stroke_fill=stroke_fill, **kw)
+        except TypeError:
+            d.text((px, y_top), ready, font=font, fill=fill, anchor="la",
+                   stroke_width=stroke, stroke_fill=stroke_fill)
+    return total
+
+
+def caption(canvas, words, cur=0, accent=(55, 57, 230), y=None, size=None):
+    """كابشن كلمة-بكلمة (ستايل الريلز الحديث): كلمات بيضاء بحدّ أسود، والكلمة
+    المنطوقة الآن أكبر قليلاً على حبّة بلون الهوية.
+
+    words: كلمات مقطع العرض الحالي (2-3) | cur: فهرس الكلمة المنطوقة.
+    يرجّع canvas معدّلاً (أو كما هو بلا نص)."""
+    words = [str(w) for w in (words or []) if str(w).strip()]
+    if not words:
+        return canvas
+    cur = max(0, min(int(cur or 0), len(words) - 1))
+    H, W = canvas.shape[:2]
+    size = int(size or max(34, round(W * 0.075)))
+    gap = max(12, int(size * 0.48))               # فجوة أوسع — الكلمة المنطوقة تُرسم أكبر
+    stroke = max(2, size // 15)
+    pop = int(round(size * 1.12))                 # الكلمة الحالية أكبر 12%
+    nd = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+
+    def _prep(word, sz):
+        key = (word, int(sz))
+        p = _CAP_CACHE.get(key)
+        if p is None:
+            p = _prep_mixed(nd, word, sz, True)
+            _cache_put(_CAP_CACHE, key, p, cap=220)
+        return p
+
+    preps = [_prep(w, size) for w in words]
+    widths = [sum(r[2] for r in p) for p in preps]
+    if not any(widths):
+        return canvas
+    total = sum(widths) + gap * (len(words) - 1)
+    # صغّر دفعة واحدة لو المقطع أوسع من الشاشة (بلا حلقة — حسم مباشر)
+    maxw = W * 0.90
+    if total > maxw and total > 0:
+        size = max(22, int(size * maxw / total))
+        pop = int(round(size * 1.12))
+        gap = max(10, int(size * 0.48))
+        stroke = max(2, size // 15)
+        preps = [_prep(w, size) for w in words]
+        widths = [sum(r[2] for r in p) for p in preps]
+        total = sum(widths) + gap * (len(words) - 1)
+    if y is None:
+        y = int(H * 0.60)
+    y = max(8, min(H - int(size * 1.5), int(y)))
+    pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    lay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    # RTL: أول كلمة في أقصى اليمين
+    x_right = W / 2 + total / 2
+    for i, (prep, w) in enumerate(zip(preps, widths)):
+        cx = x_right - w / 2
+        x_right -= (w + gap)
+        if not prep:
+            continue
+        if i == cur:
+            # حبّة الهوية خلف الكلمة المنطوقة — بمقاس النص **المكبّر** لا الأساسي
+            pop_prep = _prep(words[i], pop)
+            pop_w = max(w, sum(r[2] for r in pop_prep))
+            padx, pady = int(size * 0.42), int(size * 0.30)
+            d.rounded_rectangle([cx - pop_w / 2 - padx, y - pady, cx + pop_w / 2 + padx,
+                                 y + size * 1.28 + pady], int(size * 0.34),
+                                fill=tuple(accent) + (235,))
+            _blit_stroke(d, pop_prep, True, cx, y - (pop - size) * 0.5,
+                         (255, 255, 255, 255), stroke, (0, 0, 0, 200))
+        else:
+            _blit_stroke(d, prep, True, cx, y, (255, 255, 255, 242), stroke,
+                         (0, 0, 0, 210))
+    out = Image.alpha_composite(pil, lay).convert("RGB")
+    return cv2.cvtColor(np.array(out), cv2.COLOR_RGB2BGR)
+
+
+def ball_marker(canvas, pt, color=(0, 235, 255), r=10):
+    """Small optional marker for review/debug renders."""
+    center = (int(pt[0]), int(pt[1]))
     ov = canvas.copy()
-    cv2.circle(ov, (int(pt[0]), int(pt[1])), r, color, 3, cv2.LINE_AA)
-    cv2.circle(ov, (int(pt[0]), int(pt[1])), r + 5, color, 1, cv2.LINE_AA)
-    cv2.addWeighted(ov, 0.9, canvas, 0.1, 0, canvas)
+    cv2.circle(ov, center, r + 2, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.circle(ov, center, r, color, 2, cv2.LINE_AA)
+    cv2.circle(ov, center, 2, (255, 255, 255), -1, cv2.LINE_AA)
+    cv2.addWeighted(ov, 0.76, canvas, 0.24, 0, canvas)
     return canvas
 
 
-def trail(canvas, hist, color=(0, 235, 255), alpha=0.55, max_th=9):
-    """hist: deque of (frame_idx, x, y). Draws a fading neon trail on a copy."""
+def trail(canvas, hist, color=(0, 235, 255), alpha=0.28, max_th=4):
+    """Short, subtle path reserved for optional review/debug renders."""
     if len(hist) < 2:
         return canvas
     ov = canvas.copy()
@@ -664,7 +809,7 @@ def trail(canvas, hist, color=(0, 235, 255), alpha=0.55, max_th=9):
     for i in range(1, n):
         _, x0, y0 = hist[i-1]
         _, x1, y1 = hist[i]
-        th = max(2, int(max_th * (i/n)))
+        th = max(1, int(max_th * (i/n)))
         cv2.line(ov, (int(x0), int(y0)), (int(x1), int(y1)), color, th, cv2.LINE_AA)
     cv2.addWeighted(ov, alpha, canvas, 1-alpha, 0, canvas)
     return canvas

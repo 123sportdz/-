@@ -60,7 +60,7 @@ def list_models(api_key=None):
         raise RuntimeError("ما فيه مفتاح Gemini (config.gemini_api_key أو GEMINI_API_KEY)")
     d = _http(f"{API}/models", key=key)
     return [m["name"].replace("models/", "") for m in d.get("models", [])
-            if "generateContent" in m.get("supportedGenerationModels", m.get("supportedGenerationMethods", []))]
+            if "generateContent" in m.get("supportedGenerationMethods", m.get("supportedGenerationModels", []))]
 
 
 def pick_model(api_key=None, prefer=None):
@@ -169,7 +169,7 @@ def gemini_title(video=None, caption="", ocr="", brand="الجزائر الجد�
             j.setdefault("tags", [])
             return j
         except urllib.error.HTTPError as e:
-            last = f"{m}: HTTP {e.code} {e.read().decode()[:120]}"
+            last = f"{m}: HTTP {e.code} {e.read().decode('utf-8', 'replace')[:120]}"
             continue
         except Exception as e:
             last = f"{m}: {type(e).__name__} {str(e)[:120]}"

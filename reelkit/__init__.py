@@ -2,7 +2,7 @@
 
 Pipeline:  ffmpeg normalize -> YOLO ball detect -> Kalman track (+coast) ->
            virtual camera (speed/accel limited, deadzone) -> per-shot layout
-           (tracked 9:16 crop | full frame + blurred pad) -> watermark inpaint ->
+           (tracked 9:16 crop | full frame + blurred pad) -> optional authorized mark cleanup ->
            graphics -> H.264 + audio.
 """
-__version__ = "1.43"
+__version__ = "1.65"

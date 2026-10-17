@@ -44,19 +44,32 @@ def _cfg():
         return {}
 
 
+_cfg_lock = threading.Lock()
+
 def _save_cfg(**kv):
-    c = _cfg()
-    c.update({k: v for k, v in kv.items() if v is not None})
-    try:
-        # 💾 كتابة ذرّية (tmp + os.replace) — كانت الكتابة المباشرة تتسابق مع
-        # save_cfg في اللوحة فيضيع tg_session (نفس علّة v1.36 بصيغة أخرى)
-        tmp = CFG_PATH.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(c, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, CFG_PATH)
-        return True
-    except Exception:
-        return False
+    # قفل حول قراءة+تعديل+كتابة: الاستبدال الذرّي وحده لا يمنع التحديث المفقود
+    # (كاتبان يقرآن نفس النسخة وآخرهما يطمس مفتاح الآخر).
+    with _cfg_lock:
+        c = _cfg()
+        c.update({k: v for k, v in kv.items() if v is not None})
+        try:
+            # 💾 كتابة ذرّية (tmp + os.replace) — كانت الكتابة المباشرة تتسابق مع
+            # save_cfg في اللوحة فيضيع tg_session (نفس علّة v1.36 بصيغة أخرى).
+            # ⚠️ CFG_PATH سلسلة نصية: with_suffix كان يرمي AttributeError يُبتلع
+            # هنا ⇒ الجلسة لم تُحفَظ إطلاقاً رغم إبلاغ المستخدم بالنجاح!
+            tmp = CFG_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(c, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CFG_PATH)
+            try:
+                os.chmod(CFG_PATH, 0o600)      # يحوي tg_session — وصول كامل للحساب
+            except OSError:
+                pass
+            return True
+        except Exception as e:
+            import sys
+            print(f"⚠️ تعذّر حفظ config.json: {type(e).__name__}: {e}", file=sys.stderr)
+            return False
 
 
 def creds():
@@ -119,7 +132,11 @@ def _proxy_from_cfg():
     host, _, port = p.partition(":")
     if not host or not port:
         return None
-    return dict(proxy_type=kind, addr=host, port=int(port), username=user, password=pw,
+    try:
+        port = int(port)
+    except ValueError:
+        return None                       # بروكسي مشوّه — نتجاهله بدل ValueError غامض
+    return dict(proxy_type=kind, addr=host, port=port, username=user, password=pw,
                 rdns=True)
 
 
@@ -304,12 +321,18 @@ def sign_in(code, password=None):
         _save_cfg(tg_session=res["session"])
         with _lock:
             _pending.clear()
+        _drop_client(cl)          # نجح الدخول: افصل العميل — كان يبقى متصلاً للأبد
     return {"ok": True, "me": res.get("me", ""), "authorized": True}
 
 
 def logout():
     with _lock:
+        st = dict(_pending)
         _pending.clear()
+        qr_cl = _qr.get("client")
+        _qr.clear()
+    _drop_client(st.get("client"))
+    _drop_client(qr_cl)
     _save_cfg(tg_session="")
     return {"ok": True}
 
@@ -358,12 +381,20 @@ def qr_start(api_id=None, api_hash=None):
         raise RuntimeError(explain_error(e))
     with _lock:
         old_qr = _qr.get("client"); old_pend = _pending.get("client")
+        gen = int(_qr.get("gen", 0)) + 1
         _qr.clear()
         _qr.update({"client": cl, "qr": qr, "state": "waiting", "me": "", "error": "",
-                    "url": qr.url})   # نخزّن الرابط فوراً وإلا بنت اللوحة QR فارغاً بعد 3 ثوانٍ
+                    "url": qr.url, "gen": gen})   # نخزّن الرابط فوراً وإلا بنت اللوحة QR فارغاً بعد 3 ثوانٍ
         _pending.update({"client": cl, "phone": "", "hash": "", "qr": qr})
     _drop_client(old_qr if old_qr is not cl else None)
     _drop_client(old_pend if (old_pend is not cl and old_pend is not old_qr) else None)
+
+    def _set(**kv):
+        """يكتب حالة QR فقط إذا ما زلنا الجيل الحالي — خيط المحاولة السابقة
+        (بعد فصل عميلها) كان يكتب «error» فوق جلسة QR جديدة صالحة."""
+        with _lock:
+            if _qr.get("gen") == gen:
+                _qr.update(kv)
 
     def _wait():
         async def _w():
@@ -374,37 +405,32 @@ def qr_start(api_id=None, api_hash=None):
                     name = (getattr(me, "first_name", "") or "") + \
                            ((" @" + me.username) if getattr(me, "username", None) else "")
                     _save_cfg(tg_session=cl.session.save())
-                    with _lock:
-                        _qr.update({"state": "ok", "me": name})
+                    _set(state="ok", me=name)
+                    _drop_client(cl)      # نجح المسح: افصل العميل — لا يبقى متصلاً للأبد
                     return
                 except Exception as e:
                     n = type(e).__name__
                     if n == "SessionPasswordNeededError":
-                        with _lock:
-                            _qr.update({"state": "need_password"})
+                        _set(state="need_password")
                         return
                     if n in ("TimeoutError", "asyncio.TimeoutError"):
                         try:
                             await qr.recreate()          # جدّد الرمز قبل انتهائه
                         except Exception as e2:
-                            with _lock:
-                                _qr.update({"state": "error", "error": explain_error(e2)[:120]})
+                            _set(state="error", error=explain_error(e2)[:120])
                             return
-                        with _lock:
-                            _qr["url"] = qr.url
+                        _set(url=qr.url)
                         continue
                     if n == "LoginTokenExpiredError":
-                        with _lock:
-                            _qr.update({"state": "expired"})
+                        _set(state="expired")
                         return
-                    with _lock:
-                        _qr.update({"state": "error", "error": explain_error(e)[:140]})
+                    _set(state="error", error=explain_error(e)[:140])
                     return
         try:
             _run(_w(), timeout=600)
         except Exception as e:
             with _lock:
-                if _qr.get("state") == "waiting":
+                if _qr.get("gen") == gen and _qr.get("state") == "waiting":
                     _qr.update({"state": "error", "error": str(e)[:120]})
 
     threading.Thread(target=_wait, daemon=True).start()
@@ -443,6 +469,7 @@ def qr_password(password):
     _save_cfg(tg_session=s)
     with _lock:
         _qr.update({"state": "ok", "me": name})
+    _drop_client(cl)                       # اكتمل الدخول: افصل العميل
     return {"ok": True, "me": name}
 
 
@@ -527,7 +554,11 @@ def download_message(channel, mid, dest, progress=None):
         finally:
             await cl.disconnect()
 
-    return _run(_go(), timeout=int(os.environ.get("TG_DOWNLOAD_TIMEOUT", "3600")))
+    try:
+        _to = int(os.environ.get("TG_DOWNLOAD_TIMEOUT", "3600"))
+    except ValueError:
+        _to = 3600
+    return _run(_go(), timeout=_to)
 
 
 def diag():

@@ -1,0 +1,136 @@
+import ast
+from html.parser import HTMLParser
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class SelectOptions(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.current = None
+        self.options = {}
+        self.selected = {}
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "select":
+            self.current = attrs.get("id")
+        elif tag == "option" and self.current:
+            value = attrs.get("value")
+            if value is not None:
+                self.options.setdefault(self.current, []).append(value)
+                if "selected" in attrs:
+                    self.selected[self.current] = value
+
+    def handle_endtag(self, tag):
+        if tag == "select":
+            self.current = None
+
+
+def _dashboard_html():
+    path = ROOT / "dashboard.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "HTML" for target in node.targets)
+    )
+    return ast.literal_eval(assignment.value)
+
+
+def _make_args():
+    path = ROOT / "dashboard.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_make_args"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"CFG": {}}
+    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
+    return namespace["_make_args"]
+
+
+def _cli_argument(flag):
+    path = ROOT / "reel.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == flag
+    )
+
+
+def _function(path, name):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+
+
+def test_dashboard_quality_options_match_cli_and_have_a_valid_default():
+    ui = SelectOptions()
+    ui.feed(_dashboard_html())
+    cli_call = _cli_argument("--quality")
+    cli_choices = ast.literal_eval(next(item.value for item in cli_call.keywords if item.arg == "choices"))
+
+    assert set(ui.options["quality"]) == set(cli_choices)
+    assert ui.selected["quality"] == "auto"
+
+
+def test_dashboard_and_cli_default_to_clean_action_framing_without_tracker_graphics():
+    make_args = _make_args()
+    args = make_args({}, "source.mp4", "output.mp4")
+
+    assert args[args.index("--subject") + 1] == "action"
+    assert args[args.index("--layout") + 1] == "single"
+    assert args[args.index("--quality") + 1] == "auto"
+    assert "--no-trail" in args
+
+    show_trail = make_args({"show_trail": True}, "source.mp4", "output.mp4")
+    assert "--show-trail" in show_trail
+    assert "--no-trail" not in show_trail
+
+    cli_subject = _cli_argument("--subject")
+    assert next(item.value.value for item in cli_subject.keywords if item.arg == "default") == "action"
+
+
+def test_renderer_hides_tracking_graphics_by_default():
+    path = ROOT / "reelkit" / "render.py"
+    function = _function(path, "render")
+    names = [arg.arg for arg in function.args.args]
+    defaults_start = len(names) - len(function.args.defaults)
+    defaults = {
+        name: value
+        for name, value in zip(names[defaults_start:], function.args.defaults)
+    }
+
+    assert ast.literal_eval(defaults["use_trail"]) is False
+    assert ast.literal_eval(defaults["brand_y"]) == pytest.approx(0.065)
+
+
+def test_channel_bug_stays_in_the_top_safe_corner():
+    pytest.importorskip("cv2")
+    import numpy as np
+    from reelkit.graphics import draw_brand
+
+    original = np.full((1920, 1080, 3), (45, 120, 50), dtype=np.uint8)
+    result = draw_brand(original.copy(), "الجزائر الجديدة TV", "youtube.com/@aljazaer7tv")
+    changed = np.any(result != original, axis=2)
+    ys, xs = np.where(changed)
+
+    assert len(xs) > 0
+    assert xs.min() > 540
+    assert xs.max() < 1060
+    assert ys.min() > 20
+    assert ys.max() < 350
+    assert changed.sum() < original.shape[0] * original.shape[1] * 0.05

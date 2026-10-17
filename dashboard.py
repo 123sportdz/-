@@ -7,7 +7,7 @@ dashboard.py — لوحة تحكم elhadath-reels (نسخة احترافية)
 
 الإعدادات: config.json أو متغيرات بيئة (BRAND_NAME, TELEGRAM_BOT_TOKEN, …)
 """
-import argparse, asyncio, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
+import argparse, asyncio, json, math, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,12 +27,16 @@ PUB = ROOT / "reelkit" / "publish"
 sys.path.insert(0, str(ROOT))
 from reelkit import title as TITLEMOD
 from reelkit import ai as AI
+from reelkit import writer as WRITER
+from reelkit.scout_review import ScoutSessionError, ScoutSessionStore, validate_selections
 from reelkit.publish.telegram import TelegramBot, ChannelFeed, fetch_post
 from reelkit import schedule as SCH
 from reelkit.publish.youtube import find_client_secret
 
 LOGOS_DIR = ROOT / "logo_library"
 LOGOS_DIR.mkdir(exist_ok=True)
+SCOUTS = ScoutSessionStore()
+SCOUT_PREVIEW_DIR = OUT / ".scout-previews"
 
 STAGES = {1: "تجهيز الملف", 2: "تحليل المشاهد", 3: "كشف الكرة",
           4: "كشف اللاعبين", 5: "التتبّع والكاميرا", 6: "الرندر والترميز"}
@@ -64,7 +68,7 @@ def load_cfg(persist=False):
            "automation_enabled": False, "automation_interval": 300,
            "automation_limit": 5, "automation_upload": "none",
            "automation_quality": "auto", "automation_layout": "single",
-           "automation_subject": "ball", "automation_source": "telegram",
+           "automation_subject": "action", "automation_source": "telegram",
            "automation_folder": "watch"}
     if CONFIG_FILE.exists():
         try:
@@ -155,19 +159,36 @@ def _persist(force=True):
         with _lock:
             data = json.dumps(JOBS, ensure_ascii=False, default=str)
             _last_persist = now
-        fd, tmp = tempfile.mkstemp(dir=str(OUT), prefix="jobs.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(data)
-            os.replace(tmp, JOBS_FILE)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+            fd, tmp = tempfile.mkstemp(dir=str(OUT), prefix="jobs.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+                # os.replace داخل القفل: خارجه قد يستبدل خيطان بترتيب معكوس
+                # فيُكتب snapshot أقدم فوق الأحدث.
+                os.replace(tmp, JOBS_FILE)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
     except Exception:
         pass
+
+
+def _trim_jobs(keep=200):
+    """يهذّب JOBS: بلا سقف كان يتضخم بلا نهاية (كل مهمة تحمل حتى 300 سطر سجل،
+    و_json.dumps لكامل القاموس كل 1.2s أثناء الرندر). نبقي المهام الحية وآخر keep منتهية."""
+    with _lock:
+        if len(JOBS) <= keep * 2:
+            return
+        live = {k: v for k, v in JOBS.items()
+                if v.get("status") in ("running", "queued", "cancelling")}
+        done = sorted((kv for kv in JOBS.items() if kv[0] not in live),
+                      key=lambda kv: kv[1].get("created", 0), reverse=True)[:keep]
+        JOBS.clear()
+        JOBS.update(live)
+        JOBS.update(done)
 
 
 def _snapshot(fn=None):
@@ -179,27 +200,17 @@ def _snapshot(fn=None):
 
 def _kill_proc(p):
     """يقتل المهمة **ومجموعتها** — reel.py تطلق ffmpeg كأبناء، وقتل الأب وحده
-    يترك ffmpeg حياً يستهلك المعالج/الكرت ويحتجز الملفات."""
-    if p is None or p.poll() is not None:
-        return
+    يترك ffmpeg حياً يستهلك المعالج/الكرت ويحتجز الملفات.
+    ‏os.killpg غير موجودة على ويندوز إطلاقاً ⇒ نفّذ عبر ffio.kill_tree (taskkill /T)."""
     try:
-        import signal as _sig
-        try:
-            os.killpg(os.getpgid(p.pid), _sig.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            p.terminate()
-        try:
-            p.wait(timeout=6)
-        except Exception:
-            try:
-                os.killpg(os.getpgid(p.pid), _sig.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                p.kill()
+        from reelkit.ffio import kill_tree
+        kill_tree(p, grace=6.0)
     except Exception:
         try:
             p.kill()
         except Exception:
             pass
+
 
 def _load():
     if JOBS_FILE.exists():
@@ -223,6 +234,21 @@ def _load():
             pass
 
 _load()
+
+import atexit as _atexit
+
+def _shutdown_procs():
+    """إغلاق اللوحة كان يترك عمليات reel.py/ffmpeg (مفصولة بجلسة خاصة) تعمل
+    كأيتام، و_load عند الإقلاع التالي يعلّمها «فاشلة» بينما هي ما تزال تشتغل
+    وتحجز الملفات والـGPU. نقتل كل ما هو حي عند الخروج."""
+    try:
+        for _p in list(PROCS.values()):
+            _kill_proc(_p)
+    except Exception:
+        pass
+
+_atexit.register(_shutdown_procs)
+
 STAGE_RE = re.compile(r"\[(\d)/6\]")
 
 
@@ -263,7 +289,7 @@ def _automation_status():
             "folder": CFG.get("automation_folder", "watch"),
             "automation_quality": CFG.get("automation_quality", "auto"),
             "automation_layout": CFG.get("automation_layout", "single"),
-            "automation_subject": CFG.get("automation_subject", "ball")}
+            "automation_subject": CFG.get("automation_subject", "action")}
 
 
 def _automation_loop():
@@ -302,7 +328,7 @@ def _automation_loop():
                     "caption": (post.get("text") or "")[:1000],
                     "quality": CFG.get("automation_quality", "auto"),
                     "layout": CFG.get("automation_layout", "single"),
-                    "subject": CFG.get("automation_subject", "ball"),
+                    "subject": CFG.get("automation_subject", "action"),
                     "auto_youtube": upload in ("youtube", "both"),
                     "auto_telegram": upload in ("telegram", "both"),
                     "thumb": True,
@@ -326,14 +352,19 @@ def _automation_loop():
     _automation_runtime["status"] = "stopped"
 
 
+_automation_start_lock = threading.Lock()
+
 def automation_start():
     global _automation_thread
-    if _automation_thread and _automation_thread.is_alive():
+    # فحص+إنشاء ذرّي: طلبان متزامنان لـ/api/automation كانا يمرّان معاً
+    # فيعمل خيطا أتمتة بقاموسَي seen منفصلين ⇒ نفس الرسالة تُعالج مرتين.
+    with _automation_start_lock:
+        if _automation_thread and _automation_thread.is_alive():
+            return _automation_status()
+        _automation_stop.clear()
+        _automation_thread = threading.Thread(target=_automation_loop, name="reel-automation", daemon=True)
+        _automation_thread.start()
         return _automation_status()
-    _automation_stop.clear()
-    _automation_thread = threading.Thread(target=_automation_loop, name="reel-automation", daemon=True)
-    _automation_thread.start()
-    return _automation_status()
 
 
 def automation_stop():
@@ -359,7 +390,8 @@ def run_job(job_id, args):
     job = JOBS.get(job_id)
     if not job:
         return                            # 🔧 حُذفت المهمة وهي في الطابور — نخرج بهدوء بلا KeyError
-    job.update(status="running", started=time.time(), log=[])
+    with _lock:
+        job.update(status="running", started=time.time(), log=[])
     cmd = [sys.executable, str(ROOT / "reel.py"), *args]
     try:
         def execute(current):
@@ -381,27 +413,32 @@ def run_job(job_id, args):
             try:
                 for line in p.stdout:
                     line = line.rstrip()
-                    job["log"] = (job.get("log", []) + [line])[-300:]
                     m = STAGE_RE.search(line)
-                    if m:
-                        st = int(m.group(1))
-                        job["stage"] = STAGES.get(st, "")
-                        job["progress"] = min(96, int((st - 1) / 6 * 100))
-                    if "render" in line and "frames" in line:
-                        job["progress"] = min(99, job.get("progress", 90) + 1)
+                    with _lock:            # كل تعديل على job المشترك تحت القفل
+                        job["log"] = (job.get("log", []) + [line])[-300:]   # وإلا كسر _persist صامتاً
+                        if m:
+                            st = int(m.group(1))
+                            job["stage"] = STAGES.get(st, "")
+                            job["progress"] = min(96, int((st - 1) / 6 * 100))
+                        if "render" in line and "frames" in line:
+                            job["progress"] = min(99, job.get("progress", 90) + 1)
                     _persist(force=False)
                 p.wait()
             finally:
                 wd.cancel()
             if timed["v"]:
-                job["log"] = (job.get("log", []) + [
-                    f"⏱️ أُوقفت المهمة تلقائياً: تجاوزت المهلة {timeout_s}s — اضبط REEL_JOB_TIMEOUT لتغييرها"])[-300:]
+                with _lock:
+                    job["log"] = (job.get("log", []) + [
+                        f"⏱️ أُوقفت المهمة تلقائياً: تجاوزت المهلة {timeout_s}s — اضبط REEL_JOB_TIMEOUT لتغييرها"])[-300:]
             return p.returncode
 
         returncode = execute(cmd)
         # شفاء ذاتي إضافي: عند فشل CUDA/الجودة العالية نعيد مرة واحدة بإعداد CPU-friendly.
-        # (لا نعيد لو الفشل بسبب إيقاف المستخدم — الإلغاء قرار نهائي)
-        if returncode != 0 and "--quality" in args and job.get("status") != "cancelling":
+        # (لا نعيد لو الفشل بسبب إيقاف المستخدم أو حذف المهمة — الإلغاء/الحذف قرار نهائي.
+        #  قبل: حذف مهمة قيد التشغيل لم يضبط cancelling ⇒ الـretry أعاد تشغيلها كاملة!)
+        with _lock:
+            cancelled = job.get("status") == "cancelling" or JOBS.get(job_id) is not job
+        if returncode != 0 and "--quality" in args and not cancelled:
             retry = list(args)
             qi = retry.index("--quality") + 1
             if qi < len(retry):
@@ -409,51 +446,67 @@ def run_job(job_id, args):
             if "--imgsz" in retry:
                 ii = retry.index("--imgsz") + 1
                 if ii < len(retry): retry[ii] = str(min(int(retry[ii]), 960))
-            job["log"] = (job.get("log", []) + ["⚠️ فشلت المحاولة الأولى — إعادة تلقائية بإعدادات أخف"])[-300:]
+            with _lock:
+                job["log"] = (job.get("log", []) + ["⚠️ فشلت المحاولة الأولى — إعادة تلقائية بإعدادات أخف"])[-300:]
             returncode = execute([sys.executable, str(ROOT / "reel.py"), *retry])
+        with _lock:
+            gone = JOBS.get(job_id) is not job      # حُذفت أثناء التنفيذ
+        if gone:
+            return
         if returncode == 0 and Path(job["output"]).exists():
-            job["status"] = "done"; job["progress"] = 100; job["stage"] = "اكتمل"
-            job.update(_probe_meta(job["output"]))
+            with _lock:
+                job["status"] = "done"; job["progress"] = 100; job["stage"] = "اكتمل"
+                job.update(_probe_meta(job["output"]))
             try:
                 from reelkit.quality import check as quality_check
                 dims = str(next((args[i + 1] for i, x in enumerate(args) if x == "--out-size"), "1080x1920"))
                 ew, eh = (int(x) for x in dims.lower().split("x", 1))
                 md = float(next((args[i + 1] for i, x in enumerate(args) if x == "--max-dur"), "0"))
                 source_had_audio = "audio=yes" in " ".join(job.get("log") or [])
-                job["quality_report"] = quality_check(job["output"], ew, eh, md,
-                                                       audio_required=source_had_audio)
-                if not job["quality_report"]["ok"]:
-                    job["log"] = (job.get("log") or []) + ["⚠️ فحص الجودة: " + "; ".join(job["quality_report"]["issues"])]
+                _qrep = quality_check(job["output"], ew, eh, md,
+                                      audio_required=source_had_audio)
+                with _lock:
+                    job["quality_report"] = _qrep
+                    if not _qrep["ok"]:
+                        job["log"] = (job.get("log") or []) + ["⚠️ فحص الجودة: " + "; ".join(_qrep["issues"])]
             except Exception as e:
-                job["quality_report"] = {"ok": False, "issues": [f"تعذر فحص الجودة: {e}"]}
+                with _lock:
+                    job["quality_report"] = {"ok": False, "issues": [f"تعذر فحص الجودة: {e}"]}
             try:
-                job["has_thumb"] = Path(str(job["output"]).replace(".mp4", "_thumb.jpg")).exists()
-                _lt = " ".join(job.get("log") or [])
-                if "audio=" in _lt:
-                    job["has_audio"] = "audio=yes" in _lt
+                with _lock:
+                    job["has_thumb"] = Path(str(job["output"]).replace(".mp4", "_thumb.jpg")).exists()
+                    _lt = " ".join(job.get("log") or [])
+                    if "audio=" in _lt:
+                        job["has_audio"] = "audio=yes" in _lt
+                    job["size"] = Path(job["output"]).stat().st_size
             except Exception:
                 pass
-            job["size"] = Path(job["output"]).stat().st_size
             if (job.get("quality_report") or {}).get("ok", True):
                 try:
                     _auto_after(job)
                 except Exception as e:
-                    job["log"] = (job.get("log") or []) + [f"auto-publish: {e}"]
+                    with _lock:
+                        job["log"] = (job.get("log") or []) + [f"auto-publish: {e}"]
             else:
-                job["stage"] = "اكتمل مع تحذير جودة — بانتظار المراجعة"
+                with _lock:
+                    job["stage"] = "اكتمل مع تحذير جودة — بانتظار المراجعة"
         else:
-            if job.get("status") == "cancelling":        # ⏹ المستخدم أوقفها — ليست فشلاً
-                job["status"] = "failed"; job["stage"] = "أُلغيت ⏹"
-                job["log"] = (job.get("log") or []) + ["⏹ أُلغيت المهمة بطلبك"]
-            else:
-                job["status"] = "failed"; job["stage"] = "فشل"
+            with _lock:
+                if job.get("status") == "cancelling":        # ⏹ المستخدم أوقفها — ليست فشلاً
+                    job["status"] = "failed"; job["stage"] = "أُلغيت ⏹"
+                    job["log"] = (job.get("log") or []) + ["⏹ أُلغيت المهمة بطلبك"]
+                else:
+                    job["status"] = "failed"; job["stage"] = "فشل"
     except Exception as e:
-        job["status"] = "failed"; job["stage"] = "فشل"
-        job["log"] = (job.get("log") or []) + [f"ERROR: {e}"]
+        with _lock:
+            job["status"] = "failed"; job["stage"] = "فشل"
+            job["log"] = (job.get("log") or []) + [f"ERROR: {e}"]
     PROCS.pop(job_id, None)
-    job["ended"] = time.time()
-    job["elapsed"] = round(job["ended"] - job.get("started", job["ended"]), 1)
+    with _lock:
+        job["ended"] = time.time()
+        job["elapsed"] = round(job["ended"] - job.get("started", job["ended"]), 1)
     _persist()
+    _trim_jobs()
 
 def _auto_after(job):
     """عنوان تلقائي ثم نشر تلقائي (حسب الإعدادات أو خيارات المهمة)."""
@@ -571,6 +624,8 @@ ALLOWED_CFG_KEYS = {
     "automation_enabled", "automation_interval", "automation_limit", "automation_upload",
     "automation_quality", "automation_layout", "automation_subject",
     "automation_source", "automation_folder", "min_transformative", "source_credit",
+    # 🤖 مفاتيح بوت التحكم عن بعد (reelbot.py) — تُدار من البوت لكن نسمح بحفظها هنا أيضاً
+    "bot_token", "bot_allowed_chats", "bot_notify", "dashboard_url",
 }
 
 
@@ -618,6 +673,137 @@ def api_settings_set(payload: dict):
     if not save_cfg():
         raise HTTPException(500, "تعذّر حفظ الإعدادات (تحقّق من صلاحية الكتابة على config.json)")
     return {"ok": True, "saved": True, "config": masked(CFG)}
+
+
+def _raise_writer_http_error(exc):
+    if isinstance(exc, WRITER.WriterInputError):
+        status = 400
+    elif isinstance(exc, WRITER.WriterConfigurationError):
+        status = 409
+    elif isinstance(exc, WRITER.WriterProviderError):
+        status = 502
+    elif isinstance(exc, WRITER.DraftStoreError):
+        status = 500
+    else:
+        status = 500
+        exc = RuntimeError("تعذّر تنفيذ العملية")
+    raise HTTPException(status_code=status, detail=str(exc))
+
+
+@app.get("/studio", response_class=HTMLResponse)
+def api_creative_studio():
+    try:
+        return HTMLResponse((ROOT / "creative_studio.html").read_text(encoding="utf-8"))
+    except OSError:
+        raise HTTPException(500, "تعذّر فتح استوديو الكتابة") from None
+
+
+@app.get("/api/creative/status")
+def api_creative_status():
+    refresh_cfg()
+    return {"gemini_configured": bool(AI._key(CFG.get("gemini_api_key"))),
+            "draft_limit": WRITER.MAX_DRAFTS}
+
+
+@app.get("/api/creative/jobs")
+def api_creative_jobs():
+    with _lock:
+        candidates = [dict(job) for job in
+                      sorted(JOBS.values(), key=lambda job: job.get("created", 0), reverse=True)
+                      if job.get("status") == "done"]
+    items = []
+    for job in candidates:
+        job_id = str(job.get("id") or "")
+        if not re.fullmatch(r"[0-9a-f]{8}", job_id):
+            continue
+        try:
+            WRITER.resolve_job_video(job, OUT)
+        except WRITER.WriterError:
+            continue
+        try:
+            duration = float(job.get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        items.append({
+            "id": job_id,
+            "title": str(job.get("title") or job.get("label") or job_id)[:200],
+            "label": str(job.get("label") or "")[:200],
+            "caption": str(job.get("caption") or "")[:2000],
+            "duration": max(0, duration),
+            "created": float(job.get("created") or 0),
+        })
+        if len(items) >= 50:
+            break
+    return {"jobs": items}
+
+
+@app.post("/api/creative/generate")
+def api_creative_generate(payload: dict):
+    refresh_cfg()
+    payload = dict(payload or {})
+    video_path = None
+    job_id = str(payload.get("job_id") or "").strip()
+    try:
+        if job_id:
+            if not re.fullmatch(r"[0-9a-f]{8}", job_id):
+                raise WRITER.WriterInputError("معرّف مهمة الريل غير صالح.")
+            with _lock:
+                saved_job = JOBS.get(job_id)
+                job = dict(saved_job) if saved_job else None
+            if job is None:
+                raise HTTPException(404, "مهمة الريل غير موجودة")
+            video_path = WRITER.resolve_job_video(job, OUT)
+            payload["job_id"] = job_id
+            payload["clip_title"] = str(job.get("title") or job.get("label") or "")[:200]
+            payload["clip_caption"] = str(job.get("caption") or "")[:2000]
+            try:
+                duration = float(job.get("duration") or 0)
+            except (TypeError, ValueError):
+                duration = 0
+            payload["clip_duration"] = f"{max(0, duration):.1f} ثانية" if duration else ""
+        return WRITER.generate(payload, api_key=CFG.get("gemini_api_key"),
+                               model=CFG.get("gemini_model") or None,
+                               video_path=video_path, output_dir=OUT if video_path else None)
+    except WRITER.WriterError as exc:
+        _raise_writer_http_error(exc)
+
+
+@app.get("/api/creative/drafts")
+def api_creative_drafts_list():
+    try:
+        return {"drafts": WRITER.list_drafts(), "limit": WRITER.MAX_DRAFTS}
+    except WRITER.WriterError as exc:
+        _raise_writer_http_error(exc)
+
+
+@app.post("/api/creative/drafts")
+def api_creative_draft_create(payload: dict):
+    try:
+        return {"draft": WRITER.save_draft(payload or {})}
+    except WRITER.WriterError as exc:
+        _raise_writer_http_error(exc)
+
+
+@app.put("/api/creative/drafts/{draft_id}")
+def api_creative_draft_update(draft_id: str, payload: dict):
+    body = dict(payload or {})
+    if body.get("id") not in (None, draft_id):
+        raise HTTPException(400, "معرّف المسودة لا يطابق الرابط")
+    body["id"] = draft_id
+    try:
+        return {"draft": WRITER.save_draft(body)}
+    except WRITER.WriterError as exc:
+        _raise_writer_http_error(exc)
+
+
+@app.delete("/api/creative/drafts/{draft_id}")
+def api_creative_draft_delete(draft_id: str):
+    try:
+        if not WRITER.delete_draft(draft_id):
+            raise HTTPException(404, "المسودة غير موجودة")
+        return {"ok": True}
+    except WRITER.WriterError as exc:
+        _raise_writer_http_error(exc)
 
 
 @app.get("/api/automation")
@@ -741,6 +927,14 @@ def _path_allowed(p: Path) -> bool:
                 allow.append(Path(extra).expanduser().resolve())
             except Exception:
                 pass
+    # مجلد أتمتة المراقبة المضبوط من الإعدادات مسموح ضمناً — كان مطلقاً خارج
+    # المشروع (C:\Videos\incoming مثلاً) يُرفض دائماً 403 فتفشل كل دورة أتمتة.
+    try:
+        _af = Path(str(CFG.get("automation_folder") or "")).expanduser()
+        if str(CFG.get("automation_folder") or "").strip() and _af.is_absolute():
+            allow.append(_af.resolve())
+    except Exception:
+        pass
     s = str(rp)
     return any(s == str(d) or s.startswith(str(d) + os.sep) for d in allow)
 
@@ -921,9 +1115,54 @@ def _download_to_local(src, caption_in=""):
         except Exception: pass
     return str(dest), caption
 
+def _scout_source(sid):
+    session = SCOUTS.get_private(sid)
+    if not session:
+        raise HTTPException(404, "انتهت جلسة مراجعة اللقطات؛ أعد التحليل.")
+    if session.get("status") != "ready":
+        raise HTTPException(409, "تحليل اللقطات لم يكتمل بعد.")
+    local, caption = _download_to_local(session.get("source_path") or "",
+                                        session.get("caption") or "")
+    return local, caption, session
+
+
+def _scout_error(exc):
+    if isinstance(exc, ScoutSessionError):
+        return str(exc)[:180]
+    if isinstance(exc, HTTPException) and exc.status_code == 403:
+        return "الملف خارج مجلدات المشروع المسموحة."
+    if isinstance(exc, HTTPException) and exc.status_code == 413:
+        return "حجم الملف أكبر من الحد المسموح."
+    if isinstance(exc, HTTPException) and exc.status_code == 429:
+        return "يوجد تحليلان قيد التنفيذ؛ انتظر انتهاء أحدهما."
+    if isinstance(exc, HTTPException) and exc.status_code == 400:
+        return "الرابط أو الملف غير صالح للتحليل."
+    return "تعذّر تحليل الفيديو. تحقق من الملف ثم أعد المحاولة."
+
+
+def _run_scout_session(sid, source, caption, count):
+    try:
+        SCOUTS.update(sid, status="downloading", stage="تجهيز المقطع للتحليل", progress=8)
+        local, resolved_caption = _download_to_local(source, caption)
+        SCOUTS.update(sid, status="analyzing", stage="ننتظر توفر محرّك المعالجة", progress=18,
+                      source_path=local, caption=resolved_caption, label=Path(local).name)
+        from reelkit import ffio as FFIO
+        duration = float(FFIO.probe(local).get("duration") or 0)
+        with JOB_SEM:
+            SCOUTS.update(sid, stage="نرتّب الهتاف ونفحص اللقطات بصرياً", progress=35)
+            from reelkit import highlight as HL
+            ranked = HL.rank(local, count=count, max_dur=58.0, pre=13.0,
+                             device=CFG.get("device") or None,
+                             log=lambda message: print(f"[scout {sid[:8]}] {str(message)[:180]}"))
+        SCOUTS.update(sid, status="ready", duration=duration, candidates=ranked)
+    except Exception as exc:
+        print(f"[scout {sid[:8]}] {type(exc).__name__}")
+        SCOUTS.update(sid, status="failed", error=_scout_error(exc))
+
+
 def _make_args(payload, src, out):
     args = ["-i", src, "-o", str(out),
-            "--subject", payload.get("subject", "ball"),
+            "--subject", payload.get("subject", "action"),
             "--out-size", payload.get("out_size", "1080x1920"),
             "--rate", str(payload.get("rate", 15)),
             "--imgsz", str(payload.get("imgsz", 1280)),
@@ -979,19 +1218,80 @@ def _make_args(payload, src, out):
             args += ["--batch", str(_bt)]
     except Exception:
         pass
-    if payload.get("keep_watermarks"): args += ["--keep-watermarks"]
-    if payload.get("no_trail"): args += ["--no-trail"]
+    if payload.get("keep_watermarks", True):
+        args += ["--keep-watermarks"]
+    else:
+        args += ["--remove-watermarks"]
+    show_trail = payload.get("show_trail")
+    if show_trail is None:
+        show_trail = not bool(payload.get("no_trail", True))
+    args += ["--show-trail" if show_trail else "--no-trail"]
     if payload.get("no_brand"): args += ["--no-brand"]
     if payload.get("fast"): args += ["--preset", "veryfast", "--crf", "22"]
     if payload.get("commentary"): args += ["--commentary"]
     if payload.get("commentary") and not payload.get("commentary_text", True):
         args += ["--commentary-text-only"]
+    # 🎯 دفعة الأهداف من الواجهة/البوت (كانت غير ممرّرة أبداً لـreel.py)
+    try:
+        _goals = int(payload.get("goals", 0) or 0)
+    except (TypeError, ValueError):
+        _goals = 0
+    if _goals > 0:
+        args += ["--goals", str(_goals)]
+        if payload.get("goals_montage"):
+            args += ["--goals-montage"]
+        if payload.get("no_scout"):
+            args += ["--no-scout"]
+        if payload.get("goals_gap"):
+            args += ["--goals-gap", str(payload["goals_gap"])]
+    if payload.get("transformative"): args += ["--transformative"]
     dev = payload.get("device") or CFG.get("device")
     if dev: args += ["--device", str(dev)]
     return args
 
 def _create(payload):
-    src, caption = _download_to_local((payload.get("input") or "").strip(), payload.get("caption", ""))
+    source_input = (payload.get("input") or "").strip()
+    scout_id = (payload.get("scout_id") or "").strip()
+    payload = dict(payload)
+    if scout_id:
+        session = SCOUTS.get_private(scout_id)
+        if not session:
+            raise HTTPException(404, "انتهت جلسة مراجعة اللقطات؛ أعد التحليل.")
+        if session.get("status") != "ready":
+            raise HTTPException(409, "تحليل اللقطات لم يكتمل بعد.")
+        candidates = session.get("candidates") or []
+        raw_index = payload.get("scout_index", 0)
+        try:
+            if isinstance(raw_index, bool):
+                raise ValueError
+            index_value = float(raw_index)
+            if not math.isfinite(index_value) or not index_value.is_integer():
+                raise ValueError
+            index = int(index_value)
+            if not 0 <= index < len(candidates):
+                raise IndexError
+            candidate = candidates[index]
+            start_value = payload.get("start")
+            end_value = payload.get("end")
+            selection = validate_selections(
+                session,
+                [{"index": index,
+                  "start": candidate["start"] if start_value in (None, "") else start_value,
+                  "end": candidate["end"] if end_value in (None, "") else end_value}],
+                max_duration=payload.get("max_dur", 58.0),
+            )[0]
+        except ScoutSessionError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (IndexError, TypeError, ValueError, OverflowError):
+            raise HTTPException(400, "اختر لقطة صالحة من جلسة الكشّاف.") from None
+        src, caption, _session = _scout_source(scout_id)
+        payload["input"] = ""
+        payload["start"] = str(selection["start"])
+        payload["end"] = str(selection["end"])
+        payload.pop("scout_index", None)
+    else:
+        src, caption = _download_to_local(source_input, payload.get("caption", ""))
+    payload.pop("scout_id", None)
     jid = uuid.uuid4().hex[:8]
     out = OUT / f"reel_{jid}.mp4"
     src_url = (payload.get("input") or "").strip() if (payload.get("input") or "").startswith("http") else ""
@@ -1014,10 +1314,77 @@ def _create(payload):
     threading.Thread(target=_runner, daemon=True).start()
     return jid
 
+@app.post("/api/scout")
+def api_create_scout(payload: dict):
+    source = str(payload.get("input") or "").strip()
+    if not source or len(source) > 4096:
+        raise HTTPException(400, "حدّد مقطعاً صالحاً للتحليل")
+    try:
+        count = int(payload.get("count", 5))
+    except (TypeError, ValueError, OverflowError):
+        count = 5
+    count = max(1, min(10, count))
+    if source.lower().startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+        label = f"مقطع من {urlparse(source).hostname or 'رابط'}"
+    else:
+        label = Path(source).name or "مقطع كرة قدم"
+    try:
+        session = SCOUTS.create(label)
+    except ScoutSessionError as exc:
+        raise HTTPException(429, str(exc)) from None
+    thread = threading.Thread(target=_run_scout_session,
+                              args=(session["id"], source, str(payload.get("caption") or "")[:6000], count),
+                              name=f"reel-scout-{session['id'][:8]}", daemon=True)
+    thread.start()
+    return session
+
+
+@app.get("/api/scout/{sid}")
+def api_get_scout(sid: str):
+    session = SCOUTS.get(sid)
+    if not session:
+        raise HTTPException(404, "جلسة التحليل غير موجودة أو انتهت صلاحيتها")
+    return session
+
+
+@app.get("/api/scout/{sid}/thumb/{index}")
+def api_scout_thumb(sid: str, index: int):
+    session = SCOUTS.get_private(sid)
+    if not session:
+        raise HTTPException(404, "جلسة التحليل غير موجودة أو انتهت صلاحيتها")
+    if session.get("status") != "ready" or not 0 <= index < len(session.get("candidates") or []):
+        raise HTTPException(404, "اللقطة غير متاحة")
+    local, _caption, _session = _scout_source(sid)
+    target = SCOUT_PREVIEW_DIR / f"{sid}_{index}.jpg"
+    if not target.exists():
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise HTTPException(503, "FFmpeg غير متاح لاستخراج صورة اللقطة")
+        candidate = session["candidates"][index]
+        temp = SCOUT_PREVIEW_DIR / f"{sid}_{index}_{uuid.uuid4().hex}.tmp.jpg"
+        SCOUT_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{candidate['peak_t']:.2f}",
+                 "-i", local, "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", "-y", str(temp)],
+                capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            temp.unlink(missing_ok=True)
+            raise HTTPException(504, "انتهت مهلة استخراج صورة اللقطة") from None
+        if result.returncode or not temp.is_file() or temp.stat().st_size < 128:
+            temp.unlink(missing_ok=True)
+            raise HTTPException(422, "تعذّر استخراج صورة لهذه اللقطة")
+        os.replace(temp, target)
+    return FileResponse(target, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, no-store",
+                                 "X-Content-Type-Options": "nosniff"})
+
+
 @app.post("/api/jobs")
 def api_create_job(payload: dict):
-    if not (payload.get("input") or "").strip():
-        raise HTTPException(400, "حدّد مقطع أو رابط")
+    if not (payload.get("input") or "").strip() and not (payload.get("scout_id") or "").strip():
+        raise HTTPException(400, "حدّد مقطعاً أو اختر لقطة من الكشّاف")
     return {"id": _create(payload)}
 
 @app.post("/api/jobs/batch")
@@ -1025,19 +1392,30 @@ def api_create_batch(payload: dict):
     items = payload.get("items") or []
     if not items:
         raise HTTPException(400, "ما فيه مقاطع")
+    # سقف صارم: كان بلا حد — طلب بآلاف العناصر = آلاف الخيوط والتنزيلات المتزامنة.
+    MAX_BATCH = 20
+    truncated = len(items) > MAX_BATCH
     ids = []
-    for it in items:
+    for it in items[:MAX_BATCH]:
         p = dict(payload); p.pop("items", None); p.update(it)
         try:
             ids.append(_create(p))
         except HTTPException as e:
             ids.append({"error": str(e.detail)})
-    return {"ids": ids}
+        except Exception as e:                       # خطأ واحد لا يجهض الدفعة كلها
+            ids.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
+    out = {"ids": ids}
+    if truncated:
+        out["warning"] = f"اقتُطعت الدفعة إلى {MAX_BATCH} عنصراً (من {len(items)})"
+    return out
 
 @app.get("/api/jobs")
 def api_jobs():
+    # نسخ سطحية تحت القفل ثم التعديل على النسخ — التعديل على القواميس الحية
+    # خارج القفل كان يكسر _persist بـRuntimeError يُبتلع فيضيع الحفظ.
     with _lock:
-        js = sorted(list(JOBS.values()), key=lambda j: j.get("created", 0), reverse=True)
+        js = [dict(j) for j in
+              sorted(JOBS.values(), key=lambda j: j.get("created", 0), reverse=True)]
     for j in js:
         if j.get("status") == "running" and j.get("started"):
             j["elapsed"] = round(time.time() - j["started"], 1)
@@ -1051,6 +1429,12 @@ def api_delete(jid: str):
     # 🔧 v1.49: ننهي **أي** عملية حيّة (running/cancelling/queued) وننتظرها قبل حذف
     # ملفاتها — كان يُحذف ملف بينما reel.py/ffmpeg يكتبه فيبقى inode معلّقاً (POSIX)
     # أو يفشل الحذف صامتاً (ويندوز).
+    # علّمها «جاري الإيقاف» أولاً: وإلا رأى run_job العملية مقتولة وحذفاً بلا cancelling
+    # فيدخل مسار «الشفاء الذاتي» ويعيد تشغيل مهمة حذفها المستخدم للتو!
+    with _lock:
+        j = JOBS.get(jid)
+        if j and j.get("status") in ("running", "queued"):
+            j["status"] = "cancelling"
     p = PROCS.pop(jid, None)
     if p is not None:
         _kill_proc(p)
@@ -1074,13 +1458,16 @@ def api_cancel(jid: str):
     if not j:
         raise HTTPException(404, "not found")
     if j.get("status") == "queued":
-        j.update(status="failed", stage="أُلغيت قبل البدء ⏹",
-                 log=(j.get("log") or []) + ["⏹ أُلغيت وهي في الطابور"])
+        with _lock:
+            j.update(status="failed", stage="أُلغيت قبل البدء ⏹",
+                     log=(j.get("log") or []) + ["⏹ أُلغيت وهي في الطابور"])
         _persist()
         return {"ok": True, "was": "queued"}
-    if j.get("status") != "running":
-        return {"ok": False, "was": j.get("status")}
-    j["status"] = "cancelling"; j["stage"] = "جاري الإيقاف…"
+    with _lock:
+        # أعد القراءة تحت القفل: قد تكون اكتملت بين الفحص والكتابة فنطمس نجاحها بـ«cancelling»
+        if j.get("status") != "running":
+            return {"ok": False, "was": j.get("status")}
+        j["status"] = "cancelling"; j["stage"] = "جاري الإيقاف…"
     _persist()
     p = PROCS.pop(jid, None)
     _kill_proc(p)                    # يقتل ffmpeg الأبناء أيضاً (مجموعة العملية)
@@ -1126,15 +1513,15 @@ def api_thumb(jid: str):
 
 @app.get("/api/rights/checklist")
 def api_rights_checklist():
-    """🛡️ قائمة امتثال المحتوى التحويلي (إرشادية — ليست رأياً قانونياً)."""
+    """🛡️ عناصر توثيق اختيارية؛ لا تحدد الملكية أو الإذن ولا تمنع المطالبات."""
     from reelkit import rights as RT
     return {"checklist": RT.checklist(), "disclaimer":
-            "هذه إرشادات تقنية لبناء عمل تحويلي موثّق، وليست رأياً قانونياً ولا ضماناً لقبول أي اعتراض."}
+            "هذه العناصر لا تثبت ملكية المحتوى أو الإذن بإعادة نشره، ولا تضمن قبول اعتراض أو منع Content ID. احصل على ترخيص مكتوب وافحص القيود في YouTube Studio قبل النشر العام."}
 
 
 @app.post("/api/jobs/{jid}/dispute")
 def api_job_dispute(jid: str, payload: dict | None = None):
-    """🛡️ يبني حزمة اعتراض (توثيق العمل الأصلي/التحويلي) لمهمة مكتملة."""
+    """ينشئ مسودة حقائق عن المونتاج لمراجعتها؛ لا يقدم أساساً قانونياً للاعتراض."""
     from reelkit import rights as RT
     payload = payload or {}
     job = JOBS.get(jid) or {}
@@ -1177,11 +1564,12 @@ def api_job_dispute(jid: str, payload: dict | None = None):
                            source_credit=has_source, own_brand=has_brand,
                            commentary_present=has_commentary)
     if not pkg:
-        raise HTTPException(500, "تعذّر إنشاء حزمة الاعتراض")
+        raise HTTPException(500, "تعذّر إنشاء ملف معلومات الإنتاج")
     present = {"own_commentary": has_commentary, "source_credit": has_source,
                "own_brand": has_brand, "short_clip": short,
                "rights_package": True, "no_full_match": short}
-    return {"ok": True, "package": pkg, "readiness": RT.score(present), "features": feats}
+    return {"ok": True, "package": pkg, "readiness": RT.score(present), "features": feats,
+            "readiness_label": "اكتمال عناصر التوثيق فقط — ليس تصريحاً أو تقييماً قانونياً"}
 
 
 @app.post("/api/jobs/{jid}/suggest_title")
@@ -1652,16 +2040,69 @@ def api_tg_logout():
 def api_quickcheck(payload: dict):
     """🎬 رندر سريع لأول N ثوانٍ بنفس إعداداتك — تشاهد الإطار والتتبّع قبل المعالجة الكاملة."""
     src = (payload.get("input") or "").strip()
-    if not src:
-        raise HTTPException(400, "حدّد مقطعاً أو رابطاً")
+    scout_id = (payload.get("scout_id") or "").strip()
+    if not src and not scout_id:
+        raise HTTPException(400, "حدّد مقطعاً أو اختر لقطة من الكشّاف")
     try:
-        local, cap = _download_to_local(src, payload.get("caption", ""))
+        secs = float(payload.get("seconds") or 6)
+    except (TypeError, ValueError, OverflowError):
+        raise HTTPException(400, "مدة المعاينة غير صالحة") from None
+    if not math.isfinite(secs):
+        raise HTTPException(400, "مدة المعاينة غير صالحة")
+    secs = max(3.0, min(20.0, secs))
+    try:
+        if scout_id:
+            local, cap, session = _scout_source(scout_id)
+            raw_index = payload.get("scout_index", 0)
+            try:
+                if isinstance(raw_index, bool):
+                    raise ValueError
+                index_value = float(raw_index)
+                if not math.isfinite(index_value) or not index_value.is_integer():
+                    raise ValueError
+                index = int(index_value)
+                candidates = session.get("candidates") or []
+                if not 0 <= index < len(candidates):
+                    raise IndexError
+                candidate = candidates[index]
+                selection_start = payload.get("selection_start")
+                selection_end = payload.get("selection_end")
+                if selection_start in (None, ""):
+                    selection_start = payload.get("start")
+                if selection_end in (None, ""):
+                    selection_end = payload.get("end")
+                if selection_start in (None, ""):
+                    selection_start = candidate["start"]
+                if selection_end in (None, ""):
+                    selection_end = candidate["end"]
+                selected = validate_selections(
+                    session,
+                    [{"index": index, "start": selection_start, "end": selection_end}],
+                    max_duration=payload.get("max_dur", 58.0),
+                )[0]
+            except ScoutSessionError as exc:
+                raise HTTPException(400, str(exc)) from None
+            except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                raise HTTPException(400, "اختر لقطة صالحة من جلسة الكشّاف") from None
+            preview_start_value = payload.get("start")
+            try:
+                preview_start = selected["start"] if preview_start_value in (None, "") else float(preview_start_value)
+            except (TypeError, ValueError, OverflowError):
+                raise HTTPException(400, "بداية المعاينة غير صالحة") from None
+            if not math.isfinite(preview_start) or preview_start < selected["start"] - 0.05 or preview_start + secs > selected["end"] + 0.05:
+                raise HTTPException(400, "يجب أن تبقى المعاينة داخل القص المختار")
+            payload = dict(payload)
+            payload["start"] = str(round(preview_start, 2))
+            payload["end"] = ""
+            payload.pop("selection_start", None)
+            payload.pop("selection_end", None)
+            payload.pop("scout_index", None)
+        else:
+            local, cap = _download_to_local(src, payload.get("caption", ""))
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(400, f"تعذّر جلب المقطع: {str(e)[:110]}")
-    secs = float(payload.get("seconds") or 6)
-    secs = max(3.0, min(20.0, secs))
+    except Exception:
+        raise HTTPException(400, "تعذّر جلب المقطع للتحقق") from None
     out = OUT / f"quick_{uuid.uuid4().hex[:8]}.mp4"
     opts = dict(payload)
     opts.update({"quality": "fast", "preset": "veryfast", "crf": 26, "max_dur": secs,
@@ -1715,18 +2156,21 @@ def api_channel_probe(channel: str = ""):
 @app.post("/api/jobs/retry_failed")
 def api_retry_failed():
     """🔁 يعيد تشغيل كل المهام الفاشلة/المتوقّفة."""
-    ids = [j["id"] for j in JOBS.values() if j.get("status") in ("failed", None)]   # 🔧 المنتظرة أصلاً عندها خيط — لا نكررها
+    with _lock:                            # التكرار على JOBS الحية يرمي RuntimeError عند تعديل متزامن
+        ids = [j["id"] for j in JOBS.values() if j.get("status") in ("failed", None)]   # 🔧 المنتظرة أصلاً عندها خيط — لا نكررها
     done = []
     for jid in ids:
-        j = JOBS.get(jid)
-        if not j or j.get("status") == "running":
-            continue
-        opts = j.get("options") or {}
-        if not (j.get("input") and Path(j["input"]).exists()):
-            continue
-        j.update(status="queued", progress=0, stage="في الانتظار", log=[])
+        with _lock:
+            j = JOBS.get(jid)
+            if not j or j.get("status") == "running":
+                continue
+            opts = j.get("options") or {}
+            if not (j.get("input") and Path(j["input"]).exists()):
+                continue
+            j.update(status="queued", progress=0, stage="في الانتظار", log=[])
+            _src, _out = j["input"], j["output"]
 
-        def _runner(jj=jid, oo=opts, src=j["input"], out=j["output"]):
+        def _runner(jj=jid, oo=opts, src=_src, out=_out):
             with JOB_SEM:
                 if JOBS.get(jj, {}).get("status") != "queued":
                     return                # 🔧 أُلغيت/حُذفت أثناء الانتظار — لا تُبعث من جديد
@@ -1743,16 +2187,21 @@ def api_clear_finished(payload: dict | None = None):
     payload = payload or {}
     only_files = bool(payload.get("keep_records"))
     n = 0
-    for jid in [k for k, j in JOBS.items() if j.get("status") == "done"]:
-        j = JOBS.get(jid) or {}
+    with _lock:                            # نسخ المفاتيح تحت القفل ثم العمل خارجها
+        done_ids = [k for k, j in JOBS.items() if j.get("status") == "done"]
+    for jid in done_ids:
+        with _lock:
+            j = JOBS.get(jid) or {}
+            _outp = j.get("output", "")
         try:
-            Path(j.get("output", "")).unlink(missing_ok=True)
-            Path(str(j.get("output", "")) .replace(".mp4", "_thumb.jpg")).unlink(missing_ok=True)
+            Path(_outp).unlink(missing_ok=True)
+            Path(str(_outp).replace(".mp4", "_thumb.jpg")).unlink(missing_ok=True)
             (OUT / f"thumb_{jid}.jpg").unlink(missing_ok=True)
         except Exception:
             pass
         if not only_files:
-            JOBS.pop(jid, None)
+            with _lock:
+                JOBS.pop(jid, None)
         n += 1
     _persist()
     return {"ok": True, "count": n}
@@ -1938,7 +2387,8 @@ nav{display:flex;gap:6px;padding:0 22px;border-bottom:1px solid var(--bd);backgr
  position:sticky;top:67px;z-index:30;overflow-x:auto}
 nav button{background:none;border:0;color:var(--mut);font:inherit;font-weight:600;padding:14px 15px;
  cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px}
-nav button:hover{color:var(--tx)}
+nav button:hover{color:var(--tx)}nav .studio-link{color:#9be9eb;font-weight:800;padding:14px 15px;white-space:nowrap;display:flex;align-items:center;border-bottom:2px solid transparent}
+nav .studio-link:hover{color:#fff;border-bottom-color:var(--cyan);background:linear-gradient(180deg,rgba(54,209,220,.08),transparent)}
 nav button.act{color:#fff;border-bottom-color:var(--cyan);background:linear-gradient(180deg,rgba(54,209,220,.08),transparent)}
 /* ---------- layout ---------- */
 main{max-width:1500px;margin:0 auto;padding:22px}
@@ -2045,6 +2495,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
 .spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;
  animation:sp .7s linear infinite;display:inline-block}
 @keyframes sp{to{transform:rotate(360deg)}}
+.scout-review{grid-column:1/-1}.scout-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap}.scout-head h2{margin:0 0 6px}.scout-head p,.scout-scope{color:var(--mut);font-size:12.5px;margin:0}.scout-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.scout-controls label{min-width:150px}.scout-controls select{min-width:100px}.scout-track{height:8px;background:#101820;border-radius:8px;overflow:hidden;margin:12px 0}.scout-track[hidden],.scout-actions[hidden]{display:none}.scout-bar{height:100%;width:0;background:linear-gradient(90deg,#27b9b3,#58e0b6);transition:width .35s}.scout-status{font-size:13px;color:#dce8f2;margin-top:12px}.scout-results{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;margin-top:14px}.scout-item{min-width:0;background:var(--card2);border:1px solid var(--bd);border-radius:13px;overflow:hidden}.scout-image{position:relative;background:#090e14;aspect-ratio:16/9}.scout-image img{display:block;width:100%;height:100%;object-fit:cover}.scout-score{position:absolute;top:9px;inset-inline-start:9px;background:#0d151de8;border:1px solid var(--bd2);border-radius:9px;padding:4px 8px;font-weight:800}.scout-pick{position:absolute;top:9px;inset-inline-end:9px;background:#0d151de8;border:1px solid var(--bd2);border-radius:8px;padding:3px 8px;font-size:11px}.scout-body{padding:11px}.scout-body h3{margin:0 0 5px;font-size:14px}.scout-time,.scout-stats{font-size:11.5px;color:var(--mut)}.scout-reasons{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}.scout-reasons span{font-size:10.5px;padding:2px 7px;border-radius:20px;background:#15312f;border:1px solid #235e58;color:#a8e3d5}.scout-stats{display:flex;gap:9px;flex-wrap:wrap}.scout-item-actions{display:flex;gap:7px;margin-top:10px}.scout-item-actions .btn{margin:0;flex:1;padding:8px;font-size:11.5px}.scout-trim{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}.scout-trim label{display:flex;align-items:center;justify-content:space-between;gap:7px;font-size:11px;color:var(--mut);min-width:0}.scout-trim input{width:96px;min-width:0;padding:6px 7px;background:#0c131a;color:var(--tx);border:1px solid var(--bd2);border-radius:7px;font:12px ui-monospace,Consolas,monospace;direction:ltr;text-align:center}.scout-trim input:focus{outline:2px solid var(--cyan);outline-offset:1px}.scout-trim-help{grid-column:1/-1;margin:0;color:var(--mut);font-size:10.5px;line-height:1.5}.scout-use[aria-pressed="true"]{background:#15312f;border-color:#26756c;color:#b6f2df}.scout-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)}.scout-actions .btn{margin:0}.scout-empty{padding:20px;margin-top:12px}@media(max-width:1000px){.scout-results{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:640px){.scout-results{grid-template-columns:1fr}.scout-controls{width:100%}.scout-controls label,.scout-controls select,.scout-controls .btn{width:100%}.scout-head{display:block}.scout-controls{margin-top:12px}}
 </style></head><body>
 
 <header>
@@ -2060,7 +2511,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
   <button data-tab="brand">🎨 الهوية والشعار</button>
   <button data-tab="chan">📡 القناة</button>
   <button data-tab="auto">🤖 الأتمتة</button>
-  <button data-tab="set">⚙️ الإعدادات</button>
+  <button data-tab="set">⚙️ الإعدادات</button>  <a class="studio-link" href="/studio">🎬 محتوى الريلز</a>
 </nav>
 
 <main>
@@ -2097,18 +2548,18 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <input id="src" placeholder="https://t.me/OffsideOffside1/2966   أو   رابط فيديو مباشر">
     <div class="row">
       <div><label>الكاميرا تتبع</label><select id="subject">
-        <option value="ball">⚽ الكرة</option><option value="player">🏃 اللاعب (player cam)</option>
-        <option value="action">🎯 حركة اللعب</option></select></div>
+        <option value="action">🎯 مساحة اللعب (موصى بها)</option><option value="ball">⚽ الكرة</option>
+        <option value="player">🏃 اللاعب (player cam)</option></select></div>
       <div><label>التخطيط</label><select id="layout">
-        <option value="single">ريل عادي (كاميرا واحدة)</option>
-        <option value="split">🪟 شاشة مقسومة نظيفة (واسعة + اللاعب)</option></select></div>
+        <option value="single">🎬 عمودي واحد (موصى به)</option>
+        <option value="split">شاشة مقسومة (تكرر رسوم البث)</option></select></div>
       <div><label>محرّك التتبّع</label><select id="tracker">
         <option value="auto">🎯 تلقائي (احترافي إن أمكن)</option>
         <option value="pro">🏆 احترافي (2D + RTS + جسر القالب)</option>
         <option value="classic">كلاسيكي</option></select></div>
       <div><label>جودة كشف الكرة</label><select id="quality">
-        <option value="auto">تلقائي (الأفضل لجهازك)</option>
-        <option value="high">عالية — تقطيع+تكبير (موصى به)</option>
+        <option value="auto" selected>تلقائي (الأفضل لجهازك)</option>
+        <option value="high">عالية — تقطيع+تكبير</option>
         <option value="balanced">متوازنة</option>
         <option value="fast">سريعة</option>
         <option value="ultra">قصوى (أبطأ، أدق)</option></select></div>
@@ -2164,13 +2615,14 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <div class="card">
       <h2><span class="num">2</span> قوالب سريعة</h2>
       <div class="row3" style="margin-bottom:6px">
+        <button class="btn gray" style="margin:0" onclick="preset('pro')">🎥 عمودي نظيف</button>
         <button class="btn gray" style="margin:0" onclick="preset('goal')">⚽ هدف</button>
         <button class="btn gray" style="margin:0" onclick="preset('celeb')">🎉 احتفال</button>
         <button class="btn gray" style="margin:0" onclick="preset('fast')">⚡ سريع</button>
       </div>
       <div class="row">
-        <label><input type="checkbox" id="rmwl" checked> إزالة واترمارك المصدر</label>
-        <label><input type="checkbox" id="trail" checked> أثر الكرة (ball trail)</label>
+        <label><input type="checkbox" id="rmwl"> إزالة علامات المصدر (فقط بإذن صاحبها)</label>
+        <label><input type="checkbox" id="trail"> إظهار حلقة/مسار الكرة (اختياري)</label>
       </div>
       <div class="row">
         <label><input type="checkbox" id="autoyt"> 🚀 رفع تلقائي لليوتيوب</label>
@@ -2188,6 +2640,31 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <div class="card" style="margin-top:18px">
       <h2><span class="num">3</span> آخر النتائج</h2>
       <div id="recent" class="empty">ما فيه نتائج بعد — ابدأ أول مقطع 👆</div>
+    </div>
+  </div>
+  <div class="card scout-review" id="scoutReview">
+    <div class="scout-head">
+      <div>
+        <h2>🔭 راجع لقطات المباراة قبل صناعة الريل</h2>
+        <p>يرتّب الكشّاف لحظات الهتاف والحركة والخطورة، ثم يعرض صورة ودرجة كل لقطة لتختارها بنفسك.</p>
+      </div>
+      <div class="scout-controls">
+        <label for="scoutCount">عدد اللقطات المرشحة
+          <select id="scoutCount"><option value="3">3</option><option value="5" selected>5</option><option value="8">8</option><option value="10">10</option></select>
+        </label>
+        <button class="btn sec" id="scoutStart" style="margin:0" onclick="startScout()">🔭 حلّل المقطع</button>
+        <button class="btn gray" id="scoutClear" style="margin:0" onclick="clearScoutSelection()">مسح التحديد</button>
+      </div>
+    </div>
+    <div class="scout-scope" style="margin-top:10px">التحليل محلي للمقطع. لا يبدأ الرندر ولا ينشر شيئاً. اختر المقطع أو الرابط في الخطوة 1 أعلاه.</div>
+    <div class="scout-status" id="scoutStatus" role="status" aria-live="polite">بانتظار اختيار المقطع.</div>
+    <div class="scout-track" id="scoutTrack" hidden><div class="scout-bar" id="scoutBar"></div></div>
+    <div class="scout-empty empty" id="scoutEmpty">بعد التحليل، ستظهر هنا صور اللقطات المرشّحة ودرجاتها وأسباب ترتيبها.</div>
+    <div class="scout-results" id="scoutResults"></div>
+    <div class="scout-actions" id="scoutActions" hidden>
+      <label><input type="checkbox" id="scoutSelectAll"> اختيار كل اللقطات</label>
+      <span id="scoutSelectedCount" class="scout-scope">0/10 لقطات محددة</span>
+      <button class="btn" id="scoutBatch" onclick="processScoutSelection()" disabled>🚀 حوّل المحدد إلى ريلز</button>
     </div>
   </div>
 </section>
@@ -2298,7 +2775,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <div class="row">
       <div><label>الجودة</label><select id="autoQuality"><option>auto</option><option>high</option><option>balanced</option><option>fast</option><option>ultra</option></select></div>
       <div><label>التخطيط</label><select id="autoLayout"><option value="single">ريل عادي</option><option value="split">شاشة مقسومة</option></select></div>
-      <div><label>الكاميرا</label><select id="autoSubject"><option value="ball">الكرة</option><option value="player">اللاعب</option><option value="action">الحركة</option></select></div>
+      <div><label>الكاميرا</label><select id="autoSubject"><option value="action">مساحة اللعب</option><option value="ball">الكرة</option><option value="player">اللاعب</option></select></div>
     </div>
     <label>النشر بعد اكتمال المعالجة</label>
     <select id="autoUpload"><option value="none">لا تنشر — اتركه في النتائج (آمن)</option><option value="telegram">تيليجرام</option><option value="youtube">يوتيوب</option><option value="both">تيليجرام + يوتيوب</option></select>
@@ -2447,6 +2924,187 @@ window.addEventListener("unhandledrejection",e=>{
   toast("⚠️ "+msg,"err");
 });
 let CFG={},JOBS=[],CUR=null;
+let SCOUT_REVIEW=null,SCOUT_SELECTED_ID="",SCOUT_SELECTED_INDEX=-1,SCOUT_STARTING=false,SCOUT_POLL_ID="";
+const SCOUT_SESSION_KEY="elhadath-reels.scout-session";
+function scoutStorageGet(){try{return sessionStorage.getItem(SCOUT_SESSION_KEY)||""}catch(e){return ""}}
+function scoutStorageSet(value){try{if(value)sessionStorage.setItem(SCOUT_SESSION_KEY,value);else sessionStorage.removeItem(SCOUT_SESSION_KEY)}catch(e){}}
+async function scoutJson(url,options={}){
+  const headers={"Accept":"application/json",...(options.headers||{})};
+  if(typeof options.body==="string")headers["Content-Type"]="application/json";
+  const response=await fetch(url,{...options,headers});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(data.detail||`فشل الطلب (${response.status})`);
+  return data;
+}
+function scoutTime(value){
+  const total=Math.max(0,Number(value)||0),minutes=Math.floor(total/60),seconds=(total-minutes*60).toFixed(2).padStart(5,"0");
+  return `${String(minutes).padStart(2,"0")}:${seconds}`;
+}
+function scoutDuration(value){
+  const seconds=Math.max(0,Number(value)||0),minutes=Math.floor(seconds/60),rest=Math.round(seconds%60);
+  return `${String(minutes).padStart(2,"0")}:${String(rest).padStart(2,"0")}`;
+}
+function scoutTimeInput(value){
+  const total=Math.max(0,Number(value)||0),hours=Math.floor(total/3600),minutes=Math.floor(total/60)%60,seconds=(total%60).toFixed(2).padStart(5,"0");
+  return hours?`${String(hours).padStart(2,"0")}:${String(minutes).padStart(2,"0")}:${seconds}`:`${String(Math.floor(total/60)).padStart(2,"0")}:${seconds}`;
+}
+function parseScoutTime(value){
+  const digitMap={"٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9","۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9"};
+  const raw=String(value??"").trim().replace(/[٠-٩۰-۹]/g,digit=>digitMap[digit]).replace(/[٫,،]/g,".");
+  const parts=raw.split(":");
+  if(parts.length<1||parts.length>3||parts.some(part=>part===""))throw new Error("اكتب الوقت بصيغة 01:23 أو 01:02:03.");
+  const numbers=parts.map(Number);
+  if(numbers.some(number=>!Number.isFinite(number)||number<0))throw new Error("الوقت يجب أن يكون رقماً موجباً.");
+  if(parts.length===1)return numbers[0];
+  if(numbers.at(-1)>=60||(parts.length===3&&numbers[1]>=60))throw new Error("الثواني والدقائق يجب أن تكون أقل من 60.");
+  return parts.length===2?numbers[0]*60+numbers[1]:numbers[0]*3600+numbers[1]*60+numbers[2];
+}
+function scoutWindow(index,startValue=null,endValue=null){
+  if(!SCOUT_REVIEW||SCOUT_REVIEW.status!=="ready")throw new Error("انتظر اكتمال تحليل المقطع.");
+  const candidate=SCOUT_REVIEW.candidates?.[index];
+  if(!candidate)throw new Error("اللقطة المحددة غير موجودة.");
+  const startControl=$("scoutResults").querySelector(`.scout-trim-start[data-index="${index}"]`),endControl=$("scoutResults").querySelector(`.scout-trim-end[data-index="${index}"]`);
+  const start=parseScoutTime(startValue??startControl?.value),end=parseScoutTime(endValue??endControl?.value),duration=Number(SCOUT_REVIEW.duration),maxDuration=Number($("maxdur")?.value||58),peak=Number(candidate.peak_t);
+  if(!Number.isFinite(duration)||duration<=0||start<0||end>duration+.05||end<=start)throw new Error("حدّد قصّاً صالحاً داخل مدة المقطع.");
+  if(!Number.isFinite(peak)||start>peak||end<peak)throw new Error("وسّع القص ليشمل ذروة اللقطة المكتشفة.");
+  if(end-start<3)throw new Error("يجب ألا تقل اللقطة عن 3 ثوانٍ.");
+  if(!Number.isFinite(maxDuration)||maxDuration<=0||end-start>maxDuration+.05)throw new Error(`مدة القص تتجاوز الحد الحالي (${maxDuration||58} ثانية).`);
+  return{index,start:Number(start.toFixed(2)),end:Number(end.toFixed(2)),candidate};
+}
+function renderScoutSession(session){
+  SCOUT_REVIEW=session;
+  const states={queued:"في قائمة الانتظار",downloading:"جاري تجهيز المقطع",analyzing:"نحلّل الصوت ونفحص اللقطات بصرياً",ready:"اكتمل التحليل",failed:"تعذّر التحليل"};
+  const label=states[session.status]||"حالة غير معروفة";
+  $("scoutStatus").textContent=`${label}${session.stage&&session.stage!==label?" — "+session.stage:""}${session.label?" · "+session.label:""}${session.error?" · "+session.error:""}`;
+  $("scoutTrack").hidden=false;
+  $("scoutBar").style.width=`${Math.max(0,Math.min(100,Number(session.progress)||0))}%`;
+  const ready=session.status==="ready";
+  $("scoutActions").hidden=!ready;
+  $("scoutEmpty").hidden=ready;
+  if(ready)renderScoutCandidates(session);
+  else if(session.status==="failed")$("scoutEmpty").textContent="لم تُنتج هذه المحاولة لقطات. راجع الملف أو الرابط ثم أعد التحليل.";
+  updateScoutBatchCount();
+}
+function renderScoutCandidates(session){
+  const candidates=session.candidates||[];
+  if(!candidates.length){$("scoutResults").innerHTML="";$("scoutEmpty").textContent="لم يعثر الكشّاف على لحظات قوية. جرّب مقطعاً أطول أو استخدم الاقتطاع اليدوي.";return}
+  $("scoutResults").innerHTML=candidates.map((candidate,index)=>{
+    const stats=candidate.stats||{},reasons=(candidate.reasons||[]).map(reason=>`<span>${esc(reason)}</span>`).join("");
+    const image=`/api/scout/${encodeURIComponent(session.id)}/thumb/${index}`;
+    const selected=SCOUT_SELECTED_ID===session.id&&SCOUT_SELECTED_INDEX===index;
+    return `<article class="scout-item"><div class="scout-image"><img loading="lazy" alt="إطار من اللقطة ${index+1}" src="${image}" onerror="this.closest('.scout-image').classList.add('failed')"><span class="scout-score">${Number(candidate.score||0).toFixed(1)} / 100</span><label class="scout-pick"><input class="scout-check" type="checkbox" data-index="${index}"> دفعة</label></div><div class="scout-body"><h3>اللقطة ${index+1} · ${scoutDuration(candidate.dur)}</h3><div class="scout-time">${scoutTime(candidate.start)} — ${scoutTime(candidate.end)} · الذروة ${scoutTime(candidate.peak_t)}</div><div class="scout-reasons">${reasons||"<span>إشارة ضعيفة — راجع يدوياً</span>"}</div><div class="scout-stats"><span>تتبّع ${Math.round((stats.coverage||0)*100)}%</span><span>خطورة ${Math.round((stats.danger||0)*100)}%</span><span>سرعة ${Math.round(stats.speed_p95||0)} px/s</span></div><div class="scout-trim"><label>من<input class="scout-trim-start" data-index="${index}" value="${scoutTimeInput(candidate.start)}" inputmode="numeric" aria-label="بداية القص للّقطة ${index+1}"></label><label>إلى<input class="scout-trim-end" data-index="${index}" value="${scoutTimeInput(candidate.end)}" inputmode="numeric" aria-label="نهاية القص للّقطة ${index+1}"></label><p class="scout-trim-help">حد أدنى 3 ثوانٍ. وسّع القص أو قصّره مع إبقاء الذروة داخله؛ الحد الأقصى ${scoutDuration($("maxdur")?.value||58)}.</p></div><div class="scout-item-actions"><button class="btn gray scout-use" data-index="${index}" aria-pressed="${selected}" onclick="useScoutCandidate(${index})">${selected?"✓ معتمدة":"استخدم اللقطة"}</button><button class="btn sec" onclick="previewScoutCandidate(${index})">▶ معاينة 6 ثوانٍ</button></div></div></article>`;
+  }).join("");
+  $("scoutResults").querySelectorAll(".scout-check").forEach(box=>box.addEventListener("change",updateScoutBatchCount));
+  $("scoutEmpty").textContent="";
+}
+function updateScoutBatchCount(event=null){
+  const boxes=$("scoutResults")?[...$("scoutResults").querySelectorAll(".scout-check")]:[];
+  let checked=boxes.filter(box=>box.checked);
+  if(event?.target?.checked&&checked.length>10){event.target.checked=false;checked=boxes.filter(box=>box.checked);toast("يمكنك تحويل 10 لقطات كحد أقصى في كل دفعة.","err")}
+  if($("scoutSelectedCount"))$("scoutSelectedCount").textContent=`${checked.length}/10 لقطات محددة`;
+  if($("scoutSelectAll"))$("scoutSelectAll").checked=boxes.length>0&&boxes.slice(0,10).every(box=>box.checked);
+  if($("scoutBatch"))$("scoutBatch").disabled=checked.length===0||checked.length>10||SCOUT_REVIEW?.status!=="ready";
+}
+function applyScoutCandidate(index){
+  try{
+    const selected=scoutWindow(index);
+    SCOUT_SELECTED_ID=SCOUT_REVIEW.id;SCOUT_SELECTED_INDEX=index;
+    $("start").value=String(selected.start);$("end").value=String(selected.end);
+    if($("autocut"))$("autocut").checked=false;
+    $("scoutResults").querySelectorAll(".scout-use").forEach(button=>{
+      const active=Number(button.dataset.index)===index;
+      button.setAttribute("aria-pressed",String(active));button.textContent=active?"✓ معتمدة":"استخدم اللقطة";
+    });
+    toast(`اختيرت اللقطة ${index+1}: ${scoutTime(selected.start)}–${scoutTime(selected.end)}. راجع الإعدادات ثم ابدأ المعالجة.`,"ok");
+    return selected;
+  }catch(error){toast(error.message,"err");return null}
+}
+function useScoutCandidate(index){applyScoutCandidate(index)}
+function previewScoutCandidate(index){
+  if(!applyScoutCandidate(index))return;
+  quickCheck();
+}
+function clearScoutSelection(){
+  SCOUT_SELECTED_ID="";SCOUT_SELECTED_INDEX=-1;
+  if($("scoutSelectAll"))$("scoutSelectAll").checked=false;
+  if($("scoutResults"))$("scoutResults").querySelectorAll(".scout-check").forEach(box=>box.checked=false);
+  if(SCOUT_REVIEW?.status==="ready")renderScoutCandidates(SCOUT_REVIEW);
+  updateScoutBatchCount();
+  toast("أُلغي تحديد اللقطات؛ بقي التحليل متاحاً للمراجعة.","ok");
+}
+async function processScoutSelection(){
+  if(!SCOUT_REVIEW||SCOUT_REVIEW.status!=="ready")return;
+  const indices=[...$("scoutResults").querySelectorAll(".scout-check:checked")].map(box=>Number(box.dataset.index));
+  let items=[];
+  try{items=indices.map(index=>scoutWindow(index))}catch(error){toast(error.message,"err");return}
+  if(!items.length){toast("اختر لقطة واحدة على الأقل.","err");return}
+  const publishing=$("autoyt").checked||$("autotg").checked;
+  const confirmation=`سيُضاف ${items.length} ريل إلى الطابور من اللقطات المحددة.${publishing?" إعدادات النشر المحددة مفعّلة؛ سيُطبّقها المشروع على كل مهمة.":" لن يُنشر شيء تلقائياً."} هل تتابع؟`;
+  if(!confirm(confirmation))return;
+  const button=$("scoutBatch"),old=button.innerHTML;button.disabled=true;button.innerHTML='<span class="spin"></span> إضافة المهام…';
+  try{
+    const options=chanOpts();
+    const requests=items.map(selection=>({input:"",scout_id:SCOUT_REVIEW.id,scout_index:selection.index,start:String(selection.start),end:String(selection.end),auto_cut:false,goals:0,...options}));
+    const result=await scoutJson("/api/jobs/batch",{method:"POST",body:JSON.stringify({items:requests})});
+    const ids=result.ids||[],created=ids.filter(id=>typeof id==="string").length,errors=ids.filter(id=>id&&typeof id==="object").length;
+    if(!created)throw new Error(errors?"تعذّر إضافة الريلز المحددة إلى الطابور.":"لم تُضف أي مهمة.");
+    $("scoutResults").querySelectorAll(".scout-check").forEach(box=>box.checked=false);
+    $("scoutSelectAll").checked=false;updateScoutBatchCount();
+    toast(`أُضيف ${created} ريل إلى الطابور${errors?`، وتعذّر ${errors}`:""}.`,errors?"err":"ok");
+    focusJobs();poll();
+  }catch(error){toast("تعذّرت إضافة الريلز: "+error.message,"err")}
+  finally{button.innerHTML=old;updateScoutBatchCount()}
+}
+async function startScout(){
+  if(SCOUT_STARTING)return;
+  const button=$("scoutStart"),old=button.innerHTML;SCOUT_STARTING=true;button.disabled=true;button.innerHTML='<span class="spin"></span> تجهيز المقطع…';
+  try{
+    let source=$("src").value.trim();
+    if($("file").files.length){
+      const form=new FormData();form.append("file",$("file").files[0]);
+      const response=await fetch("/api/upload",{method:"POST",body:form,headers:{"Accept":"application/json"}}),uploaded=await response.json().catch(()=>({}));
+      if(!response.ok||!uploaded.path)throw new Error(uploaded.detail||"فشل رفع المقطع");
+      source=uploaded.path;$("src").value=source;$("file").value="";
+      if($("fileName"))$("fileName").textContent=uploaded.name||source.split(/[\\/]/).pop();
+    }
+    if(!source)throw new Error("اختر مقطعاً أو أضف رابط فيديو في الخطوة 1 أولاً.");
+    button.innerHTML='<span class="spin"></span> بدء التحليل…';
+    const session=await scoutJson("/api/scout",{method:"POST",body:JSON.stringify({input:source,count:Number($("scoutCount").value)||5,caption:$("cap")?$("cap").value:""})});
+    if(!/^[a-f0-9]{32}$/.test(session.id||""))throw new Error("تعذّر بدء جلسة التحليل.");
+    clearScoutSelection();
+    SCOUT_REVIEW=session;scoutStorageSet(session.id);renderScoutSession(session);pollScoutSession(session.id);
+    $("scoutReview").scrollIntoView({behavior:"smooth",block:"start"});
+  }catch(error){$("scoutStatus").textContent=error.message;toast(error.message,"err")}
+  finally{SCOUT_STARTING=false;button.disabled=false;button.innerHTML=old}
+}
+async function loadScoutSession(sid){
+  if(!/^[a-f0-9]{32}$/.test(sid||""))return;
+  try{const session=await scoutJson(`/api/scout/${encodeURIComponent(sid)}`);SCOUT_REVIEW=session;renderScoutSession(session);if(["queued","downloading","analyzing"].includes(session.status))pollScoutSession(sid)}
+  catch(error){scoutStorageSet("");$("scoutStatus").textContent="انتهت جلسة المراجعة؛ أعد تحليل المقطع لعرض اللقطات."}
+}
+async function pollScoutSession(sid){
+  if(SCOUT_POLL_ID===sid)return;SCOUT_POLL_ID=sid;
+  try{
+    while(scoutStorageGet()===sid){
+      await new Promise(resolve=>setTimeout(resolve,1800));
+      const session=await scoutJson(`/api/scout/${encodeURIComponent(sid)}`);
+      SCOUT_REVIEW=session;renderScoutSession(session);
+      if(!["queued","downloading","analyzing"].includes(session.status))break;
+    }
+  }catch(error){$("scoutStatus").textContent="انقطع تحديث التحليل؛ حدّث الصفحة لاستئناف المتابعة.";toast(error.message,"err")}
+  finally{if(SCOUT_POLL_ID===sid)SCOUT_POLL_ID=""}
+}
+function initScoutReview(){
+  if($("src"))$("src").addEventListener("input",()=>{if(SCOUT_SELECTED_ID)clearScoutSelection()});
+  if($("file"))$("file").addEventListener("change",()=>{if(SCOUT_SELECTED_ID)clearScoutSelection()});
+  if($("scoutSelectAll"))$("scoutSelectAll").addEventListener("change",event=>{
+    const boxes=[...$("scoutResults").querySelectorAll(".scout-check")];
+    boxes.forEach((box,index)=>box.checked=event.target.checked&&index<10);
+    if(event.target.checked&&boxes.length>10)toast("تم تحديد أول 10 لقطات؛ الحد الأقصى للدفعة 10.","ok");
+    updateScoutBatchCount();
+  });
+  const sid=scoutStorageGet();if(sid)loadScoutSession(sid);
+}
 function focusNew(){document.querySelector('nav button[data-tab="new"]').click();window.scrollTo({top:0,behavior:"smooth"});}
 function focusJobs(){document.querySelector('nav button[data-tab="jobs"]').click();window.scrollTo({top:0,behavior:"smooth"});}
 function updateOverview(st){
@@ -2491,7 +3149,7 @@ async function loadAutomation(){
     $("autoInterval").value=r.interval||300; $("autoLimit").value=r.limit||5;
     $("autoUpload").value=r.upload||"none";
     $("autoQuality").value=r.automation_quality||"auto";
-    $("autoLayout").value=r.automation_layout||"single"; $("autoSubject").value=r.automation_subject||"ball";
+    $("autoLayout").value=r.automation_layout||"single"; $("autoSubject").value=r.automation_subject||"action";
     const state=r.alive?(r.last_error?"⚠️ يعمل مع خطأ في آخر دورة":"✅ يعمل"):(r.enabled?"⏳ سيبدأ عند تشغيل اللوحة":"⏹ متوقف");
     $("autoStatus").textContent=state+(r.last_error?" — "+r.last_error:"");
     $("autoMetrics").innerHTML=`<b>الحالة:</b> ${esc(state)}<br><b>آخر دورة:</b> ${r.last_cycle?new Date(r.last_cycle*1000).toLocaleString():"—"}<br><b>أضيف للطابور في آخر دورة:</b> ${r.queued||0}`;
@@ -2528,8 +3186,9 @@ function showName(){const f=$("file").files[0];
 
 /* ---------- presets ---------- */
 function preset(p){
-  if(p==="goal"){$("subject").value="ball";$("trail").checked=true;$("start").value=$("end").value="";}
-  if(p==="celeb"){$("subject").value="player";$("trail").checked=false;}
+  if(p==="pro"){$("subject").value="action";$("layout").value="single";$("trail").checked=false;$("replay").checked=false;$("burst").checked=false;$("hook").checked=false;}
+  if(p==="goal"){$("subject").value="action";$("layout").value="single";$("trail").checked=false;$("start").value=$("end").value="";}
+  if(p==="celeb"){$("subject").value="player";$("layout").value="single";$("trail").checked=false;}
   if(p==="fast"){$("subject").value="action";$("start").value="0";$("end").value="15";}
   toast("تم تطبيق القالب: "+p,"ok");
 }
@@ -2561,20 +3220,28 @@ async function montage(){
 }
 
 async function start(){
+  const scoutId=SCOUT_SELECTED_ID;
+  let selectedScout=null;
+  if(scoutId){
+    try{
+      if(!SCOUT_REVIEW||SCOUT_REVIEW.id!==scoutId)throw new Error("جلسة الكشّاف لم تعد مطابقة للمقطع المحدد.");
+      selectedScout=scoutWindow(SCOUT_SELECTED_INDEX,$("start").value,$("end").value);
+    }catch(error){toast(error.message,"err");return}
+  }
   let src=$("src").value.trim();
-  if($("file").files.length){
+  if($("file").files.length&&!scoutId){
     const fd=new FormData();fd.append("file",$("file").files[0]);
     toast("جاري رفع الملف…");
     const r=await (await fetch("/api/upload",{method:"POST",body:fd})).json();
     if(!r||!r.path){toast(r&&r.detail?String(r.detail):"فشل الرفع","err");return;}
     src=r.path;
   }
-  if(!src){toast("حدّد مقطع أو رابط أول","err");return;}
+  if(!src&&!scoutId){toast("حدّد مقطعاً أو اختر لقطة من الكشّاف أولاً","err");return;}
   // 🔧 كان مفقوداً: quality و layout و device — الواجهة تعرضها لكن لا ترسلها أبداً!
-  const body={input:src,subject:$("subject").value,out_size:$("out_size").value,
+  const body={input:scoutId?"":src,scout_id:scoutId||"",scout_index:selectedScout?selectedScout.index:null,subject:$("subject").value,out_size:$("out_size").value,
     quality:$("quality")?$("quality").value:"auto",layout:$("layout")?$("layout").value:"single",
     device:(CFG.device||""),
-    start:$("start").value,end:$("end").value,
+    start:selectedScout?String(selectedScout.start):$("start").value,end:selectedScout?String(selectedScout.end):$("end").value,
     auto_youtube:$("autoyt").checked,auto_telegram:$("autotg").checked,
     max_dur:$("maxdur")?$("maxdur").value:"58",thumb:$("thumb")?$("thumb").checked:true,
     tracker:$("tracker")?$("tracker").value:"auto",zoom:$("zoom")?$("zoom").value:"auto",
@@ -2584,7 +3251,7 @@ async function start(){
     accent:$("accent")?$("accent").value:"auto",hook:$("hook")?$("hook").checked:false,
     no_retry:$("retry")?!$("retry").checked:false,
     commentary:$("commentary").checked,commentary_text:$("commtext").checked,
-    keep_watermarks:!$("rmwl").checked,no_trail:!$("trail").checked};
+    keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};
   $("goBtn").disabled=true;$("goBtn").innerHTML='<span class="spin"></span> جاري الإرسال…';
   try{
     const r=await fetch("/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -2801,21 +3468,31 @@ function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").val
   no_retry:$("retry")?!$("retry").checked:false,
   commentary:$("commentary").checked,commentary_text:$("commtext").checked,
   auto_youtube:$("autoyt").checked,auto_telegram:$("autotg").checked,
-  keep_watermarks:!$("rmwl").checked,no_trail:!$("trail").checked};}
+  keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};}
 
 async function quickCheck(){
+  const scoutId=SCOUT_SELECTED_ID;
   let src=$("src").value.trim();
-  if($("file").files.length){
+  if($("file").files.length&&!scoutId){
     const fd=new FormData();fd.append("file",$("file").files[0]);
     toast("جاري رفع الملف…");
     const r=await (await fetch("/api/upload",{method:"POST",body:fd})).json();
     if(!r||!r.path){toast(r&&r.detail?String(r.detail):"فشل الرفع","err");return;}
     src=r.path;
   }
-  if(!src){toast("حدّد مقطعاً أو رابطاً أول","err");return;}
+  if(!src&&!scoutId){toast("حدّد مقطعاً أو استخدم لقطة من الكشّاف أولاً","err");return;}
   const b=$("qcBtn"); b.disabled=true; const old=b.innerHTML; b.innerHTML='<span class="spin"></span> جاري الرندر السريع…';
   try{
-    const body={input:src,seconds:6,start:$("start").value,...chanOpts()};
+    let selection=null;
+    if(scoutId){
+      if(!SCOUT_REVIEW||SCOUT_REVIEW.id!==scoutId)throw new Error("جلسة الكشّاف لم تعد مطابقة للمقطع المحدد.");
+      selection=scoutWindow(SCOUT_SELECTED_INDEX,$("start").value,$("end").value);
+    }
+    const previewSeconds=selection?Math.min(6,selection.end-selection.start):6;
+    const previewStart=selection?Math.max(selection.start,Math.min(selection.end-previewSeconds,selection.candidate.peak_t-previewSeconds/2)):$("start").value;
+    const body={input:scoutId?"":src,scout_id:scoutId||"",scout_index:selection?selection.index:null,
+      selection_start:selection?String(selection.start):"",selection_end:selection?String(selection.end):"",
+      seconds:previewSeconds,start:String(previewStart),end:selection?"":$("end").value,...chanOpts()};
     const r=await fetch("/api/quickcheck",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(body)});
     const j=await r.json();
@@ -2922,7 +3599,7 @@ function jobCard(j){
         ${j.quality_report.ok?'✅ فحص الجودة سليم':'⚠️ '+esc((j.quality_report.issues||[]).join(' · '))}</div>`:""}
       <div class="acts">
         ${done?`<button class="btn sec sm" onclick="openJob('${j.id}')">👁 مراجعة ونشر</button>
-          <button class="btn gray sm" title="توثيق العمل الأصلي/التحويلي لاعتراض مشروع" onclick="dispute('${j.id}')">🛡️ حزمة اعتراض</button>
+          <button class="btn gray sm" title="تصدير معلومات الإنتاج للمراجعة؛ لا تثبت حق الاستخدام" onclick="dispute('${j.id}')">🛡️ معلومات الإنتاج</button>
           ${j.media?`<a href="${j.media}" download><button class="btn gray sm">⬇ تحميل</button></a>`:""}`:""}
         ${j.status==="running"?`<button class="btn sec sm" onclick="liveLog('${j.id}')">📟 مباشر</button>
           <button class="btn gray sm" style="color:#ff9aa2" onclick="cancelJob('${j.id}')">⏹ إيقاف</button>`:""}
@@ -2958,9 +3635,9 @@ async function rerun(id){
 async function dispute(id){
   const r=await (await fetch("/api/jobs/"+id+"/dispute",{method:"POST"})).json().catch(()=>({}));
   if(r && r.ok){
-    toast("🛡️ حزمة الاعتراض جاهزة — الجاهزية التحوّلية "+r.readiness+"/100","ok");
-    alert("حُفظت الحزمة بجانب الريل:\n"+r.package+"\n\nعناصر العمل الأصلي/التحويلي:\n- "+r.features.join("\n- ")+"\n\n⚠️ إرشادية فقط وليست رأياً قانونياً.");
-  } else toast("تعذّر إنشاء الحزمة: "+((r&&r.detail)||""),"err");
+    toast("🛡️ اكتمل توثيق عناصر الإنتاج "+r.readiness+"/100","ok");
+    alert("حُفظت مسودة المعلومات بجانب الريل:\n"+r.package+"\n\nعناصر الإنتاج المسجّلة:\n- "+r.features.join("\n- ")+"\n\n⚠️ هذا ليس دليلاً على الملكية أو الترخيص أو الاستخدام العادل. لا ترسل اعتراضاً قبل التحقق من حقوقك وأساسك القانوني.");
+  } else toast("تعذّر إنشاء ملف المعلومات: "+((r&&r.detail)||""),"err");
 }
 async function cancelJob(id){
   if(!confirm("⏹ إيقاف هذه المهمة؟"))return;
@@ -3311,6 +3988,8 @@ async function saveSet(){
 }
 
 loadCfg();poll();
+initScoutReview();
+if(new URLSearchParams(location.search).get("tab")==="set")document.querySelector('nav button[data-tab="set"]').click();
 renderPosPicker();
 try{initLogoDrop();}catch(e){}
 try{loadLogos();}catch(e){}          // 🔧 مكتبة الشعارات كانت تظهر فاضية حتى أول رفع!

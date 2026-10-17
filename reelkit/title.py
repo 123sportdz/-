@@ -124,8 +124,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--calibrate":
         import cv2
         c = _median_crop(sys.argv[2])
-        cv2.imwrite("scoreboard_crop.png", c)
-        print("saved scoreboard_crop.png", c.shape if c is not None else None)
+        if c is None:                        # كان imwrite بـNone يرمي قبل الطبع المحمي
+            print("تعذّر استخراج قصّة اللوحة — تحقق من الملف")
+        else:
+            cv2.imwrite("scoreboard_crop.png", c)
+            print("saved scoreboard_crop.png", c.shape)
     else:
         import json
         print(json.dumps(suggest(sys.argv[1]), ensure_ascii=False, indent=2))

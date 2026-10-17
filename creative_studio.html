@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1118">
+<title>استوديو محتوى الريلز — الحدث</title>
+<style>
+:root{color-scheme:dark;--bg:#0a1016;--panel:#111a23;--line:#263747;--text:#edf3f8;--muted:#9dafbf;--teal:#44d2c2;--gold:#e7b768;--red:#f07879;--green:#62d79b;--radius:18px;--shadow:0 18px 50px #0005}
+*{box-sizing:border-box}html{min-height:100%;background:var(--bg)}body{margin:0;min-height:100vh;color:var(--text);font:15px/1.7 "Segoe UI",Tahoma,Arial,sans-serif;background:radial-gradient(900px 560px at 80% -15%,#1b504d55,transparent 65%),radial-gradient(700px 500px at 0% 30%,#73432e20,transparent 65%),var(--bg)}button,input,select,textarea{font:inherit}a{color:inherit;text-decoration:none}button{color:inherit}.shell{max-width:1480px;margin:auto;padding:0 28px 44px}.topbar{min-height:72px;display:flex;align-items:center;gap:14px;border-bottom:1px solid #ffffff12}.brand{display:flex;align-items:center;gap:11px;font-weight:800}.mark{width:38px;height:38px;border-radius:13px;display:grid;place-items:center;color:#06201d;background:linear-gradient(145deg,#70e2d2,#19a89f);font-size:19px}.brand small{display:block;color:var(--muted);font-size:11px;font-weight:600}.spacer{flex:1}.status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;padding:7px 11px;border:1px solid var(--line);border-radius:99px;background:#0e171f}.status i{width:7px;height:7px;border-radius:50%;background:var(--gold)}.status.ready i{background:var(--green)}.status.missing i{background:var(--red)}.back{border:1px solid var(--line);background:#111b24;border-radius:11px;padding:8px 12px;color:#c4d2df;font-size:12px;font-weight:700}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:24px;align-items:center;margin:25px 0 20px;padding:25px 29px;border:1px solid #47cbb326;border-radius:23px;background:linear-gradient(115deg,#14252aee,#111a22f2 70%);box-shadow:var(--shadow)}.eyebrow{font-size:10px;font-weight:900;letter-spacing:2px;color:var(--teal);margin-bottom:7px}.hero h1{font-size:clamp(24px,3.3vw,38px);line-height:1.25;margin:0 0 8px}.hero p{margin:0;color:#a9bbc9;max-width:740px;font-size:14px}.hero-note{color:#d5c39f;font-size:11px;margin-top:13px}.hero-stats{display:grid;grid-template-columns:1fr 1fr;gap:9px}.stat{padding:11px 13px;border-radius:12px;border:1px solid #ffffff12;background:#0911167d}.stat b{display:block;font-size:18px;color:#f2e4c9}.stat span{display:block;font-size:10px;color:var(--muted);margin-top:3px}.workspace{display:grid;grid-template-columns:minmax(325px,420px) minmax(0,1fr);gap:18px;align-items:start}.panel{min-width:0;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(160deg,#141e28f5,#101820f5);box-shadow:var(--shadow)}.controls,.result,.drafts{padding:19px}.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:15px}.panel-head h2,.drafts-header h2{font-size:14px;margin:0;color:#e2ebf2}.panel-head p{font-size:11px;color:var(--muted);margin:3px 0 0}.step{font-size:10px;color:var(--teal);border:1px solid #3ecabb44;background:#1a37373b;border-radius:99px;padding:4px 9px;white-space:nowrap}.field{margin-top:12px}.field label{display:flex;justify-content:space-between;gap:8px;color:#bdcbd6;font-size:11px;font-weight:700;margin-bottom:5px}.hint{color:#718596;font-size:10px;font-weight:500}input,select,textarea{width:100%;color:var(--text);background:#0b131a;border:1px solid #293a48;border-radius:10px;padding:9px 11px;outline:none;transition:border-color .15s,box-shadow .15s}input,select{height:41px}textarea{resize:vertical;min-height:83px;line-height:1.8}input:focus,select:focus,textarea:focus{border-color:#43bcb1;box-shadow:0 0 0 3px #43bcb11b}input::placeholder,textarea::placeholder{color:#6f8291}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}.small-area{min-height:66px}.mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.mode{display:flex;align-items:center;gap:8px;text-align:right;border:1px solid #293947;border-radius:10px;padding:8px 9px;background:#0e161e;cursor:pointer;transition:.15s;min-height:40px}.mode:hover{border-color:#477477}.mode.active{border-color:#48cbbc;background:linear-gradient(110deg,#1b393a,#12232b);box-shadow:inset 0 0 0 1px #48cbbc22}.mode .ico{font-size:15px;color:var(--teal)}.mode b{font-size:10.5px;font-weight:700}.job-info{display:none;margin-top:8px;padding:9px 11px;border:1px solid #32605b;border-radius:10px;background:#102522;color:#b9e6dc;font-size:10px}.job-info.show{display:block}.primary{width:100%;min-height:45px;margin-top:14px;display:flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:11px;background:linear-gradient(120deg,#55d8c5,#21a99e);color:#06201d;font-size:13px;font-weight:900;cursor:pointer}.primary:disabled{opacity:.55;cursor:wait}.spinner{display:none;width:15px;height:15px;border:2px solid #063b37;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}.busy .spinner{display:inline-block}@keyframes spin{to{transform:rotate(360deg)}}.privacy{font-size:10px;color:#8497a6;text-align:center;margin:9px 4px 0}.missing-note{display:none;border:1px solid #664c30;background:#282114;border-radius:10px;color:#e5c99a;padding:9px 11px;margin:0 0 13px;font-size:10px}.missing-note.show{display:block}.missing-note a{color:#7ce1d5;text-decoration:underline;text-underline-offset:3px}.rightcol{display:grid;gap:17px}.result-head{display:flex;align-items:center;gap:10px;margin-bottom:11px}.result-title{flex:1}.result-title input{font-weight:700}.word-count{font-size:10px;color:var(--muted);white-space:nowrap}.result textarea{min-height:340px;font-size:14px;line-height:2;white-space:pre-wrap}.result-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}.action{border:1px solid #304351;background:#15212b;color:#d7e2eb;border-radius:9px;padding:8px 11px;font-size:10.5px;font-weight:700;cursor:pointer}.action:hover{border-color:#4f8581;color:#fff}.action.primary-lite{background:#173633;border-color:#287469;color:#8ce6d8}.empty-result{min-height:340px;display:grid;place-items:center;text-align:center;border:1px dashed #30414d;border-radius:13px;background:#0b131a77;padding:25px}.empty-result .star{width:52px;height:52px;border-radius:17px;display:grid;place-items:center;margin:0 auto 11px;background:#193737;color:var(--teal);font-size:23px}.empty-result h3{margin:0 0 5px;font-size:14px}.empty-result p{margin:0;color:var(--muted);font-size:11px;max-width:340px}.drafts-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.draft-count{font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:3px 8px}.draft-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.draft{min-width:0;border:1px solid #263846;border-radius:11px;background:#0e171e;padding:10px 11px}.draft h3{font-size:11px;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.draft p{margin:0;color:#8294a2;font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.draft-foot{display:flex;align-items:center;justify-content:space-between;gap:7px;margin-top:8px}.draft-foot time{font-size:9px;color:#6e8290}.draft-actions{display:flex;gap:5px}.draft-actions button{border:0;background:transparent;color:#a7b6c2;font-size:10px;padding:4px 5px;cursor:pointer}.draft-actions button:hover{color:#fff}.draft-actions .delete:hover{color:var(--red)}.draft-empty{grid-column:1/-1;color:#8193a1;border:1px dashed #293a47;border-radius:11px;text-align:center;padding:19px 11px;font-size:10.5px}.toast{position:fixed;z-index:20;bottom:22px;inset-inline-start:22px;max-width:min(420px,calc(100vw - 40px));padding:10px 14px;border:1px solid #416052;border-inline-start:3px solid var(--green);border-radius:10px;background:#14231f;color:#e7f5ee;box-shadow:var(--shadow);font-size:11px;opacity:0;transform:translateY(9px);pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:translateY(0)}.toast.error{border-color:#704446;border-inline-start-color:var(--red);background:#27191b}.footer{color:#718391;text-align:center;font-size:10px;padding-top:15px}
+@media(max-width:980px){.workspace{grid-template-columns:minmax(300px,380px) minmax(0,1fr)}.shell{padding-inline:18px}.hero{padding:21px}}
+@media(max-width:760px){.shell{padding-inline:13px}.topbar{min-height:65px;flex-wrap:wrap;padding:9px 0}.brand{margin-inline-end:auto}.status{order:3}.hero{grid-template-columns:1fr;margin-top:16px;padding:18px}.hero-stats{grid-template-columns:repeat(4,1fr)}.stat{padding:8px 6px}.stat b{font-size:15px}.stat span{font-size:8.5px}.workspace{grid-template-columns:1fr}.controls,.result,.drafts{padding:15px}.result textarea,.empty-result{min-height:270px}}
+@media(max-width:440px){.hero-stats{grid-template-columns:1fr 1fr}.back{font-size:10px;padding:7px 9px}.mode-grid{gap:6px}.mode{padding:7px}.mode b{font-size:10px}.two{grid-template-columns:1fr}.draft-list{grid-template-columns:1fr}.result-head{align-items:flex-start;flex-direction:column}.result-title{width:100%}.word-count{align-self:flex-end}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="topbar">
+  <a class="brand" href="/" aria-label="العودة إلى لوحة الحدث"><span class="mark">⚽</span><span>الحدث <small>استوديو محتوى الريلز</small></span></a>
+  <div class="spacer"></div>
+  <div class="status" id="keyStatus" role="status"><i></i><span>التحقق من إعداد Gemini…</span></div>
+  <a class="back" href="/">← لوحة مصنع الريلز</a>
+</header>
+<section class="hero">
+  <div>
+    <div class="eyebrow">ELHADATH · REEL CONTENT DESK</div>
+    <h1>نصّ يخدم اللقطة</h1>
+    <p>أنشئ تعليقاً صوتياً أو شعرياً، عنواناً، كابشن، وصفاً، ملخصاً أو فكرة تطوير — مرتبطاً بمقطع مكتمل من مصنع الريلز، أو بتفاصيل لقطة تدخلها بنفسك.</p>
+    <div class="hero-note">ثلاث لقطات ثابتة فقط تُحلّل عند ربط ريل؛ لا يُرسل ملف الفيديو كاملاً، ولا يحدث نشر تلقائي.</div>
+  </div>
+  <div class="hero-stats"><div class="stat"><b>⚽</b><span>محتوى كرة قدم قصير</span></div><div class="stat"><b>١٣</b><span>أداة نصية للريل</span></div><div class="stat"><b>٤</b><span>لغات إخراج</span></div><div class="stat"><b>١٠٠</b><span>مسودة محلية</span></div></div>
+</section>
+<div class="workspace">
+  <aside class="panel controls">
+    <div id="missingNote" class="missing-note">للتوليد، أضف مفتاح Gemini من <a href="/?tab=set">إعدادات المشروع</a>. الكتابة اليدوية والمسودات تبقيان متاحتين.</div>
+    <div class="panel-head"><div><h2>السياق والمخرج</h2><p>اختر ريلًا مكتملاً أو أدخل وصف الحركة.</p></div><span class="step">01 · جهّز</span></div>
+    <div class="field" style="margin-top:0"><label for="jobSelect">ريل من مهامك المكتملة <span class="hint">اختياري</span></label><select id="jobSelect"><option value="">بدون ريل — سأدخل تفاصيل اللقطة</option></select><div id="jobInfo" class="job-info"></div></div>
+    <div class="mode-grid" id="modeGrid" role="group" aria-label="محتوى الريل">
+      <button class="mode active" type="button" data-mode="script" aria-pressed="true"><span class="ico">▶</span><b>تعليق صوتي</b></button>
+      <button class="mode" type="button" data-mode="poem" aria-pressed="false"><span class="ico">❋</span><b>تعليق شعري</b></button>
+      <button class="mode" type="button" data-mode="title" aria-pressed="false"><span class="ico">↗</span><b>عناوين قصيرة</b></button>
+      <button class="mode" type="button" data-mode="hook" aria-pressed="false"><span class="ico">✦</span><b>افتتاحية جذابة</b></button>
+      <button class="mode" type="button" data-mode="caption" aria-pressed="false"><span class="ico">⌁</span><b>كابشن</b></button>
+      <button class="mode" type="button" data-mode="description" aria-pressed="false"><span class="ico">▤</span><b>وصف ووسوم</b></button>
+      <button class="mode" type="button" data-mode="recap" aria-pressed="false"><span class="ico">◉</span><b>ملخص اللقطة</b></button>
+      <button class="mode" type="button" data-mode="ideas" aria-pressed="false"><span class="ico">✧</span><b>أفكار للريل</b></button>
+      <button class="mode" type="button" data-mode="rewrite" aria-pressed="false"><span class="ico">⤾</span><b>تنقيح نص رياضي</b></button>
+      <button class="mode" type="button" data-mode="social" aria-pressed="false"><span class="ico">◎</span><b>منشور للمنصة</b></button>
+      <button class="mode" type="button" data-mode="article" aria-pressed="false"><span class="ico">▣</span><b>وصف موسّع</b></button>
+      <button class="mode" type="button" data-mode="story" aria-pressed="false"><span class="ico">⌁</span><b>سرد تسلسل الحركة</b></button>
+      <button class="mode" type="button" data-mode="custom" aria-pressed="false"><span class="ico">✎</span><b>نص رياضي مخصص</b></button>
+    </div>
+    <div class="field"><label for="topic">الحدث أو زاوية التعليق <span class="hint">حتى 2000 حرف</span></label><input id="topic" maxlength="2000" placeholder="مثلاً: هدف في الوقت بدل الضائع"></div>
+    <div class="field"><label for="source">تفاصيل مؤكدة عن اللقطة <span class="hint">اختياري · حتى 8000 حرف</span></label><textarea id="source" maxlength="8000" placeholder="الدقيقة، الفريق، اللاعب، النتيجة، نص المصدر أو وصف الحركة… لا تضف إلا ما تعرفه."></textarea></div>
+    <div class="two">
+      <div class="field"><label for="platform">المنصة</label><select id="platform"><option value="general">عام</option><option value="instagram">Instagram Reels</option><option value="tiktok">TikTok</option><option value="youtube_shorts">YouTube Shorts</option></select></div>
+      <div class="field"><label for="language">لغة الإخراج</label><select id="language"><option value="ar">العربية الفصحى</option><option value="dz">الدارجة الجزائرية</option><option value="fr">Français</option><option value="en">English</option></select></div>
+    </div>
+    <div class="two">
+      <div class="field"><label for="length">الطول</label><select id="length"><option value="short" selected>قصير — مناسب للريل</option><option value="medium">متوسط</option><option value="long">مفصّل</option></select></div>
+      <div class="field"><label for="tone">النبرة</label><select id="tone"><option>حماسي وطبيعي</option><option>شاعري دون مبالغة</option><option>تحليلي ومهني</option><option>جزائري عفوي</option><option>هادئ وواضح</option></select></div>
+    </div>
+    <div class="two">
+      <div class="field"><label for="audience">الجمهور</label><input id="audience" maxlength="160" value="مشجعو كرة القدم" placeholder="مشجعو كرة القدم"></div>
+      <div class="field"><label for="instructions">توجيه إضافي</label><input id="instructions" maxlength="1200" placeholder="مثلاً: بلا وسوم أو بلغة بسيطة"></div>
+    </div>
+    <button class="primary" id="generate" type="button"><span class="spinner"></span><span class="button-label">✦ أنشئ محتوى للريل</span></button>
+    <p class="privacy" id="privacyNote">المدخلات النصية تُرسل إلى Gemini عند التوليد؛ لا يُنشر الناتج تلقائياً.</p>
+  </aside>
+  <main class="rightcol">
+    <section class="panel result" aria-labelledby="resultHeading">
+      <div class="panel-head"><div><h2 id="resultHeading">مساحة المراجعة</h2><p>راجع النص وعدّله قبل حفظه أو استخدامه.</p></div><span class="step">02 · حرّر</span></div>
+      <div id="emptyResult" class="empty-result"><div><div class="star">⚽</div><h3>ابدأ من ريل أو وصف لقطة</h3><p>النص الناتج مخصص لمحتوى كرة القدم القصير، ويمكنك تعديله يدوياً بالكامل.</p><button id="manualEntry" class="action primary-lite" type="button" style="margin-top:13px">اكتب تعليقاً يدوياً</button></div></div>
+      <div id="editor" hidden>
+        <div class="result-head"><div class="result-title"><input id="draftTitle" maxlength="160" aria-label="عنوان المسودة" placeholder="عنوان المسودة"></div><span class="word-count" id="wordCount">0 كلمة</span></div>
+        <textarea id="output" maxlength="24000" aria-label="نص الريل" placeholder="اكتب أو حرّر نص الريل هنا…"></textarea>
+        <div class="result-actions"><button class="action primary-lite" id="saveDraft" type="button">▣ حفظ محلي</button><button class="action" id="copyText" type="button">⧉ نسخ النص</button><button class="action" id="downloadText" type="button">↓ تنزيل Markdown</button><button class="action" id="newText" type="button">＋ نص جديد</button></div>
+      </div>
+    </section>
+    <section class="panel drafts"><div class="drafts-header"><h2>مسودات محتوى الريلز</h2><span class="draft-count" id="draftCount">0 / 100</span></div><div id="draftList" class="draft-list"><div class="draft-empty">جارٍ تحميل المسودات…</div></div></section>
+  </main>
+</div>
+<div class="footer">إذا اخترت ريلًا، يرسل الاستوديو إلى Gemini ثلاث صور مصغّرة ونصوص السياق فقط. لا يرفع الفيديو ولا ينشر نيابةً عنك.</div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const $=id=>document.getElementById(id);
+const modes={poem:"تعليق شعري",article:"وصف موسّع",story:"سرد اللقطة",script:"تعليق صوتي",social:"منشور للمنصة",rewrite:"تنقيح رياضي",ideas:"أفكار ريل",custom:"نص مخصص",title:"عناوين",description:"وصف ووسوم",caption:"كابشن",hook:"افتتاحية",recap:"ملخص"};
+const languages={ar:"العربية",dz:"الدارجة الجزائرية",fr:"الفرنسية",en:"الإنجليزية"};
+const $safe=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+let currentMode="script",activeId="",activeJobTitle="",jobs=[],drafts=[],toastTimer;
+async function api(url,options={}){const headers=new Headers(options.headers||{});headers.set("Accept","application/json");if(options.body&&!headers.has("Content-Type"))headers.set("Content-Type","application/json");const response=await fetch(url,{...options,headers});let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.detail||"تعذّر إكمال الطلب.");return data}
+function notify(message,error=false){const item=$("toast");item.textContent=message;item.classList.toggle("error",error);item.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>item.classList.remove("show"),3600)}
+function currentJob(){return jobs.find(job=>job.id===$("jobSelect").value)||null}
+function updateJobContext(){const job=currentJob(),box=$("jobInfo");if(job){activeJobTitle=job.title||job.label||"ريل مكتمل";const duration=job.duration?`${Math.round(job.duration)} ثانية`:"مدة غير مسجلة";box.textContent=`${activeJobTitle} · ${duration} · سيحلّل Gemini ثلاث صور ثابتة من هذا الريل.`;box.classList.add("show");$("privacyNote").textContent="عند التوليد تُرسل إلى Gemini ثلاث صور ثابتة من الريل المحدد ونصوص السياق فقط؛ لا يُرسل الفيديو كاملاً ولا يحدث نشر تلقائي."}else{box.textContent="";box.classList.remove("show");$("privacyNote").textContent="المدخلات النصية تُرسل إلى Gemini عند التوليد؛ المسودات محلية ولا نشر تلقائي."}}
+function formData(){const job=currentJob();return{mode:currentMode,job_id:job?.id||"",job_title:job?.title||activeJobTitle,topic:$("topic").value.trim(),source:$("source").value.trim(),language:$("language").value,length:$("length").value,tone:$("tone").value,audience:$("audience").value.trim(),instructions:$("instructions").value.trim(),platform:$("platform").value}}
+function payloadForSave(){return{ id:activeId||undefined,title:$("draftTitle").value.trim(),...formData(),text:$("output").value }}
+function setMode(mode){if(!modes[mode])return;currentMode=mode;document.querySelectorAll(".mode").forEach(button=>{const active=button.dataset.mode===mode;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))})}
+function setEditorVisible(visible){$("emptyResult").hidden=visible;$("editor").hidden=!visible}
+function updateWordCount(){const text=$("output").value.trim();$("wordCount").textContent=`${text?text.split(/\s+/u).length:0} كلمة`}
+function activateEditor(text="",title=""){setEditorVisible(true);$("output").value=text;$("draftTitle").value=title;updateWordCount()}
+document.querySelectorAll(".mode").forEach(button=>button.addEventListener("click",()=>setMode(button.dataset.mode)));
+$("jobSelect").addEventListener("change",updateJobContext);
+$("output").addEventListener("input",updateWordCount);
+$("manualEntry").addEventListener("click",()=>{activeId="";activateEditor();$("output").focus()});
+$("generate").addEventListener("click",async()=>{
+  const request=formData();if(!request.job_id&&!request.topic&&!request.source){notify("اختر ريلًا مكتملاً أو اكتب تفاصيل اللقطة أولاً.",true);$("topic").focus();return}
+  if($("output").value.trim()&&!confirm("سيحل النص الجديد محل مساحة التحرير الحالية. احفظه أولاً إن أردت الاحتفاظ به. هل أتابع؟"))return;
+  const button=$("generate");button.disabled=true;button.classList.add("busy");
+  try{const result=await api("/api/creative/generate",{method:"POST",body:JSON.stringify(request)});activeId="";setMode(result.mode||currentMode);activateEditor(result.text,request.topic||request.job_title||request.source.slice(0,120));const frameNote=result.frames_attached?` · استند إلى ${result.frames_attached} صور من الريل`:"";notify(`اكتمل محتوى الريل · ${result.word_count} كلمة${frameNote}`)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.classList.remove("busy")}
+});
+$("saveDraft").addEventListener("click",async()=>{
+  if(!$("output").value.trim()){notify("اكتب نصاً قبل الحفظ.",true);return}
+  try{const data=payloadForSave();const response=await api(activeId?`/api/creative/drafts/${encodeURIComponent(activeId)}`:"/api/creative/drafts",{method:activeId?"PUT":"POST",body:JSON.stringify(data)});activeId=response.draft.id;await loadDrafts();notify("حُفظت المسودة محلياً.")}catch(error){notify(error.message,true)}
+});
+$("newText").addEventListener("click",()=>{
+  if($("output").value.trim()&&!confirm("ستُفرَّغ مساحة التحرير. احفظ النص أولاً إن أردت الاحتفاظ به. هل أتابع؟"))return;
+  activeId="";activeJobTitle="";$("jobSelect").value="";$("topic").value="";$("source").value="";$("instructions").value="";$("draftTitle").value="";$("output").value="";setEditorVisible(false);updateWordCount();updateJobContext();$("topic").focus();
+});
+$("copyText").addEventListener("click",async()=>{const text=$("output").value;if(!text.trim())return;try{await navigator.clipboard.writeText(text)}catch{const area=$("output");area.select();document.execCommand("copy");area.setSelectionRange(0,0)}notify("نُسخ النص.")});
+$("downloadText").addEventListener("click",()=>{const text=$("output").value.trim();if(!text)return;const title=$("draftTitle").value.trim()||"محتوى ريل";const safe=title.replace(/[^\p{L}\p{N}-]+/gu,"-").replace(/^-+|-+$/g,"").slice(0,60)||"reel-content";const blob=new Blob([`# ${title}\n\n${text}\n`],{type:"text/markdown;charset=utf-8"});const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=`${safe}.md`;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);notify("تم تنزيل ملف Markdown.")});
+function safeDate(value){if(!value)return"";const raw=String(value);const date=new Date(/^\d+(\.\d+)?$/.test(raw)?Number(raw)*1000:raw);return Number.isNaN(date.getTime())?"":date.toLocaleDateString("ar-DZ",{year:"numeric",month:"short",day:"numeric"})}
+function renderDrafts(){
+  $("draftCount").textContent=`${drafts.length} / 100`;
+  if(!drafts.length){$("draftList").innerHTML='<div class="draft-empty">لا توجد مسودات بعد. احفظ أول تعليق أو كابشن من مساحة المراجعة.</div>';return}
+  $("draftList").innerHTML=drafts.map(item=>`<article class="draft"><h3 title="${$safe(item.title)}">${$safe(item.title)}</h3><p>${$safe(modes[item.mode]||item.mode)}${item.job_title?` · ${$safe(item.job_title)}`:""} · ${$safe(languages[item.language]||item.language)}</p><div class="draft-foot"><time>${$safe(safeDate(item.updated_at))}</time><div class="draft-actions"><button type="button" data-open="${$safe(item.id)}">فتح</button><button type="button" class="delete" data-delete="${$safe(item.id)}">حذف</button></div></div></article>`).join("")
+}
+async function loadDrafts(){try{const data=await api("/api/creative/drafts");drafts=Array.isArray(data.drafts)?data.drafts:[];renderDrafts()}catch(error){$("draftList").innerHTML=`<div class="draft-empty">تعذّر تحميل المسودات: ${$safe(error.message)}</div>`}}
+$("draftList").addEventListener("click",async event=>{
+  const open=event.target.closest("[data-open]");
+  const remove=event.target.closest("[data-delete]");
+  if(open){
+    const item=drafts.find(draft=>draft.id===open.dataset.open);
+    if(!item)return;
+    if($("output").value.trim()&&activeId!==item.id&&!confirm("فتح هذه المسودة سيستبدل النص الحالي غير المحفوظ. هل أتابع؟"))return;
+    activeId=item.id;
+    setMode(item.mode);
+    $("topic").value=item.topic||"";
+    $("source").value=item.source||"";
+    $("instructions").value=item.instructions||"";
+    $("language").value=item.language||"ar";
+    $("length").value=item.length||"short";
+    $("tone").value=item.tone||"حماسي وطبيعي";
+    $("audience").value=item.audience||"";
+    $("platform").value=item.platform||"general";
+    $("jobSelect").value=jobs.some(job=>job.id===item.job_id)?item.job_id:"";
+    activeJobTitle=item.job_title||"";
+    updateJobContext();
+    activateEditor(item.text,item.title);
+    window.scrollTo({top:0,behavior:"smooth"});
+    return;
+  }
+  if(remove){
+    const item=drafts.find(draft=>draft.id===remove.dataset.delete);
+    if(!item||!confirm(`حذف المسودة «${item.title}» من هذا الجهاز؟`))return;
+    try{
+      await api(`/api/creative/drafts/${encodeURIComponent(item.id)}`,{method:"DELETE"});
+      if(activeId===item.id)activeId="";
+      await loadDrafts();
+      notify("حُذفت المسودة.");
+    }catch(error){notify(error.message,true)}
+  }
+});
+async function loadJobs(){const select=$("jobSelect");try{const data=await api("/api/creative/jobs");jobs=Array.isArray(data.jobs)?data.jobs:[];const selected=select.value;select.innerHTML='<option value="">بدون ريل — سأدخل تفاصيل اللقطة</option>'+jobs.map(job=>`<option value="${$safe(job.id)}">${$safe(job.title||job.label||job.id)}${job.duration?` · ${Math.round(job.duration)}ث`:""}</option>`).join("");if(jobs.some(job=>job.id===selected))select.value=selected;updateJobContext()}catch(error){jobs=[];select.innerHTML='<option value="">تعذّر تحميل المهام — أدخل تفاصيل اللقطة يدوياً</option>';updateJobContext()}}
+async function checkSettings(){const status=$("keyStatus"),text=status.querySelector("span");try{const data=await api("/api/creative/status");const ready=Boolean(data.gemini_configured);status.classList.toggle("ready",ready);status.classList.toggle("missing",!ready);text.textContent=ready?"Gemini جاهز للتوليد":"التوليد يحتاج مفتاح Gemini";$("missingNote").classList.toggle("show",!ready)}catch{text.textContent="تعذّر فحص إعداد Gemini";status.classList.add("missing");$("missingNote").classList.add("show")}}
+$("jobSelect").innerHTML='<option value="">جارٍ تحميل الريلات المكتملة…</option>';
+setMode(currentMode);updateJobContext();checkSettings();loadJobs();loadDrafts();
+</script>
+</body>
+</html>

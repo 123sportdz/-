@@ -172,6 +172,17 @@ def check_ffmpeg():
     say(OK, "ffmpeg", out.splitlines()[0][:60] if out else "")
     say(OK if "libdav1d" in dec or "libaom" in dec else WARN, "فك ترميز AV1",
         "موجود" if ("libdav1d" in dec or "libaom" in dec) else "ناقص — مقاطع AV1 قد تفشل")
+    # ⚡ ترميز GPU: فحص حقيقي (ترميز تجريبي) — الظهور في قائمة encoders لا يكفي
+    try:
+        from reelkit import encode as ENC
+        if ENC.nvenc_ok():
+            say(OK, "ترميز الفيديو", "NVENC 🚀 — الرندر على الكرت (أسرع 3-6 مرات)؛ عند فشل NVENC بسبب الذاكرة يتراجع تلقائياً إلى CPU")
+        else:
+            gpu = _nvidia_smi()
+            say(WARN, "ترميز الفيديو", "CPU (libx264)" +
+                (f" — عندك {gpu} لكن NVENC لا يعمل: حدّث درايفر NVIDIA" if gpu else ""))
+    except Exception:
+        pass
 
 def check_tesseract():
     exe = shutil.which("tesseract")
@@ -221,12 +232,21 @@ def check_files():
             say(BAD if required else WARN, f"{label} مفقود", f)
             if required: issues.append(f"ملف مفقود: {f}")
 
-def check_config():
+def check_config(safe=False):
     p = ROOT / "config.json"
     if not p.exists():
         say(WARN, "config.json غير موجود", "انسخه من config.example.json")
         need("copy config.example.json config.json   (ويندوز)  —  أو  cp config.example.json config.json")
         return {}
+    if safe:
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+            say(OK, "config.json", "موجود وصالح؛ قيم الإعدادات الخاصة مخفية")
+            return cfg
+        except Exception:
+            say(BAD, "config.json", "تالف أو غير قابل للقراءة؛ تفاصيل الخطأ مخفية")
+            issues.append("config.json غير صالح")
+            return {}
     try:
         cfg = json.loads(p.read_text(encoding="utf-8"))
         say(OK, "config.json", f"الهوية: {cfg.get('brand_name','-')}")
@@ -253,12 +273,15 @@ def check_config():
     except Exception as e:
         say(BAD, "config.json تالف", str(e)); return {}
 
-def check_ai(cfg):
+def check_ai(cfg, allow_network=True):
     """مفتاح Gemini للعنوان التلقائي الاحترافي."""
     key = cfg.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
     if not key:
         say(WARN, "العنوان الذكي (Gemini)", "ما فيه مفتاح — سيُبنى العنوان من كابشن تيليجرام")
         need("للعنوان الاحترافي التلقائي: جيب مفتاح من aistudio.google.com/api-key وحطه في الإعدادات")
+        return
+    if not allow_network:
+        say(OK, "العنوان الذكي (Gemini)", "المفتاح مضبوط؛ تخطّينا اختبار الاتصال في الفحص الآمن")
         return
     try:
         from reelkit.ai import list_models, pick_model
@@ -404,10 +427,10 @@ def _mask(cfg):
             out[k] = (v[:6] + "***") if len(v) > 6 else "***"
     return out
 
-def _extra_report():
-    """System + packages + آخر مهام اللوحة (بدون أسرار)."""
+def _extra_report(safe=False):
+    """System + packages + optional private diagnostics."""
     print("\n[9] تفاصيل إضافية")
-    say(OK, "المسار", str(ROOT))
+    say(OK, "المسار", "مخفي في التقرير الآمن" if safe else str(ROOT))
     try:
         import subprocess
         out = subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True,
@@ -420,42 +443,45 @@ def _extra_report():
             print("   •", l)
     except Exception:
         pass
-    try:
-        cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-        print("\n   config.json (الأسرار مخفية):")
-        print("   " + json.dumps(_mask(cfg), ensure_ascii=False))
-    except Exception:
-        pass
-    jf = ROOT / "outputs" / "jobs.json"
-    if jf.exists():
+    if safe:
+        print("   إعدادات الحساب وروابط المهام والسجلات الخاصة لم تُضمّن.")
+    else:
         try:
-            jobs = json.loads(jf.read_text(encoding="utf-8"))
-            recent = sorted(jobs.values(), key=lambda j: j.get("created", 0), reverse=True)[:3]
-            print(f"\n   آخر {len(recent)} مهمة من اللوحة:")
-            for j in recent:
-                print(f"   ── {j.get('id')} | {j.get('status')} | {j.get('progress')}% | {(j.get('input') or '')[-45:]}")
-                for line in (j.get("log") or [])[-25:]:
-                    print("      " + line)
-        except Exception as e:
-            print("   (تعذر قراءة سجل المهام:", e, ")")
+            cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+            print("\n   config.json (الأسرار مخفية):")
+            print("   " + json.dumps(_mask(cfg), ensure_ascii=False))
+        except Exception:
+            pass
+        jf = ROOT / "outputs" / "jobs.json"
+        if jf.exists():
+            try:
+                jobs = json.loads(jf.read_text(encoding="utf-8"))
+                recent = sorted(jobs.values(), key=lambda j: j.get("created", 0), reverse=True)[:3]
+                print(f"\n   آخر {len(recent)} مهمة من اللوحة:")
+                for j in recent:
+                    print(f"   ── {j.get('id')} | {j.get('status')} | {j.get('progress')}% | {(j.get('input') or '')[-45:]}")
+                    for line in (j.get("log") or [])[-25:]:
+                        print("      " + line)
+            except Exception:
+                print("   (تعذر قراءة سجل المهام)")
     print("\n[10] إحصائيات")
     say(OK, "التاريخ", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
-def run_all(quick=False, network=True):
+def run_all(quick=False, network=True, safe=False):
     print("=" * 58); print("  elhadath-reels — فحص المشروع"); print("=" * 58)
     print("\n[1] البيئة");            check_python(); check_torch()
     print("\n[2] المكتبات");          check_pkgs()
     print("\n[3] الأدوات الخارجية");  check_ffmpeg(); check_tesseract()
     print("\n[4] ملفات المشروع");     check_files()
     check_fonts()
-    print("\n[5] الإعدادات");         cfg = check_config()
-    print("\n[6] الذكاء الاصطناعي");   check_ai(cfg)
+    print("\n[5] الإعدادات");         cfg = check_config(safe=safe)
+    print("\n[6] الذكاء الاصطناعي");   check_ai(cfg, allow_network=network)
     print("\n[7] المساحة والمنفذ")
     check_space()
     if network:
         print("\n[8] الشبكة والقناة"); check_network(cfg)
-    _extra_report()
+    _extra_report(safe=safe)
     print("\n" + "=" * 58)
     if issues:
         print("🔧 لازم تصلّح (تمنع التشغيل):")
@@ -474,7 +500,9 @@ def run_all(quick=False, network=True):
 
 def main():
     ap = argparse.ArgumentParser(description="فحص المشروع / تقرير للأخطاء")
-    ap.add_argument("--quick", action="store_true", help="بدون فحص الشبكة")
+    ap.add_argument("--quick", action="store_true", help="بدون أي فحص شبكي")
+    ap.add_argument("--safe-report", action="store_true",
+                    help="تقرير آمن للمشاركة: لا يختبر المفاتيح ولا يعرض إعدادات الحساب أو سجلات المهام")
     ap.add_argument("--fix", action="store_true",
                     help="🔧 يصلّح تلقائياً: يثبّت الحزم الناقصة (CUDA إن وُجد كرت) ثم يفحص")
     ap.add_argument("--report", nargs="?", const="doctor_report.txt",
@@ -487,7 +515,8 @@ def main():
         import io, contextlib
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            run_all(quick=a.quick, network=not a.quick)
+            offline = a.quick or a.safe_report
+            run_all(quick=offline, network=not offline, safe=a.safe_report)
         text = buf.getvalue()
         sys.stdout.write(text)
         path = Path(a.report)
@@ -497,8 +526,10 @@ def main():
         print(f"\n📄 التقرير محفوظ في: {path}")
         print("   افتحه وأرسله (أو أرسل الملف نفسه).")
     else:
-        run_all(quick=a.quick, network=not a.quick)
-        print("\nلو باقي مشكلة: شغّل  python doctor.py --report  وأرسل الملف.")
+        offline = a.quick or a.safe_report
+        run_all(quick=offline, network=not offline, safe=a.safe_report)
+        if not a.safe_report:
+            print("\nلو باقي مشكلة: شغّل  python doctor.py --report  وأرسل الملف.")
 
 
 if __name__ == "__main__":

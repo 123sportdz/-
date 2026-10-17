@@ -7,7 +7,7 @@ def safe_move(src, dst):
 
     على ويندوز يفشل `os.replace` بين قرصين بـ
     `OSError: [WinError 17] Impossible de déplacer le fichier vers un lecteur de disque différent`
-    (مثلاً C:\Temp → D:\outputs). الحل: عند الفشل ننسخ إلى ملف مؤقت **في مجلد الهدف**
+    (مثلاً C:\\Temp → D:\\outputs). الحل: عند الفشل ننسخ إلى ملف مؤقت **في مجلد الهدف**
     ثم نستبدل ذرّياً (نفس القرص) — وإن نجح النقل المباشر نستعمله (أسرع).
     """
     src, dst = os.fspath(src), os.fspath(dst)
@@ -34,6 +34,47 @@ def run(cmd, **kw):
     kw.setdefault("timeout", 1800)          # حرس: لا تعلّق الأوامر إلى الأبد
     return subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
                           stderr=subprocess.PIPE, **kw)
+
+def kill_tree(proc, grace=3.0):
+    """يقتل عملية وكل أبنائها (ffmpeg …) على ويندوز وPOSIX معاً.
+
+    كان القتل المباشر (proc.kill / os.killpg) يترك أبناء reel.py أيتاماً:
+    ‏os.killpg غير موجودة أصلاً على ويندوز فينجح قتل reel.py ويبقى ffmpeg
+    يشتغل ويحتجز الملفات والـGPU."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=15)
+        else:
+            import signal
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+        proc.wait(timeout=grace)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+def popen_session(cmd, **kw):
+    """Popen بجلسة مستقلة حتى يمكن قتل الشجرة كلها لاحقاً عبر kill_tree."""
+    if os.name == "nt":
+        kw.setdefault("creationflags", subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        kw.setdefault("start_new_session", True)
+    return subprocess.Popen(cmd, **kw)
 
 def probe(path):
     """returns dict(fps, width, height, duration, vcodec, acodec)"""
@@ -81,8 +122,22 @@ def probe(path):
             dur = float(v.get("duration") or 0.0)
         except Exception:
             dur = 0.0
+    # 🎞️ كشف VFR: r_frame_rate (القاعدة الزمنية) يختلف عن avg_frame_rate (الفعلي)
+    # في تسجيلات الهواتف — الرندر يفترض معدلاً ثابتاً فينحرف الصوت تدريجياً.
+    vfr = False
+    try:
+        def _rate(s):
+            if "/" in (s or ""):
+                n, d = s.split("/", 1)
+                return float(n) / (float(d) or 1.0)
+            return float(s or 0.0)
+        _r, _a = _rate(v.get("r_frame_rate")), _rate(v.get("avg_frame_rate"))
+        vfr = bool(_r > 0 and _a > 0 and abs(_r - _a) / max(_r, _a) > 0.02)
+    except Exception:
+        vfr = False
     return dict(fps=fps, width=int(v.get("width") or 0), height=int(v.get("height") or 0),
-                duration=dur, vcodec=v.get("codec_name"), acodec=(a or {}).get("codec_name"))
+                duration=dur, vcodec=v.get("codec_name"), acodec=(a or {}).get("codec_name"),
+                vfr=vfr)
 
 @contextlib.contextmanager
 def _quiet():
@@ -114,13 +169,18 @@ def _can_open(path):
     except Exception:
         return False
 
-def ensure_readable(path, workdir, crf=16, force=False):
-    """Return a path OpenCV can read. Transcodes AV1/HEVC etc -> H.264 if needed."""
-    if not force and _can_open(path):
+def ensure_readable(path, workdir, crf=16, force=False, encoder="auto", cfr_fps=None):
+    """Return a path OpenCV can read. Transcodes AV1/HEVC etc -> H.264 if needed.
+    cfr_fps: حوّل لمعدل ثابت (مصادر VFR — تسجيلات الهاتف) حتى لا ينحرف الصوت
+    عن الصورة في الرندر الذي يفترض معدلاً ثابتاً."""
+    if not force and cfr_fps is None and _can_open(path):
         return path
+    from . import encode as ENC
+    _enc, _vargs = ENC.video_args(encoder, crf=crf, preset="veryfast")
     out = os.path.join(workdir, "video_h264.mp4")
+    vf = ["-vf", f"fps={float(cfr_fps):.6f}"] if cfr_fps else []
     run(["ffmpeg","-v","error","-y","-i",path,"-map","0:v:0",
-         "-c:v","libx264","-crf",str(crf),"-preset","veryfast",
+         *vf, *_vargs,
          "-pix_fmt","yuv420p",out])
     if not _can_open(out):
         raise RuntimeError("transcode failed — still unreadable")

@@ -8,7 +8,7 @@
     from reelkit.voice import say
     say("هدف رائع لمنتخب الجزائر!", "voice.wav")   # يجرّب Gemini ثم Edge
 """
-import base64, json, os, time, urllib.request, wave
+import base64, json, os, re, time, urllib.request, wave
 
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
 TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"]
@@ -71,8 +71,9 @@ def tts_gemini(text, out_wav, api_key=None, model=None, voice="Fenrir", timeout=
                 if "inlineData" in part:
                     rate = 24000
                     mt = part["inlineData"].get("mimeType", "")
-                    if "rate=" in mt:
-                        rate = int(mt.split("rate=")[-1])
+                    mrate = re.search(r"rate=(\d+)", mt)   # كان split هشّاً لو أضافت قوقل معاملاً بعد rate
+                    if mrate:
+                        rate = int(mrate.group(1))
                     _pcm_to_wav(base64.b64decode(part["inlineData"]["data"]), out_wav, rate=rate)
                     return out_wav
             raise RuntimeError("بلا صوت في الرد")
@@ -102,8 +103,10 @@ def tts_edge(text, out_wav, voice=EDGE_DEFAULT, rate="+10%", pitch="+0Hz", timeo
     return out_wav
 
 
-def say(text, out_wav, engine="auto", api_key=None, voice=None, gemini_model=None):
-    """يولّد ملف wav للتعليق. engine: auto | gemini | edge"""
+def say(text, out_wav, engine="auto", api_key=None, voice=None, gemini_model=None,
+        rate="+10%"):
+    """يولّد ملف صوتي للتعليق. engine: auto | gemini | edge
+    rate: سرعة Edge TTS (تُستخدم أيضاً عند إعادة المحاولة لتقصير تعليق أطول من المقطع)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("نص التعليق فاضي")
@@ -115,8 +118,8 @@ def say(text, out_wav, engine="auto", api_key=None, voice=None, gemini_model=Non
                 p = tts_gemini(text, out_wav, api_key=api_key, model=gemini_model,
                                voice=voice or "Fenrir")
             else:
-                p = tts_edge(text, out_wav, voice=voice or EDGE_DEFAULT)
-            return {"path": p, "engine": e, "seconds": wav_seconds(p)}
+                p = tts_edge(text, out_wav, voice=voice or EDGE_DEFAULT, rate=rate)
+            return {"path": p, "engine": e, "seconds": audio_seconds(p)}
         except Exception as ex:
             errors.append(f"{e}: {ex}")
     raise RuntimeError("فشل توليد التعليق — " + " | ".join(errors))
@@ -126,5 +129,24 @@ def wav_seconds(path):
     try:
         with wave.open(path, "rb") as w:
             return round(w.getnframes() / float(w.getframerate() or 1), 2)
+    except Exception:
+        return 0.0
+
+
+def audio_seconds(path):
+    """مدة أي ملف صوتي (WAV أو MP3…) عبر ffprobe، مع رجوع لـwave للـWAV.
+
+    ⚠️ Edge TTS يكتب **MP3** مهما كان امتداد الملف، فكان wave.open يفشل دائماً
+    ويرجّع 0.0 ⇒ توقيت الكابشن كلمة-بكلمة ينضغط إلى 0.6s، وحارس «التعليق أطول
+    من المقطع» في reel.py شرطه مستحيل. القياس عبر ffprobe يصلح المسارين."""
+    s = wav_seconds(path)
+    if s > 0:
+        return s
+    try:
+        import subprocess
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                              "format=duration", "-of", "csv=p=0", path],
+                             capture_output=True, text=True, timeout=30)
+        return round(float(out.stdout.strip()), 2)
     except Exception:
         return 0.0

@@ -8,6 +8,7 @@
 """
 import os
 import subprocess
+import tempfile
 
 ORDINALS = ["الأول", "الثاني", "الثالث", "الرابع", "الخامس", "السادس", "السابع", "الثامن"]
 
@@ -52,15 +53,19 @@ def _has_audio(path):
 
 
 def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
-          crf=20, preset="medium", accent=(55, 57, 230), workdir=None, timeout=1800):
+          crf=20, preset="medium", accent=(55, 57, 230), workdir=None, timeout=1800,
+          encoder="auto"):
     """يبني المونتاج. يرجّع مسار الملف أو None."""
     items = [p for p in items if p and os.path.exists(p)]
     if len(items) < 2:
         return None
+    # الشارات ملفات وسيطة: كانت تُكتب في مجلد مخرجات المستخدم وتبقى للأبد
+    # (rank_0.png…) — الآن مجلد مؤقت يُحذف مهما حصل. workdir يبقى لسجل الأخطاء فقط.
     workdir = workdir or (os.path.dirname(os.path.abspath(out)) or ".")
+    tmpdir = tempfile.mkdtemp(prefix="reelkit_montage_")
     badges = []
     for i in range(len(items)):
-        bp = os.path.join(workdir, f"rank_{i}.png")
+        bp = os.path.join(tmpdir, f"rank_{i}.png")
         try:
             rank_badge(bp, i, W=W, H=H, accent=accent)
             badges.append(bp)
@@ -104,8 +109,10 @@ def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
     fc = ";".join(parts)
     maps = ["-map", "[vout]"]
     maps += (["-map", "[aout]", "-c:a", "aac", "-b:a", "128k"] if audio_ok else ["-an"])
+    from . import encode as ENC
+    _enc, _vargs = ENC.video_args(encoder, crf=crf, preset=preset)
     cmd = (["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", fc, *maps,
-            "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
+            *_vargs, "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", out])
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -116,6 +123,9 @@ def build(items, out, title="", brand="", url="", per=14.0, W=1080, H=1920,
         except OSError:
             pass
         return None
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
     if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 20000:
         try:
             with open(os.path.join(workdir, "montage_error.log"), "w", encoding="utf-8") as fh:

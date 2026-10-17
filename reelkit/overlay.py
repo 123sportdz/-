@@ -1,7 +1,7 @@
-"""overlay — remove third-party watermarks (Telegram handle / logo / QR / LIVE badge) by inpainting.
+"""overlay — optionally clean up specifically authorized on-screen marks by inpainting.
 
-Boxes are NORMALIZED (x1,y1,x2,y2) and were measured on 7LLE-style reposts.
-Run `python -m reelkit.overlay --calibrate video.mp4` to locate them on a new source.
+Boxes are normalized image coordinates. Preserve source marks unless their owner has authorized removal.
+Run `python -m reelkit.overlay --calibrate video.mp4` to locate an authorized mark.
 """
 import cv2, numpy as np, sys
 
@@ -61,6 +61,11 @@ def _calibrate(path, n=60):
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
             ok, f = cap.read()
             if ok:
+                # صغّر الإطار قبل التخزين: 60 إطار 1080p كانت تستهلك ~2GB ذروة
+                # (stack + float32) — الإحداثيات نسبية فلا يتأثر التحليل.
+                if f.shape[1] > 640:
+                    f = cv2.resize(f, (640, int(f.shape[0] * 640 / f.shape[1])),
+                                   interpolation=cv2.INTER_AREA)
                 fr.append(f)
     finally:
         cap.release()
@@ -80,10 +85,17 @@ def _calibrate(path, n=60):
             continue
         x, y, w, h = s[0], s[1]+y0, s[2], s[3]
         print(f"  ({x/W:.3f}, {y/H:.3f}, {(x+w)/W:.3f}, {(y+h)/H:.3f})   area={s[4]}")
-    A = np.stack(fr).astype(np.float32)
+    # الانحراف تراكمياً (E[x²]−E[x]²) بدل stack بـfloat32 — نفس الذروة المنخفضة.
+    acc = np.zeros(fr[0].shape, np.float64)
+    acc2 = np.zeros(fr[0].shape, np.float64)
+    for f in fr:
+        acc += f
+        acc2 += f.astype(np.float64) ** 2
+    n_ = max(1, len(fr))
+    var = acc2 / n_ - (acc / n_) ** 2
     # 🛡️ v1.45: std كان يبقى 3 قنوات (H,W,3) فتفشل connectedComponentsWithStats
     # (تتطلّب قناة واحدة) ⇒ كان أمر --calibrate ينهار دائماً بعد الطبع الأول.
-    std = A.std(0)
+    std = np.sqrt(np.maximum(var, 0))
     if std.ndim == 3:
         std = std.max(axis=2)
     m = (std < 4).astype(np.uint8)

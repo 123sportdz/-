@@ -1,0 +1,2 @@
+-r requirements-browser-bridge.txt
+pytest>=8,<10

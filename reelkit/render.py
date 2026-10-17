@@ -10,6 +10,11 @@ import cv2, numpy as np
 from . import overlay as OV
 from . import graphics as G
 from . import score as SCORE
+from . import captions as CP
+from . import encode as ENC
+
+# تأخير بدء التعليق الصوتي في المزيج — يُستخدم أيضاً لبداية الكابشن (مصدر واحد للحقيقة)
+VOICE_DELAY_MS = 500
 
 
 def compose_bg(frame, out_w, out_h):
@@ -24,8 +29,15 @@ def compose_bg(frame, out_w, out_h):
     return (cv2.GaussianBlur(bg, (0, 0), 7) * 0.70).astype(np.uint8)
 
 
+def _loudnorm_chain(fc, label="a"):
+    """🔊 تطبيع EBU R128 (-14 LUFS معيار المنصات) على الخلاط النهائي.
+    loudnorm يرفع معدل العينة داخلياً ⇒ نعيدها 48k حتى لا يشكو بعض المرمزات."""
+    return (fc + f";[{label}0]loudnorm=I=-14:TP=-1.5:LRA=11,"
+                 f"aresample=48000,aformat=channel_layouts=stereo[{label}]")
+
+
 def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=1.9,
-         voice_delay_ms=500):
+         voice_delay_ms=VOICE_DELAY_MS, loudnorm=True):
     """يدمج الصوت مع الفيديو بلا إعادة ترميز (-c:v copy)."""
     have_bg = bool(audio) and os.path.exists(audio)
     have_vo = bool(voice_wav) and os.path.exists(voice_wav)
@@ -74,19 +86,25 @@ def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=
             f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,aformat=sample_rates=48000:channel_layouts=stereo,"
             f"volume={voice_gain},asplit=2[vo][vosc];"
             f"[bg0][vosc]sidechaincompress=threshold=0.03:ratio=12:attack=15:release=350:makeup=1[bgd];"
-            f"[bgd][vo]amix=inputs=2:duration=first:normalize=0[a]",
+            f"[bgd][vo]amix=inputs=2:duration=first:normalize=0[a0]",
             ["-map", "0:v", "-map", "[a]"]))
         variants.append((
             f"[{bg_i}:a]volume={duck},aformat=channel_layouts=stereo[bg];"
             f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
             f"aformat=channel_layouts=stereo[vo];"
-            f"[bg][vo]amix=inputs=2:duration=first:normalize=0[a]",
+            f"[bg][vo]amix=inputs=2:duration=first:normalize=0[a0]",
             ["-map", "0:v", "-map", "[a]"]))
     elif have_bg:
-        variants.append((f"[{bg_i}:a]volume=1.0[a]", ["-map", "0:v", "-map", "[a]"]))
+        variants.append((f"[{bg_i}:a]volume=1.0[a0]", ["-map", "0:v", "-map", "[a]"]))
     else:
-        variants.append((f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,apad[a]",
+        variants.append((f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,apad[a0]",
                          ["-map", "0:v", "-map", "[a]"]))
+    if loudnorm:
+        # 🔊 جرّب النسخة المطبَّعة أولاً، ولو تعذّر الفلتر (ffmpeg قديم جداً) نرجع للخام
+        variants = ([(_loudnorm_chain(fc), maps) for fc, maps in variants] +
+                    [(fc.replace("[a0]", "[a]"), maps) for fc, maps in variants])
+    else:
+        variants = [(fc.replace("[a0]", "[a]"), maps) for fc, maps in variants]
 
     last_err = ""
     for fc, maps in variants:
@@ -109,14 +127,15 @@ def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=
 
 def render(video, audio, out_path, info, cam, mode, ball_x, det,
            out_w=1080, out_h=1920, fps=None,
-           remove_watermarks=True, brand_name="", brand_url="",
-           use_trail=True, crf=20, preset="medium", progress=None,
+           remove_watermarks=False, brand_name="", brand_url="",
+           use_trail=False, crf=20, preset="medium", progress=None,
            layout="single", player_x=None, split_labels=True, accent=(55, 57, 230),
-           voice_wav=None, duck=0.22, voice_gain=1.9, voice_delay_ms=500,
+           voice_wav=None, duck=0.22, voice_gain=1.9, voice_delay_ms=VOICE_DELAY_MS,
            commentary_text="", commentary_show=True, tmp_path=None,
            cam_y=None, zoom=None, ball_y=None, burst_t=None, burst_text="هدف!",
-           ball_color=None, brand_y=0.76, brand_scale=1.0, score_box=None, score_scale=1.75,
-           logo=None, source_credit=""):
+           ball_color=None, brand_y=0.065, brand_scale=1.0, score_box=None, score_scale=1.75,
+           logo=None, source_credit="", cues=None, loudnorm=True, encoder="auto",
+           _nvenc_retry=True):
     fps = fps or info["fps"]; W = info["W"]; H = info["H"]
     crop_w = min(W, int(round(H * 9 / 16))); crop_h = H
     orois = OV.rois(W, H) if remove_watermarks else []
@@ -141,16 +160,17 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
         p_w = min(W, int(round(H * out_w / max(bot_h, 1))))
         p_h = min(H, int(round(p_w * bot_h / max(1, out_w))))
         p_half = p_w / 2
-    # موضع شريط الهوية الفعلي: في split أنزله فوق أرجل اللاعب مع ضمان بقاء اللوحة داخل الإطار
-    _brand_y_eff = (min(0.90, max(0.5, 1.0 - (200.0 / max(1, out_h))))
-                    if SPLIT else float(brand_y))
+    _brand_y_eff = max(0.025, min(0.94, float(brand_y)))
 
     tmp_video = tmp_path or (os.path.splitext(out_path)[0] + "_video.mp4")
+    _enc, _vargs = ENC.video_args(encoder, crf=crf, preset=preset)
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{out_w}x{out_h}", "-r", f"{fps}", "-i", "-",
            "-vf", "unsharp=5:5:0.45:5:5:0.0,format=yuv420p",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+           *_vargs,
            "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", tmp_video]
+    if os.environ.get("REEL_DEBUG"):
+        print(f"    [dbg] encoder: {ENC.describe(_enc)}", file=sys.stderr, flush=True)
     errlog_fd, errlog_path = tempfile.mkstemp(prefix=".ffmpeg_", suffix=".log",
                                               dir=(os.path.dirname(out_path) or "."))
     errlog = os.fdopen(errlog_fd, "w")
@@ -170,7 +190,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
 
     cap = cv2.VideoCapture(video)
     n = 0; cache = {"bg": None}; last_mode = None; split_cx = None
-    hist = collections.deque(maxlen=45)
+    hist = collections.deque(maxlen=max(6, int(round(fps * 0.45))))
     nan = float("nan")
     try:
         while True:
@@ -272,7 +292,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                         gx = best[1][1]; gy = best[1][2]
                         pt = (gx * ball_x_scale + ball_x_off, gy * ball_y_scale + ball_y_off)
                 if pt is not None:
-                    hist.append((n, pt[0], pt[1])); G.ball_marker(canvas, pt, color=bc, r=14 if SPLIT else 17)
+                    hist.append((n, pt[0], pt[1])); G.ball_marker(canvas, pt, color=bc, r=8 if SPLIT else 10)
                 else:
                     hist.clear()
                 G.trail(canvas, hist, color=bc)
@@ -281,15 +301,17 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                 canvas, _sb = SCORE.draw_widget(canvas, fr, score_box, scale=score_scale)
             if burst_t is not None:
                 canvas = G.goal_burst(canvas, (n / fps) - float(burst_t), text=burst_text)
-            if commentary_show and commentary_text:
-                # فوق شعار القناة مباشرة — بنفس موضع الشريط الفعلي (كان 0.76 حتى في split)
-                y_l3 = int(out_h * float(_brand_y_eff)) - 200
-                G.lower_third(canvas, commentary_text, y=max(10, y_l3), accent=accent)
+            if cues:
+                # 🔤 كابشن كلمة-بكلمة متزامن مع التعليق (بدل السطر الثابت)
+                _g = CP.at(cues, n / fps)
+                if _g:
+                    canvas = G.caption(canvas, _g["words"], _g["cur"], accent=accent)
+            elif commentary_show and commentary_text:
+                G.lower_third(canvas, commentary_text, accent=accent)
             if source_credit:
-                # 🛡️ سطر إسناد المصدر فوق شريط الهوية (عمل تحويلي موثّق)
                 canvas = G.source_credit(canvas, source_credit, accent=accent,
-                                         y=int(out_h * float(_brand_y_eff)) - 72)
-            if brand_name or brand_url:
+                                         y=int(out_h * 0.70))
+            if (brand_name or brand_url) and logo is None:
                 canvas = G.draw_brand(canvas, brand_name, brand_url, accent=accent,
                                       y=int(out_h * float(_brand_y_eff)),
                                       scale=(0.72 if SPLIT else 1.0) * float(brand_scale))
@@ -343,13 +365,39 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
             os.remove(errlog_path)
         except OSError:
             pass
+        if _nvenc_retry and ENC.should_retry_x264(_enc, tail):
+            try:
+                from . import detect
+                detect.release_gpu_memory()
+            except Exception:
+                pass
+            ENC._PROBE["nvenc"] = False
+            message = "⚠️ ذاكرة NVENC غير كافية؛ أعيد الترميز على المعالج للحفاظ على المهمة."
+            if progress:
+                progress(message)
+            else:
+                print(message, file=sys.stderr, flush=True)
+            return render(
+                video, audio, out_path, info, cam, mode, ball_x, det,
+                out_w=out_w, out_h=out_h, fps=fps, remove_watermarks=remove_watermarks,
+                brand_name=brand_name, brand_url=brand_url, use_trail=use_trail,
+                crf=crf, preset=preset, progress=progress, layout=layout,
+                player_x=player_x, split_labels=split_labels, accent=accent,
+                voice_wav=voice_wav, duck=duck, voice_gain=voice_gain,
+                voice_delay_ms=voice_delay_ms, commentary_text=commentary_text,
+                commentary_show=commentary_show, tmp_path=tmp_path, cam_y=cam_y,
+                zoom=zoom, ball_y=ball_y, burst_t=burst_t, burst_text=burst_text,
+                ball_color=ball_color, brand_y=brand_y, brand_scale=brand_scale,
+                score_box=score_box, score_scale=score_scale, logo=logo,
+                source_credit=source_credit, cues=cues, loudnorm=loudnorm,
+                encoder="cpu", _nvenc_retry=False)
         raise RuntimeError(f"فشل ترميز الفيديو (exit {p.returncode}):\n{tail.strip()}")
 
     if os.environ.get("REEL_DEBUG"):
         print(f"    [dbg] loop done ({n} frames), muxing…", file=sys.stderr, flush=True)
     try:
         _mux(tmp_video, out_path, audio=audio, voice_wav=voice_wav, duck=duck,
-             voice_gain=voice_gain, voice_delay_ms=voice_delay_ms)
+             voice_gain=voice_gain, voice_delay_ms=voice_delay_ms, loudnorm=loudnorm)
     finally:
         # 🧹 لا يتسرّب ملف ‎_video.mp4 الوسيط ولا سجل ffmpeg لو فشل المزج
         if os.path.exists(tmp_video):

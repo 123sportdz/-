@@ -40,11 +40,19 @@ def find_client_secret(explicit=None):
     for c in cands:
         if c and os.path.exists(c):
             return c
-    for r in roots:
+    # البحث بالأنماط في مجلدات المشروع فقط — تقليب ~/Downloads بنمط عريض كان
+    # يلتقط عميل OAuth لمشروع آخر ⇒ توكنات لتطبيق خاطئ وأخطاء محيّرة.
+    proj_roots = {here, os.path.dirname(os.path.dirname(here)), os.getcwd()}
+    for r in sorted(proj_roots):
         for pat in ("client_secret*.json", "*client_secret*.json"):
             hits = sorted(glob.glob(os.path.join(r, pat)))
             if hits:
                 return hits[0]
+    for r in roots:                       # الاسماء الدقيقة فقط في المجلدات الشخصية
+        for n in NAMES:
+            c = os.path.join(r, n)
+            if os.path.exists(c):
+                return c
     return None
 
 def client_secret_help():
@@ -103,13 +111,22 @@ def finish_auth(code, client_secret=None, redirect_uri=LOOPBACK,
     pending = os.path.join(here, "oauth_pending.json")
     if os.path.exists(pending):
         try:
-            flow.code_verifier = json.load(open(pending)).get("code_verifier")
+            with open(pending, encoding="utf-8") as fh:   # كان مقبضاً يُترك مفتوحاً
+                flow.code_verifier = json.load(fh).get("code_verifier")
         except Exception:
             pass
     flow.fetch_token(code=code)
     tp = token_path if os.path.isabs(token_path) else os.path.join(here, token_path)
     with open(tp, "w") as f:
         f.write(flow.credentials.to_json())
+    try:
+        os.chmod(tp, 0o600)                    # توكن وصول للقناة — لا يُقرأ للجميع
+    except OSError:
+        pass
+    try:
+        os.unlink(pending)                     # انتهى التدفق: code_verifier لم يعد لازماً
+    except OSError:
+        pass
     return tp
 
 class YouTubeUploader:
@@ -152,6 +169,10 @@ class YouTubeUploader:
                 creds = flow.run_local_server(port=0)
             with open(self.token_path, "w") as f:
                 f.write(creds.to_json())
+            try:
+                os.chmod(self.token_path, 0o600)
+            except OSError:
+                pass
         return build("youtube", "v3", credentials=creds)
 
     def channel_info(self):
@@ -163,8 +184,8 @@ class YouTubeUploader:
             msg = str(e)
             if "insufficient" in msg.lower() or "403" in msg:
                 raise RuntimeError(
-                    "التوكن الحالي ما فيه صلاحية قراءة القناة (youtube.readonly).\n"
-                    "الرفع يشتغل عادي، بس للتحقق من القناة أعد الربط: python link_youtube.py") from e
+                    "يلزم إذن youtube.readonly للتحقق من معرّف القناة. أعد الربط عبر "
+                    "python link_youtube.py قبل الرفع؛ لن نرفع إلى قناة غير متحقق منها.") from e
             raise
         it = (r.get("items") or [{}])[0]
         return {"id": it.get("id"), "title": it.get("snippet", {}).get("title"),
@@ -181,6 +202,39 @@ class YouTubeUploader:
                 "لازم توافق بنفس حساب قوقل المالك للقناة (أو تختار القناة الصحيحة في شاشة الموافقة).")
         return info
 
+    def video_status(self, video_id):
+        """Return owner-visible processing, rejection, privacy, and regional limits."""
+        import re
+        video_id = str(video_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+            raise ValueError("معرّف فيديو YouTube غير صالح")
+        yt = self._service()
+        response = yt.videos().list(
+            part="snippet,status,processingDetails,contentDetails", id=video_id
+        ).execute()
+        items = response.get("items") or []
+        if not items:
+            raise RuntimeError("لم يُعثر على الفيديو أو لا يمكن لهذا الحساب قراءته")
+        item = items[0]
+        status = item.get("status") or {}
+        processing = item.get("processingDetails") or {}
+        content = item.get("contentDetails") or {}
+        restriction = content.get("regionRestriction") or {}
+        return {
+            "id": item.get("id", video_id),
+            "title": (item.get("snippet") or {}).get("title"),
+            "upload_status": status.get("uploadStatus"),
+            "privacy_status": status.get("privacyStatus"),
+            "failure_reason": status.get("failureReason"),
+            "rejection_reason": status.get("rejectionReason"),
+            "processing_status": processing.get("processingStatus"),
+            "processing_failure_reason": processing.get("processingFailureReason"),
+            "region_restriction": {
+                "allowed": restriction.get("allowed"),
+                "blocked": restriction.get("blocked"),
+            },
+        }
+
     def set_thumbnail(self, video_id, image_path):
         """يرفع الصورة المصغّرة (يحتاج نفس صلاحية الرفع). اختياري — لا يكسر الرفع."""
         yt = self._service()
@@ -188,30 +242,59 @@ class YouTubeUploader:
         media = MediaFileUpload(image_path, mimetype="image/jpeg")
         return yt.thumbnails().set(videoId=video_id, media_body=media).execute()
 
-    def upload(self, path, title, description="", tags=(), privacy="public",
+    def upload(self, path, title, description="", tags=(), privacy="private",
                category_id=CATEGORY_SPORTS, made_for_kids=False, publish_at=None,
                expected_channel_id=None, thumbnail=None):
+        path = os.fspath(path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"ملف الفيديو غير موجود: {path}")
+        title = str(title or "").strip()
+        if not title:
+            raise ValueError("عنوان فيديو YouTube مطلوب")
+        if privacy not in {"private", "unlisted", "public"}:
+            raise ValueError("الخصوصية يجب أن تكون private أو unlisted أو public")
+        description = str(description or "")
+        tags = list(tags or ())
         yt = self._service()
         from googleapiclient.http import MediaFileUpload   # بعد _service حتى تظهر رسالته الواضحة لو المكتبة ناقصة
         if expected_channel_id:
-            try:
-                self.verify_channel(expected_channel_id)
-            except Exception as e:
-                # الفحص اختياري: لا نمنع الرفع بسببه (مثلاً توكن بصلاحية الرفع فقط)
-                print(f"⚠️  تعذّر التحقق من القناة قبل الرفع ({str(e)[:90]})\n"
-                      f"    سأكمل الرفع على أي حال…")
+            self.verify_channel(expected_channel_id)
         body = {
             "snippet": {"title": title[:100], "description": description[:5000],
                         "tags": list(tags)[:30], "categoryId": category_id},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids},
         }
         if publish_at:
+            # يوتيوب يرفض publishAt إلا مع خصوصية private ⇒ HTTP 400 مضمون لو public
+            if privacy != "private":
+                print("ℹ️  الجدولة تتطلب خصوصية private — ضُبطت تلقائياً "
+                      "(سيتحول لعام في موعد النشر)")
+                body["status"]["privacyStatus"] = "private"
             body["status"]["publishAt"] = publish_at     # ISO8601, implies privacyStatus=private
         media = MediaFileUpload(path, chunksize=8*1024*1024, resumable=True, mimetype="video/mp4")
         req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+        # رفع قابل للاستئناف بإعادة محاولة أسّية: أي خطأ عابر كان يجهض الرفع كله
+        # حتى لو قطع 99% (ResumableUploadError / انقطاع شبكة).
+        import time as _time
+        from googleapiclient.errors import HttpError, ResumableUploadError
         resp = None
+        attempt = 0
         while resp is None:
-            status, resp = req.next_chunk()
+            try:
+                status, resp = req.next_chunk()
+                attempt = 0
+            except (ResumableUploadError, ConnectionError, TimeoutError, OSError) as e:
+                # HttpError 5xx تأتي كـResumableUploadError؛ 4xx (غير 408) لا تُعاد
+                if isinstance(e, HttpError) and e.resp is not None and \
+                        400 <= e.resp.status < 500 and e.resp.status != 408:
+                    raise
+                attempt += 1
+                if attempt > 5:
+                    raise
+                wait = min(60, 4 * (2 ** attempt))
+                print(f"⚠️  انقطع الرفع ({type(e).__name__}) — إعادة {attempt}/5 بعد {wait}s "
+                      f"(يستأنف من حيث توقف)")
+                _time.sleep(wait)
         # 🖼️ الصورة المصغّرة: تُرفع تلقائياً لو موجودة بجانب الفيديو (نفس الاسم + _thumb.jpg)
         thumb = thumbnail
         if not thumb:
@@ -236,8 +319,9 @@ def _cli():
     ap.add_argument("--code", help="code (or full redirect URL) copied after approving")
     ap.add_argument("--upload", help="video file to upload")
     ap.add_argument("--title", default=""); ap.add_argument("--description", default="")
-    ap.add_argument("--tags", default=""); ap.add_argument("--privacy", default="private")
+    ap.add_argument("--tags", default=""); ap.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     ap.add_argument("--whoami", action="store_true", help="اعرض القناة المرتبطة بالتوكن")
+    ap.add_argument("--video-status", metavar="VIDEO_ID", help="افحص حالة المعالجة والرفض والقيود الجغرافية")
     ap.add_argument("--expect-channel", help="تحقق من معرّف القناة المتوقع (UC…)")
     ap.add_argument("--client-secret", default="client_secret.json")
     a = ap.parse_args()
@@ -249,6 +333,9 @@ def _cli():
         up = YouTubeUploader(a.client_secret)
         info = up.verify_channel(a.expect_channel) if a.expect_channel else up.channel_info()
         print(json.dumps(info, ensure_ascii=False, indent=1)); return
+    if a.video_status:
+        up = YouTubeUploader(a.client_secret)
+        print(json.dumps(up.video_status(a.video_status), ensure_ascii=False, indent=2)); return
     if a.upload:
         up = YouTubeUploader(a.client_secret)
         r = up.upload(a.upload, a.title or os.path.basename(a.upload), a.description,

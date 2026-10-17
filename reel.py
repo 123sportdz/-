@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-reel.py — landscape football clip -> vertical Reel / Short (ball tracked, watermarks removed).
+reel.py — landscape football clip -> vertical Reel / Short (ball tracked, source marks preserved by default).
 
   python reel.py -i match.mp4 -o reel.mp4
   python reel.py -i full_match.mp4 -o goal.mp4 --start 41:12 --end 41:55 --name "الحدث" --url elhadath-dz.com
@@ -10,7 +10,7 @@ Notes
     match use --start/--end to trim first, or lower --rate.
   * AV1/HEVC sources are normalized with ffmpeg automatically (OpenCV cannot decode AV1).
 """
-import argparse, os, sys, time
+import argparse, os, subprocess, sys, time
 import cv2
 import numpy as np
 
@@ -35,16 +35,25 @@ CFG = _load_cfg()
 
 
 def hhmmss(v):
+    """يحوّل 12.5 | mm:ss | hh:mm:ss إلى ثوانٍ — بصرامة (كان يقبل «1:2:3:4» صامتاً!)."""
     if v is None:
         return None
     v = str(v).strip()
     if ":" in v:
-        parts = [float(p) for p in v.split(":")]
+        parts = v.split(":")
+        if len(parts) > 3:
+            raise ValueError(f"زمن غير صالح: {v!r}")
         s = 0.0
         for p in parts:
-            s = s*60 + p
+            x = float(p)
+            if not (0.0 <= x < float("inf")) or x != x:
+                raise ValueError(f"زمن غير صالح: {v!r}")
+            s = s * 60 + x
         return s
-    return float(v)
+    s = float(v)
+    if not (0.0 <= s < float("inf")) or s != s:
+        raise ValueError(f"زمن غير صالح: {v!r}")
+    return s
 
 
 def _ts_arg(v):
@@ -67,6 +76,113 @@ def _size_arg(v):
         raise argparse.ArgumentTypeError(f"أبعاد غير صالحة: {v!r} — استخدم WxH (مثل 1080x1920)")
 
 
+def _strip_args(argv, takes_val=(), flags=()):
+    """يزيل وسائط من قائمة argv (يدعم --x v و --x=v) — لبناء أمر عامل --goals."""
+    out, i = [], 0
+    while i < len(argv):
+        tok = argv[i]
+        name = tok.split("=", 1)[0]
+        if name in takes_val:
+            i += 1 if "=" in tok else 2
+            continue
+        if name in flags:
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _goals_worker_cmd(argv, g, out_k):
+    """أمر عامل دفعة الأهداف. قاعدتان حرجتان:
+    1) تُزال أعلام الأوضاع (--scout/--preview/--clear-cache) — تسرّبها كان يجعل
+       العامل يخرج مبكراً بلا مخرجات فتُسجَّل كل الأهداف فاشلة.
+    2) ‏--goals 0 صراحةً في النهاية: argparse يأخذ آخر قيمة، فنمنع العامل من إعادة
+       قراءة "goals" من config.json ودخول وضع الدفعة مجدداً (تكاثر عمليات بلا حد!).
+    """
+    clean = _strip_args(list(argv),
+                        takes_val={"--goals", "--start", "--end", "-o", "--output"},
+                        flags={"--goals-montage", "--auto-cut", "--scout",
+                               "--preview", "--clear-cache"})
+    return [sys.executable, os.path.abspath(__file__), *clean,
+            "--start", f"{g['start']:.2f}", "--end", f"{g['end']:.2f}", "-o", out_k,
+            "--goals", "0"]
+
+
+def _rank_goals(a):
+    """يرتّب لحظات الأهداف: كشّاف احترافي (بصري+صوتي) أو صوتي فقط (--no-scout)."""
+    if getattr(a, "no_scout", False):
+        from reelkit import autocut as AC
+        return AC.find_goals(a.input, count=a.goals, min_gap=a.goals_gap,
+                             max_dur=(a.max_dur or 58.0), pre=a.auto_cut_pre)
+    from reelkit import highlight as HL
+    return HL.rank(a.input, count=a.goals, min_gap=a.goals_gap,
+                   max_dur=(a.max_dur or 58.0), pre=a.auto_cut_pre,
+                   ball_model=a.ball_model, conf=a.ball_conf,
+                   device=a.device, batch=a.batch)
+
+
+def _run_goals(a, argv):
+    """🎯 وضع دفعة الأهداف: نكتشف N لحظة هدف ونشغّل عاملاً (نفس الأمر) لكل لحظة.
+
+    التشغيل عبر عمليات فرعية متتابعة (لا توازٍ — ذاكرة GPU)، وكل عامل يمر بكل
+    منطق reel.py السليم (كشف/تتبّع/هوية/كابشن) بلا نسخ سطر واحد منه.
+    يرجّع رمز الخروج (0 = نجح هدف واحد على الأقل)."""
+    src = a.input
+    goals = _rank_goals(a)
+    if not goals:
+        print("🎯 --goals: ما لقيت لحظات هتاف واضحة في هذا التسجيل — "
+              "جرّب --auto-cut لهدف واحد أو خفّض العتبة")
+        return 1
+    print(f"🎯 اكتشفت {len(goals)} لحظة هدف:")
+    for g in goals:
+        if g.get("reasons"):
+            print(f"   {g['peak_t']:.0f}s → {g['start']:.0f}..{g['end']:.0f}s"
+                  f" | {g['score']:.0f}/100 — {'، '.join(g['reasons'])}")
+        else:
+            print(f"   {g['peak_t']:.0f}s → {g['start']:.0f}..{g['end']:.0f}s"
+                  f" (ثقة {g.get('score', 0):.1f})")
+    stem, ext = os.path.splitext(a.output)
+    ext = ext or ".mp4"
+    # نزيل من argv ما يخص التقسيم/الإخراج ونبقّي كل الستايل/الهوية/الخيارات كما هي
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    done = []
+    for i, g in enumerate(goals, 1):
+        out_k = f"{stem}_goal{i:02d}{ext}"
+        print(f"\n━━━ 🎯 الهدف {i}/{len(goals)}: {g['start']:.1f}s..{g['end']:.1f}s "
+              f"({g['dur']:.0f}s) → {os.path.basename(out_k)} ━━━", flush=True)
+        cmd = _goals_worker_cmd(argv, g, out_k)
+        # Popen بجلسة مستقلة: subprocess.run(timeout=) يقتل العامل المباشر فقط
+        # ويترك أبناءه ffmpeg أيتاماً — kill_tree يقتل الشجرة كاملة.
+        proc = ffio.popen_session(cmd, env=env)
+        try:
+            rc = proc.wait(timeout=7200)
+            ok = (rc == 0 and os.path.exists(out_k)
+                  and os.path.getsize(out_k) > 20000)
+        except subprocess.TimeoutExpired:
+            ok = False
+            ffio.kill_tree(proc)
+            print(f"⏱️ هدف {i}: انتهت المهلة — قتلت العامل وأبناءه وتخطّيت")
+        if ok:
+            done.append(out_k)
+        else:
+            print(f"⚠️ هدف {i} فشل — أكمل الباقي ({len(done)} ناجح حتى الآن)")
+    print(f"\n🎯 الدفعة: {len(done)}/{len(goals)} ريل جاهز")
+    for p in done:
+        print(f"   ✅ {p}")
+    if a.goals_montage and len(done) >= 2:
+        try:
+            from reelkit import montage as MG
+            mpath = f"{stem}_montage{ext}"
+            got = MG.build(done, mpath, per=(a.max_dur or 58.0), crf=a.crf,
+                           preset=a.preset, encoder=a.encoder,
+                           W=a.out_size[0], H=a.out_size[1])
+            print(f"🎞️ مونتاج الأهداف: {got}" if got else "⚠️ المونتاج تعذّر")
+        except Exception as e:
+            print(f"⚠️ المونتاج تعذّر ({type(e).__name__}: {str(e)[:80]})")
+    return 0 if done else 1
+
+
 def main(argv=None):
     try:                                     # كل المؤقتات على قرص المشروع (لا نعبّي C:)
         from reelkit.ffio import setup_tempdir
@@ -78,10 +194,10 @@ def main(argv=None):
     ap.add_argument("-o", "--output", default="reel_9x16.mp4", help="output file")
     ap.add_argument("--start", type=_ts_arg, help="trim start (seconds or mm:ss / hh:mm:ss)")
     ap.add_argument("--end", type=_ts_arg, help="trim end (seconds or mm:ss / hh:mm:ss)")
-    ap.add_argument("--name", default="", help="brand name drawn at the bottom (Arabic ok)")
-    ap.add_argument("--url", default="", help="brand url / handle under the name")
-    ap.add_argument("--brand-y", type=float, default=0.76,
-                    help="موضع شريط الهوية (0.76 = فوق أزرار يوتيوب شورتس)")
+    ap.add_argument("--name", default="", help="اسم مختصر لشارة القناة أعلى الإطار (يدعم العربية)")
+    ap.add_argument("--url", default="", help="رابط القناة في السطر الثاني من الشارة")
+    ap.add_argument("--brand-y", type=float, default=0.065,
+                    help="موضع شارة القناة (0.065 = أعلى الإطار، بعيداً عن حركة اللعب)")
     ap.add_argument("--brand-scale", type=float, default=1.0,
                     help="حجم شريط الهوية (1.0 افتراضي، 0.62 أصغر وأنظف)")
     ap.add_argument("--logo", default=None,
@@ -95,8 +211,18 @@ def main(argv=None):
     ap.add_argument("--logo-plate", action="store_true", help="خلفية داكنة خلف الشعار")
     ap.add_argument("--no-logo", action="store_true", help="تعطيل الشعار لهذا المقطع")
     ap.add_argument("--no-brand", action="store_true", help="do not draw any branding")
-    ap.add_argument("--keep-watermarks", action="store_true", help="skip watermark removal")
-    ap.add_argument("--no-trail", action="store_true", help="disable the ball trail effect")
+    watermarks = ap.add_mutually_exclusive_group()
+    watermarks.add_argument("--keep-watermarks", dest="keep_watermarks", action="store_true",
+                            help="الحفاظ على علامات المصدر (الافتراضي)")
+    watermarks.add_argument("--remove-watermarks", dest="keep_watermarks", action="store_false",
+                            help="إزالة العلامات فقط إذا كنت تملكها أو لديك إذن")
+    ap.set_defaults(keep_watermarks=True)
+    trail = ap.add_mutually_exclusive_group()
+    trail.add_argument("--show-trail", dest="show_trail", action="store_true",
+                       help="إظهار مسار رقيق للكرة (اختياري؛ مخفي افتراضياً)")
+    trail.add_argument("--no-trail", dest="show_trail", action="store_false",
+                       help="إخفاء علامة ومسار التتبع (الافتراضي)")
+    ap.set_defaults(show_trail=False)
     ap.add_argument("--out-size", type=_size_arg, default=(1080, 1920),
                     help="WxH (default 1080x1920)")
     ap.add_argument("--rate", type=float, default=15.0, help="ball detection rate in Hz (default 15)")
@@ -114,8 +240,29 @@ def main(argv=None):
                     help="person height fraction above which a shot is treated as tight (0..1)")
     ap.add_argument("--crf", type=int, default=20)
     ap.add_argument("--preset", default="medium")
+    _enc_cfg = str(CFG.get("encoder") or "auto").lower()
+    ap.add_argument("--encoder", choices=["auto", "nvenc", "cpu"],
+                    default=_enc_cfg if _enc_cfg in ("auto", "nvenc", "cpu") else "auto",
+                    help="⚡ مرمّز الفيديو: auto = NVENC على NVIDIA وإلا CPU؛ عند نفاد ذاكرة NVENC يعيد تلقائياً على CPU. "
+                         "على RTX 3060 يقصّر زمن الرندر 3-6 مرات")
+    ap.add_argument("--captions", choices=["auto", "on", "off"], default="auto",
+                    help="🔤 كابشن كلمة-بكلمة متزامن مع التعليق (ستايل الريلز الحديث). "
+                         "auto = يُفعّل تلقائياً مع --commentary")
+    ap.add_argument("--no-loudnorm", action="store_true",
+                    help="تعطيل تطبيع الصوت EBU R128 (-14 LUFS معيار المنصات)")
+    ap.add_argument("--goals", type=int, default=int(CFG.get("goals") or 0),
+                    help="🎯 دفعة أهداف: استخرج حتى N لحظة هدف من التسجيل الطويل "
+                         "وولّد ريلاً مستقلاً لكل منها (<out>_goal01.mp4 …)")
+    ap.add_argument("--goals-montage", action="store_true",
+                    help="🎞️ بعد الدفعة: ادمج ريلز الأهداف في مونتاج واحد (<out>_montage.mp4)")
+    ap.add_argument("--goals-gap", type=float, default=45.0,
+                    help="أقل فاصل زمني بين هدفين مكتشفين (ثانية، افتراضي 45)")
+    ap.add_argument("--scout", action="store_true",
+                    help="🔭 تقرير الكشّاف فقط: يفحص المقطع (هتاف+كرة) ويرتّب أفضل اللقطات بلا إنتاج")
+    ap.add_argument("--no-scout", action="store_true",
+                    help="إيقاف الكشّاف البصري في --goals (ترتيب صوتي فقط — أسرع)")
     ap.add_argument("--layout", choices=["single", "split"], default="single",
-                    help="single = ريل عادي | split = شاشة مقسومة (فوق اللقطة الواسعة، تحت تقريب على اللاعب)")
+                    help="single = لقطة عمودية واحدة (الموصى بها) | split = تقسيم توضيحي يكرر رسوم البث")
     ap.add_argument("--split-labels", action="store_true",
                     help="إظهار وسوم WIDE/PLAYER (مخفية افتراضياً لإخراج أنظف)")
     ap.add_argument("--commentary", action="store_true",
@@ -142,8 +289,8 @@ def main(argv=None):
                          "off | رقم = نسبة القص (1.2)")
     ap.add_argument("--zoom", default="auto",
                     help="تقريب درامي: auto = حسب سرعة الكرة | off | رقم (مثال 1.15)")
-    ap.add_argument("--subject", choices=["ball", "player", "action"], default="ball",
-                    help="what the vertical camera follows (default: ball)")
+    ap.add_argument("--subject", choices=["ball", "player", "action"], default="action",
+                    help="هدف الكاميرا العمودية (الافتراضي: مساحة اللعب، أكثر ثباتاً)")
     ap.add_argument("--device", default=None, help="cpu / cuda:0 / mps (default: auto)")
     ap.add_argument("--batch", type=int, default=0,
                     help="حجم دفعة الكشف على GPU (0 = تلقائي: 8 على CUDA، 1 على CPU). "
@@ -169,12 +316,12 @@ def main(argv=None):
     ap.add_argument("--score-scale", type=float, default=1.75, help="تكبير اللوحة")
     ap.add_argument("--no-audio", action="store_true")
     ap.add_argument("--source-credit", default="",
-                    help="🛡️ سطر إسناد المصدر يُرسم فوق شريط الهوية (عمل تحويلي موثّق)")
+                    help="معلومة مصدر مختصرة؛ لا تعني ترخيصاً أو حق إعادة النشر")
     ap.add_argument("--transformative", action="store_true",
-                    help="🛡️ وضع المحتوى التحويلي: يفعّل الإسناد + يولّد حزمة اعتراض ويتحقق من عناصر العمل الأصلي")
+                    help="وضع توافق قديم: يفعّل تعليقاً عربياً ويولّد ملف معلومات الإنتاج فقط؛ لا يثبت ترخيصاً أو Fair Use")
     ap.add_argument("--rights-package", action="store_true",
-                    help="🛡️ يولّد ملف <out>_dispute.md (توثيق العمل الأصلي/التحويلي) بجانب الريل")
-    ap.add_argument("--channel", default="", help="اسم القناة/الناشر في حزمة الاعتراض")
+                    help="يولّد ملف معلومات الإنتاج والحقوق بجانب الريل؛ ليس اعتراضاً ولا دليلاً على الإذن")
+    ap.add_argument("--channel", default="", help="اسم القناة/الناشر في ملف معلومات الإنتاج")
     ap.add_argument("--no-cache", action="store_true",
                     help="تعطيل كاش الكشف (أعد الكشف من الصفر حتى لو المصدر نفسه)")
     ap.add_argument("--clear-cache", action="store_true", help="امسح كاش الكشف واخرج")
@@ -198,6 +345,27 @@ def main(argv=None):
     if not os.path.exists(a.ball_model):
         sys.exit(f"ball model not found: {a.ball_model}\n"
                  f"put ball_detector.pt in models/ or pass --ball-model")
+
+    # 🎯 وضع دفعة الأهداف: يحوّل التسجيل الطويل إلى N ريل (عمال فرعيون) وينتهي هنا
+    if a.goals and a.goals >= 2:
+        a.goals_montage = a.goals_montage or bool(CFG.get("goals_montage"))
+        sys.exit(_run_goals(a, sys.argv[1:] if argv is None else list(argv)))
+    if a.scout:
+        # 🔭 تقرير الكشّاف: ترتيب احترافي بأعمدة أرقام وأسباب — بلا إنتاج
+        from reelkit import highlight as HL
+        ranked = HL.rank(a.input, count=max(int(a.goals or 0), 3), min_gap=a.goals_gap,
+                         max_dur=(a.max_dur or 58.0), pre=a.auto_cut_pre,
+                         ball_model=a.ball_model, conf=a.ball_conf,
+                         device=a.device, batch=a.batch)
+        if not ranked:
+            sys.exit("🔭 ما لقيت لحظات واضحة في هذا التسجيل (صوت مسطّح)")
+        print(HL.report(a.input, ranked))
+        print(f"\n💡 للإنتاج: أضف --goals {min(len(ranked), 3)} لتحويل أفضل اللقطات إلى ريلز جاهزة")
+        sys.exit(0)
+    if a.goals == 1 and not a.auto_cut:
+        # ‎--goals 1 = هدف واحد: نفس سلوك --auto-cut (لا نتجاهله صامتين)
+        a.auto_cut = True
+        log("🎯 --goals 1 → وضع الاقتطاع التلقائي لهدف واحد")
 
     # ---- device sanity: never die because a GPU was requested but is unavailable ----
     if a.device and str(a.device).lower() not in ("cpu", "mps"):
@@ -280,20 +448,34 @@ def main(argv=None):
         if start is not None and end is not None and end <= start:
             sys.exit(f"❌ خطأ: --end ({end:g}s) يجب أن يكون أكبر من --start ({start:g}s)")
         if start or end:
+            from reelkit import encode as ENC
+            _enc, _vargs = ENC.video_args(a.encoder, crf=16, preset="veryfast")
             trimmed = os.path.join(workdir, "trimmed.mp4")
             cmd = ["ffmpeg", "-v", "error", "-y"]
             if start: cmd += ["-ss", str(start)]
             cmd += ["-i", src]
             if end: cmd += ["-to", str(end - (start or 0))]
-            cmd += ["-c:v", "libx264", "-crf", "16", "-preset", "veryfast",
-                    "-pix_fmt", "yuv420p", "-c:a", "aac", trimmed]
+            cmd += _vargs + ["-pix_fmt", "yuv420p", "-c:a", "aac", trimmed]
             ffio.run(cmd); src = trimmed
             log(f"[1/6] trimmed  -> {src}")
 
         log(f"[1/6] normalizing source …")
-        readable = ffio.ensure_readable(src, workdir)
+        try:
+            _vfr = bool(ffio.probe(src).get("vfr"))
+        except Exception:
+            _vfr = False
+        # مصادر VFR (تسجيل هاتف): الرندر يكتب بمعدل ثابت والصوت يُستخرج على خط
+        # زمن المصدر ⇒ انزياح صوت/صورة يتراكم. نحوّلها لـCFR قبل أي شيء.
+        if _vfr:
+            log("      🎞️ مصدر بمعدل متغيّر (VFR) — تحويل لمعدل ثابت حتى لا ينحرف الصوت")
+            readable = ffio.ensure_readable(
+                src, workdir, cfr_fps=round(ffio.probe(src)["fps"], 3))
+        else:
+            readable = ffio.ensure_readable(src, workdir)
         info = ffio.probe(readable)
-        audio = None if a.no_audio else ffio.extract_audio(src, workdir)
+        # بعد تحويل VFR لـCFR يُستخرج الصوت من الملف المحوّل (خطه الزمني ثابت)
+        # وإلا انحرف عن الفيديو الجديد رغم التحويل.
+        audio = None if a.no_audio else ffio.extract_audio(readable if _vfr else src, workdir)
         log(f"      {info['width']}x{info['height']} @ {info['fps']:.2f}fps  {info['duration']:.1f}s"
             f"  {info['vcodec']}  audio={'yes' if audio else 'no'}")
 
@@ -395,8 +577,12 @@ def main(argv=None):
 
         log(f"[2/6] analyzing scenes / camera …")
         _use_cache = cache.enabled() and not a.no_cache
-        _sig = cache.file_sig(readable)
-        _akey = cache.make_key("analysis", _sig, {"rate": 15.0}) if _use_cache else None
+        # 💾 بصمة المصدر **الأصلي** لا الوسيط: الملفات المهذّبة/المحوّلة تُبنى في مجلد عمل
+        # جديد بـmtime جديد كل تشغيل ⇒ كان الكاش يضيع دائماً مع --start/--end وAV1!
+        # الهوية الدلالية = (الملف الأصلي + نافذة القص) — تُضاف النافذة لمعاملات كل كشف.
+        _sig = cache.file_sig(a.input)
+        _trim = [round(float(start or 0.0), 2), round(float(end or 0.0), 2)]
+        _akey = cache.make_key("analysis", _sig, {"rate": 15.0, "trim": _trim}) if _use_cache else None
         an = cache.load_npz("analysis", _akey) if _akey else None
         if an is not None:
             an = {"fps": float(an["fps"]), "W": int(an["W"]), "H": int(an["H"]),
@@ -417,11 +603,13 @@ def main(argv=None):
         log(f"      {detect.device_report(a.device)}" + (f" | دفعة: {a.batch}" if a.batch else ""))
         if q in ("high", "ultra") and not a.tile:
             a.tile = int(round(info["height"] * 0.66 / 16) * 16)   # ~480 لمقطع 720p
+        bd2 = None
         bd = detect.BallDetector(a.ball_model, conf=a.ball_conf, imgsz=a.imgsz, device=a.device,
                                  tile=a.tile, overlap=a.tile_overlap, tta=a.tta, batch=a.batch)
         _bkey = (cache.make_key("ball", _sig, {"rate": a.rate, "imgsz": a.imgsz,
                   "conf": a.ball_conf, "tile": a.tile, "overlap": a.tile_overlap,
-                  "tta": a.tta, "model": cache.model_sig(a.ball_model)}) if _use_cache else None)
+                  "tta": a.tta, "model": cache.model_sig(a.ball_model),
+                  "trim": _trim}) if _use_cache else None)
         det = cache.load("ball", _bkey) if _bkey else None
         if det is not None:
             log(f"      💾 كشف الكرة من الكاش: {len(det)} كشفاً (بلا إعادة كشف)")
@@ -444,7 +632,19 @@ def main(argv=None):
                                               imgsz=max(a.imgsz, 960), device=a.device,
                                               tile=t2, overlap=a.tile_overlap, tta=a.tta,
                                               batch=a.batch)
-                    det2 = bd2.scan(readable, rate=max(a.rate, 15.0), fps=info["fps"])
+                    # 💾 كشف إعادة المحاولة يُخزَّن بمفتاح معاملاته — كان يُعاد كل مرة
+                    _r2 = {"rate": max(a.rate, 15.0), "imgsz": max(a.imgsz, 960),
+                           "conf": max(0.05, a.ball_conf * 0.7), "tile": t2,
+                           "overlap": a.tile_overlap, "tta": a.tta, "trim": _trim,
+                           "model": cache.model_sig(a.ball_model)}
+                    _k2 = cache.make_key("ball", _sig, _r2) if _use_cache else None
+                    det2 = cache.load("ball", _k2) if _k2 else None
+                    if det2 is None:
+                        det2 = bd2.scan(readable, rate=max(a.rate, 15.0), fps=info["fps"])
+                        if _k2:
+                            cache.save("ball", _k2, det2)
+                    else:
+                        log(f"      💾 كشف إعادة المحاولة من الكاش: {len(det2)} كشفاً")
                     if len(det2) > n0 * 1.3:
                         det = det2
                         log(f"      ✅ تحسّن الكشف: {len(det)} كشفاً (كان {n0})")
@@ -454,8 +654,13 @@ def main(argv=None):
                     log(f"      ⚠️ إعادة المحاولة تعذّرت ({type(e).__name__}: {str(e)[:60]})")
 
         log(f"[4/6] detecting players (shot layout) …")
+        del bd
+        bd2 = None
+        detect.release_gpu_memory()
+
         pd = detect.PersonDetector(device=a.device, batch=a.batch)
-        _pkey = cache.make_key("person", _sig, {"rate": 4.0, "imgsz": 640}) if _use_cache else None
+        _pkey = cache.make_key("person", _sig, {"rate": 4.0, "imgsz": 640,
+                                                "trim": _trim}) if _use_cache else None
         person = cache.load("person", _pkey) if _pkey else None
         if person is not None:
             log(f"      💾 كشف اللاعبين من الكاش: {len(person)} كشفاً")
@@ -465,7 +670,13 @@ def main(argv=None):
                 cache.save("person", _pkey, person)
 
         log(f"[5/6] tracking + camera …")
-        n_frames = len(an["times"]) * an["step"] + 2
+        del pd
+        detect.release_gpu_memory()
+
+        # عدد الفريمات من مدة المصدر لا من عينات التحليل: analysis لا يلحق أول عينة
+        # (prev is None) فينقص len(times)*step عن F بمقدار step+(F%step)-2 — عند 50/60fps
+        # كانت آخر 2-5 فريمات تقع خارج مصفوفة الكاميرا فيقفز القصّ لمركز الإطار فجأة.
+        n_frames = int(np.ceil(info["duration"] * info["fps"])) + 2
         tf = np.arange(n_frames) / info["fps"]
         ball = TK.build_ball_track(det, an["cuts"], info["width"], info["height"],
                                    fps=info["fps"], rate=a.rate)
@@ -562,7 +773,19 @@ def main(argv=None):
                                                   imgsz=max(a.imgsz, 960), device=a.device,
                                                   tile=t2, overlap=a.tile_overlap, tta=a.tta,
                                                   batch=a.batch)
-                        det3 = bd3.scan(readable, rate=rate2, fps=info["fps"])
+                        # 💾 كشف إعادة المحاولة يُخزَّن بمفتاح معاملاته — كان يُعاد كل مرة
+                        _r3 = {"rate": rate2, "imgsz": max(a.imgsz, 960),
+                               "conf": max(0.05, a.ball_conf * 0.7), "tile": t2,
+                               "overlap": a.tile_overlap, "tta": a.tta, "trim": _trim,
+                               "model": cache.model_sig(a.ball_model)}
+                        _k3 = cache.make_key("ball", _sig, _r3) if _use_cache else None
+                        det3 = cache.load("ball", _k3) if _k3 else None
+                        if det3 is None:
+                            det3 = bd3.scan(readable, rate=rate2, fps=info["fps"])
+                            if _k3:
+                                cache.save("ball", _k3, det3)
+                        else:
+                            log(f"      💾 كشف إعادة المحاولة من الكاش: {len(det3)} كشفاً")
                         if len(det3):
                             pro3, bridged3, cov3 = _pro_track(det3, rate2)
                             if cov3 > cov_key + 5 or (pro is None and pro3 is not None):
@@ -609,7 +832,12 @@ def main(argv=None):
                 ic = np.clip(idx, 0, len(ts) - 1); ic0 = np.clip(idx - 1, 0, len(ts) - 1)
                 d_next = np.where(in_range, np.abs(ts[ic] - tf), np.inf)
                 d_prev = np.where(in_range, np.abs(tf - ts[ic0]), np.inf)
-                bad &= ~((d_prev <= edge_hold) | (d_next <= edge_hold))   # ثبات قصير عند الحافتين
+                # خارج المدى: d_next/d_prev = inf فلا يُستثنى أحد — أضف مسافة الحافة
+                # حتى يثبت الوسم 0.25s قبل أول نقطة/بعد آخر نقطة كما هو موعود.
+                d_edge = np.where(in_range, np.inf,
+                                  np.minimum(np.abs(tf - ts[0]), np.abs(tf - ts[-1])))
+                bad &= ~((d_prev <= edge_hold) | (d_next <= edge_hold)
+                         | (d_edge <= edge_hold))                          # ثبات قصير عند الحافتين
             before = (tf < ts[0]) & ((ts[0] - tf) > edge_hold)
             after = (tf > ts[-1]) & ((tf - ts[-1]) > edge_hold)
             out[bad | before | after] = np.nan
@@ -716,13 +944,11 @@ def main(argv=None):
         # ---------- 🎙️ التعليق العربي المولّد ----------
         voice_wav = None; commentary_text = ""; voice_engine = "-"
         if a.transformative:
-            # 🛡️ وضع المحتوى التحويلي: يفرض عناصر العمل الأصلي (تعليق + إسناد) التي تبني
-            # أساساً حقيقياً لأي اعتراض لاحق. لا يتلاعب بأي بصمة ولا يخفي شيئاً.
             if not a.source_credit:
-                a.source_credit = "المصدر: البث الأصلي — استخدام تحويلي (نقد وتحليل)"
+                log("ℹ️ لم يُضف إسناد تلقائي؛ أدخل المصدر الفعلي يدوياً إن رغبت")
             if not (a.commentary or a.commentary_text_only):
                 a.commentary = True
-                log("🛡️ وضع تحويلي: فعّلت التعليق الأصلي (أقوى عنصر تحويلي)")
+                log("🎙️ فعّلت التعليق العربي الأصلي؛ هذا لا يمنح حقاً في اللقطات الأصلية")
         if a.commentary or a.commentary_text_only:
             log("      🎙️ صياغة التعليق العربي …")
             try:
@@ -744,11 +970,39 @@ def main(argv=None):
                     r = VO.say(commentary_text, wav, engine=a.voice_engine, voice=(a.voice or None))
                     voice_wav = r["path"]; voice_engine = r["engine"]
                     log(f"      🔊 الصوت: {voice_engine} — {r['seconds']} ثانية")
-                    # احتياط: لو التعليق أطول من المقطع نخفّض سرعته
+                    # احتياط: لو التعليق أطول من المقطع نسرّع الإلقاء حتى يكفي.
+                    # كان النداء الثاني بنفس المعاملات فينتج نفس المدة (كود ميت).
                     if r["seconds"] > max(4.0, info["duration"] * 0.85) and voice_engine == "edge":
-                        r = VO.say(commentary_text, wav, engine="edge", voice=(a.voice or None))
+                        r2 = VO.say(commentary_text, wav, engine="edge",
+                                    voice=(a.voice or None), rate="+35%")
+                        if 0 < r2["seconds"] < r["seconds"]:
+                            r = r2; voice_wav = r["path"]
+                            log(f"      ⏩ أسرعنا الإلقاء: {r['seconds']} ثانية")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد الصوت ({type(e).__name__}: {str(e)[:90]}) — سيظهر التعليق كتابةً")
+
+        # ---------- 🔤 كابشن كلمة-بكلمة (متزامن مع التعليق) ----------
+        cap_cues = None
+        _cap_cfg = str(CFG.get("captions", "auto")).lower()
+        cap_on = (a.captions == "on") or (a.captions == "auto" and
+                                          _cap_cfg not in ("off", "0", "no", "false"))
+        if cap_on and commentary_text:
+            try:
+                from reelkit import captions as CP
+                if voice_wav:                        # تزامن حقيقي مع الصوت المولّد
+                    dur_v = VO.wav_seconds(voice_wav) or min(info["duration"], 8.0)
+                    _d0 = RD.VOICE_DELAY_MS / 1000.0   # بداية الصوت في المزيج (adelay)
+                    cap_cues = CP.build(commentary_text, start=_d0,
+                                        duration=max(0.6, min(dur_v, info["duration"] - _d0)))
+                elif a.commentary_text_only:         # بلا صوت: وزّع الكلمات على مدة المقطع
+                    cap_cues = CP.build(commentary_text, start=0.4,
+                                        duration=max(1.0, info["duration"] - 0.8))
+                if cap_cues:
+                    log(f"      🔤 كابشن: {CP.total_words(cap_cues)} كلمة على "
+                        f"{len(cap_cues)} مقطع عرض")
+            except Exception as e:
+                cap_cues = None
+                log(f"      ⚠️ الكابشن تعذّر ({type(e).__name__}: {str(e)[:60]})")
 
         # ---------- 📐 مقياس الإطار (دقة التتبّع) ----------
         try:
@@ -779,6 +1033,7 @@ def main(argv=None):
             except Exception as e:
                 log(f"      ⚠️ تعذّر تحديد اللحظة المفتاحية ({type(e).__name__}: {str(e)[:60]})")
 
+        detect.release_gpu_memory()
         log(f"[6/6] rendering {out_w}x{out_h} ({'شاشة مقسومة' if a.layout=='split' else 'ريل عادي'}) …")
         if a.source_credit:
             log(f"🛡️ إسناد المصدر: {a.source_credit}")
@@ -787,7 +1042,7 @@ def main(argv=None):
                       remove_watermarks=not a.keep_watermarks,
                       brand_name=("" if a.no_brand else a.name),
                       brand_url=("" if a.no_brand else a.url),
-                      use_trail=not a.no_trail, crf=a.crf, preset=a.preset,
+                      use_trail=a.show_trail, crf=a.crf, preset=a.preset,
                       layout=a.layout, player_x=player_x, split_labels=a.split_labels,
                       accent=accent_rgb, ball_color=ball_bgr, brand_y=a.brand_y,
                       brand_scale=max(0.4, min(1.4, float(a.brand_scale))),
@@ -799,7 +1054,20 @@ def main(argv=None):
                       voice_wav=voice_wav, duck=a.voice_duck,
                       commentary_text=commentary_text, commentary_show=bool(commentary_text),
                       source_credit=a.source_credit,
+                      cues=cap_cues, loudnorm=not a.no_loudnorm, encoder=a.encoder,
                       progress=None if a.quiet else (lambda s: print(s, flush=True)))
+        # v1.64: فحص جودة المخرج على سطر الأوامر (كما في اللوحة) — يكشف رندر مكسور فوراً
+        try:
+            from reelkit.quality import check as _qa
+            _q = _qa(a.output, out_w, out_h, max_duration=a.max_dur,
+                     audio_required=bool(audio))
+            if _q.get("ok"):
+                log(f"✅ فحص الجودة: {_q.get('width')}x{_q.get('height')} @ {_q.get('fps'):g}fps"
+                    f" | صوت: {'نعم' if _q.get('audio') else 'لا'} | {_q.get('duration'):g}s")
+            else:
+                log("⚠️ فحص الجودة: " + "; ".join(_q.get("issues") or ["مشكلة غير معروفة"]))
+        except Exception as _qe:
+            log(f"⚠️ تعذّر فحص الجودة ({type(_qe).__name__}: {str(_qe)[:60]})")
         if a.replay and str(a.replay).lower() != "off" and t_key is not None:
             try:
                 from reelkit import replay as RP
@@ -808,7 +1076,7 @@ def main(argv=None):
                 tmp_r = os.path.join(os.path.dirname(os.path.abspath(a.output)) or workdir,
                                      ".replay_out.mp4")
                 got = RP.add_replay(a.output, tmp_r, t_key, workdir=workdir, slow=slow,
-                                    crf=a.crf, preset=a.preset)
+                                    crf=a.crf, preset=a.preset, encoder=a.encoder)
                 if got:
                     from reelkit.ffio import safe_move
                     safe_move(got, a.output)
@@ -835,7 +1103,7 @@ def main(argv=None):
             except Exception as e:
                 log(f"⚠️  تعذّر إنشاء الصورة المصغّرة ({type(e).__name__}: {str(e)[:80]})")
 
-        # 🛡️ حزمة الاعتراض: توثيق عناصر العمل الأصلي/التحويلي لحملة نزاع مشروعة
+        # 🛡️ ملف معلومات الإنتاج: مسودة حقائق للمراجعة اليدوية، لا توصية باعتراض
         if a.rights_package or a.transformative:
             try:
                 from reelkit import rights as RT
@@ -870,12 +1138,12 @@ def main(argv=None):
                                        commentary_present=bool(commentary_text))
                 if pkg:
                     short = RT.is_short_clip(max_dur=a.max_dur, duration=info.get("duration"))
-                    log(f"🛡️ حزمة الاعتراض: {pkg}")
-                    log(f"   الجاهزية التحوّلية (إرشادية): {RT.score({'own_commentary': bool(commentary_text), 'source_credit': bool(a.source_credit), 'own_brand': brand_on, 'short_clip': short, 'rights_package': True, 'no_full_match': short})}/100")
+                    log(f"🛡️ ملف معلومات الإنتاج: {pkg}")
+                    log(f"   اكتمال عناصر التوثيق فقط (ليس إذناً): {RT.score({'own_commentary': bool(commentary_text), 'source_credit': bool(a.source_credit), 'own_brand': brand_on, 'short_clip': short, 'rights_package': True, 'no_full_match': short})}/100")
                 else:
-                    log("⚠️  تعذّر إنشاء حزمة الاعتراض")
+                    log("⚠️  تعذّر إنشاء ملف معلومات الإنتاج")
             except Exception as e:
-                log(f"⚠️  حزمة الاعتراض تعذّرت ({type(e).__name__}: {str(e)[:70]})")
+                log(f"⚠️  ملف معلومات الإنتاج تعذّرت ({type(e).__name__}: {str(e)[:70]})")
     finally:
         if a.keep_temp:
             print(f"temp kept: {workdir}")

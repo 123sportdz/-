@@ -12,10 +12,11 @@ class PlayerTracker:
     def __init__(self, weights="yolo11n.pt", conf=0.35, imgsz=960, device=None,
                  tracker="bytetrack.yaml"):
         from ultralytics import YOLO
-        from .detect import resolve_weights, pick_device
+        from .detect import resolve_weights, pick_device, precision_kwargs
         self.model = YOLO(resolve_weights(weights))
         self.device, self.is_cuda, _ = pick_device(device)
-        self.half = bool(self.is_cuda)          # FP16 على RTX — ~2× أسرع
+        self.half = bool(self.is_cuda)
+        self.precision = precision_kwargs(self.half)
         self.conf, self.imgsz, self.tracker = conf, imgsz, tracker
 
     def scan(self, video_path, rate=15.0, fps=None, ball_x=None, frame_times=None,
@@ -48,8 +49,7 @@ class PlayerTracker:
                     try:
                         kw = dict(persist=True, classes=[0], conf=self.conf, imgsz=self.imgsz,
                                   device=self.device, tracker=self.tracker, verbose=False)
-                        if self.half:
-                            kw["half"] = True
+                        kw.update(self.precision)
                         r = self.model.track(fr, **kw)[0]
                     except Exception as e:            # lap/ByteTrack غير متاح؟
                         self._tracking_ok = False
@@ -58,8 +58,7 @@ class PlayerTracker:
                 if r is None:
                     kw = dict(classes=[0], conf=self.conf, imgsz=self.imgsz,
                               device=self.device, verbose=False)
-                    if self.half:
-                        kw["half"] = True
+                    kw.update(self.precision)
                     r = self.model.predict(fr, **kw)[0]
                 t = n / fps
                 bx = None
