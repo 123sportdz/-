@@ -52,3 +52,27 @@ def test_youtube_rights_gate_accepts_reviewed_license():
         "rights_acknowledged": True,
     }, privacy="unlisted")
     assert result["ok"] is True
+
+
+def test_youtube_rights_gate_requires_literal_boolean_attestations():
+    expected_errors = {
+        "rights_acknowledged": "يجب تأكيد قراءة تنبيه حقوق النشر",
+        "visual_rights_confirmed": "يجب مراجعة حقوق المحتوى المرئي",
+        "audio_rights_confirmed": "يجب مراجعة حقوق الصوت/الموسيقى",
+        "evidence_reviewed": "يجب تأكيد مراجعة مستند أو مرجع الحقوق قبل النشر",
+    }
+    for field, message in expected_errors.items():
+        for forged_value in ("false", 1):
+            payload = {
+                "rights_basis": "licensed",
+                "source_reference": "https://example.test/source",
+                "evidence_reference": "license-2026-01.pdf",
+                "visual_rights_confirmed": True,
+                "audio_rights_confirmed": True,
+                "evidence_reviewed": True,
+                "rights_acknowledged": True,
+            }
+            payload[field] = forged_value
+            result = rights.validate_youtube_publish(payload, privacy="unlisted")
+            assert result["ok"] is False
+            assert message in result["errors"]

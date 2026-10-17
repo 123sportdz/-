@@ -85,7 +85,7 @@ def validate_youtube_publish(present=None, privacy="private") -> dict:
     المدرج عندما لا يوجد أساس استخدام موثق. الرفع الخاص يبقى متاحاً للمراجعة
     فقط مع تنبيه أن Content ID قد يضع مطالبة عليه.
     """
-    p = present or {}
+    p = present if isinstance(present, dict) else {}
     privacy = str(privacy or "private").strip().lower()
     basis = str(p.get("rights_basis") or "unknown").strip().lower()
     source = _clean(p.get("source_reference"), 1000)
@@ -93,11 +93,11 @@ def validate_youtube_publish(present=None, privacy="private") -> dict:
     errors = []
     if privacy not in {"private", "unlisted", "public"}:
         errors.append("خصوصية YouTube غير صالحة")
-    if not p.get("rights_acknowledged"):
+    if p.get("rights_acknowledged") is not True:
         errors.append("يجب تأكيد قراءة تنبيه حقوق النشر")
-    if not p.get("visual_rights_confirmed"):
+    if p.get("visual_rights_confirmed") is not True:
         errors.append("يجب مراجعة حقوق المحتوى المرئي")
-    if not p.get("audio_rights_confirmed"):
+    if p.get("audio_rights_confirmed") is not True:
         errors.append("يجب مراجعة حقوق الصوت/الموسيقى")
     if not source:
         errors.append("أدخل مصدر الصورة أو مرجعها للتتبّع")
@@ -107,7 +107,7 @@ def validate_youtube_publish(present=None, privacy="private") -> dict:
         errors.append("أدخل مرجع الترخيص أو الإذن (رابط/مسار/رقم عقد)")
     if privacy in {"public", "unlisted"} and basis in {"unknown", ""}:
         errors.append("لا يمكن النشر العام أو غير المدرج دون أساس استخدام موثق")
-    if privacy in {"public", "unlisted"} and not p.get("evidence_reviewed"):
+    if privacy in {"public", "unlisted"} and p.get("evidence_reviewed") is not True:
         errors.append("يجب تأكيد مراجعة مستند أو مرجع الحقوق قبل النشر")
     return {
         "ok": not errors,

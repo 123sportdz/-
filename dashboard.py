@@ -138,6 +138,7 @@ def masked(cfg):
 
 # ------------------------------------------------------------------ jobs
 JOBS = {}
+PUBLISHING = set()
 _lock = threading.RLock()   # reentrant: _persist يُستدعى داخل أقسام مقفلة
 _last_persist = 0.0
 JOB_SEM = threading.BoundedSemaphore(int(os.environ.get("REEL_MAX_JOBS", "1")))   # 🚦 بحد أقصى
@@ -1416,9 +1417,11 @@ def api_jobs():
     with _lock:
         js = [dict(j) for j in
               sorted(JOBS.values(), key=lambda j: j.get("created", 0), reverse=True)]
+        publishing = set(PUBLISHING)
     for j in js:
         if j.get("status") == "running" and j.get("started"):
             j["elapsed"] = round(time.time() - j["started"], 1)
+        j["publish_in_progress"] = j["id"] in publishing
         j["thumb"] = f"/api/jobs/{j['id']}/thumb"
         j["media"] = f"/media/{j['id']}/{(j.get('output') or '').split('/')[-1].split(chr(92))[-1]}"
     return js
@@ -1433,12 +1436,16 @@ def api_delete(jid: str):
     # فيدخل مسار «الشفاء الذاتي» ويعيد تشغيل مهمة حذفها المستخدم للتو!
     with _lock:
         j = JOBS.get(jid)
+        if jid in PUBLISHING:
+            raise HTTPException(409, "لا يمكن حذف المهمة أثناء النشر")
         if j and j.get("status") in ("running", "queued"):
             j["status"] = "cancelling"
     p = PROCS.pop(jid, None)
     if p is not None:
         _kill_proc(p)
     with _lock:
+        if jid in PUBLISHING:
+            raise HTTPException(409, "لا يمكن حذف المهمة أثناء النشر")
         j = JOBS.pop(jid, None)
     if not j:
         raise HTTPException(404, "not found")
@@ -1620,12 +1627,56 @@ def api_suggest(jid: str, payload: dict | None = None):
     _persist()
     return s
 
+def _record_rights_review(job, rights, privacy, gate):
+    rights = rights if isinstance(rights, dict) else {}
+    errors = (gate or {}).get("errors") or []
+    job["rights_review"] = {
+        "basis": str(rights.get("rights_basis") or "unknown")[:40],
+        "source_reference": str(rights.get("source_reference") or "")[:1000],
+        "evidence_reference": str(rights.get("evidence_reference") or "")[:1000],
+        "visual_rights_confirmed": rights.get("visual_rights_confirmed") is True,
+        "audio_rights_confirmed": rights.get("audio_rights_confirmed") is True,
+        "evidence_reviewed": rights.get("evidence_reviewed") is True,
+        "rights_acknowledged": rights.get("rights_acknowledged") is True,
+        "contains_synthetic_media": rights.get("contains_synthetic_media") is True,
+        "privacy": str(privacy or "private")[:20],
+        "form_complete": bool((gate or {}).get("ok")),
+        "gate_errors": [str(error)[:200] for error in errors[:20]],
+        "submitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    return job["rights_review"]
+
+
+def _publish_in_progress_result(targets):
+    return {target: {"ok": False, "code": "publish_in_progress",
+                     "error": "توجد عملية نشر قائمة لهذه المهمة؛ انتظر اكتمالها قبل المحاولة مرة أخرى."}
+            for target in targets or []}
+
+
 def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
+    jid = str(job.get("id") or "")
+    if jid:
+        with _lock:
+            if jid in PUBLISHING:
+                return _publish_in_progress_result(targets)
+            PUBLISHING.add(jid)
+    try:
+        return _do_publish_once(job, targets, title, desc, tags, privacy,
+                                publish_at=publish_at, rights=rights)
+    finally:
+        if jid:
+            with _lock:
+                PUBLISHING.discard(jid)
+
+
+def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     result = {}
     rights = rights or {}
     if "youtube" in targets:
         from reelkit import rights as RT
         gate = RT.validate_youtube_publish(rights, privacy=privacy)
+        _record_rights_review(job, rights, privacy, gate)
+        _persist()
         if not gate["ok"]:
             result["youtube"] = {"ok": False, "code": "rights_gate",
                                   "error": " | ".join(gate["errors"]),
@@ -1651,7 +1702,7 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
             r = YouTubeUploader().upload(job["output"], title, desc, tags, privacy=privacy,
                                          publish_at=publish_at,
                                          expected_channel_id=CFG.get("youtube_channel_id") or None,
-                                         contains_synthetic_media=bool(rights.get("contains_synthetic_media")))
+                                         contains_synthetic_media=rights.get("contains_synthetic_media") is True)
             item = {"ok": True, "id": r.get("id"), "url": f"https://youtu.be/{r.get('id')}"}
             if publish_at:
                 item["scheduled_for"] = publish_at
@@ -1661,14 +1712,6 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
         except Exception as e:
             result["youtube"] = {"ok": False, "error": str(e)}
     job.setdefault("publish", {}).update(result)
-    if "youtube" in targets:
-        job["rights_review"] = {
-            "basis": rights.get("rights_basis", "unknown"),
-            "source_reference": rights.get("source_reference", ""),
-            "evidence_reference": rights.get("evidence_reference", ""),
-            "contains_synthetic_media": bool(rights.get("contains_synthetic_media")),
-            "privacy": privacy,
-        }
     job.update(title=title, description=desc, tags=tags)
     _persist()
     return result
@@ -1676,33 +1719,90 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
 
 @app.post("/api/jobs/{jid}/publish")
 def api_publish(jid: str, payload: dict):
-    job = JOBS.get(jid)
-    if not job:
-        raise HTTPException(404, "job not found")
-    if job.get("status") != "done":
-        raise HTTPException(400, "المقطع لسه ما خلص")
     targets = payload.get("targets", [])
-    privacy = payload.get("privacy", CFG.get("youtube_privacy", "private"))
+    if not isinstance(targets, list) or not targets or any(
+            not isinstance(target, str) or target not in {"youtube", "telegram"}
+            for target in targets):
+        raise HTTPException(400, "اختر وجهة نشر صالحة")
+    targets = list(dict.fromkeys(targets))
     rights = payload.get("rights") or {}
-    if "youtube" in targets:
-        from reelkit import rights as RT
-        gate = RT.validate_youtube_publish(rights, privacy=privacy)
-        if not gate["ok"]:
-            return {"youtube": {"ok": False, "code": "rights_gate",
-                                 "error": " | ".join(gate["errors"]),
-                                 "details": gate}}
-    publish_at = None
-    mode = str(payload.get("schedule") or ("peak" if CFG.get("schedule_peak") else "now"))
-    if mode == "peak" and "youtube" in targets:
-        publish_at = SCH.next_peak_iso()
-        privacy = "private"                      # يوتيوب يشترط "خاص" مع الجدولة
-    elif mode and mode not in ("now", "peak", "off"):
-        publish_at = mode                        # ISO8601 مباشر
-        privacy = "private"
-    return _do_publish(job, targets,
-                       payload.get("title") or job.get("title") or "مقطع رياضي",
-                       payload.get("description", ""), payload.get("tags", []),
-                       privacy, publish_at=publish_at, rights=rights)
+    if not isinstance(rights, dict):
+        raise HTTPException(400, "بيانات مراجعة الحقوق غير صالحة")
+    boolean_fields = ("visual_rights_confirmed", "audio_rights_confirmed", "evidence_reviewed",
+                      "rights_acknowledged", "contains_synthetic_media")
+    if any(field in rights and not isinstance(rights[field], bool) for field in boolean_fields):
+        raise HTTPException(400, "حقول التأكيد والإفصاح الاصطناعي يجب أن تكون قيماً منطقية")
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        if job.get("status") != "done":
+            raise HTTPException(400, "المقطع لسه ما خلص")
+        if jid in PUBLISHING:
+            raise HTTPException(409, "توجد عملية نشر قائمة لهذه المهمة؛ انتظر اكتمالها")
+        PUBLISHING.add(jid)
+    try:
+        privacy = payload.get("privacy", CFG.get("youtube_privacy", "private"))
+        publish_at = None
+        mode = str(payload.get("schedule") or ("peak" if CFG.get("schedule_peak") else "now"))
+        if mode == "peak" and "youtube" in targets:
+            publish_at = SCH.next_peak_iso()
+            privacy = "private"
+        elif mode and mode not in ("now", "peak", "off"):
+            publish_at = mode
+            privacy = "private"
+        if "youtube" in targets:
+            from reelkit import rights as RT
+            gate = RT.validate_youtube_publish(rights, privacy=privacy)
+            if not gate["ok"]:
+                _record_rights_review(job, rights, privacy, gate)
+                _persist()
+                return {"youtube": {"ok": False, "code": "rights_gate",
+                                     "error": " | ".join(gate["errors"]),
+                                     "details": gate}}
+        return _do_publish_once(job, targets,
+                                payload.get("title") or job.get("title") or "مقطع رياضي",
+                                payload.get("description", ""), payload.get("tags", []),
+                                privacy, publish_at=publish_at, rights=rights)
+    finally:
+        with _lock:
+            PUBLISHING.discard(jid)
+
+
+@app.post("/api/jobs/{jid}/youtube-status")
+def api_youtube_status(jid: str):
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        publish = job.get("publish")
+        youtube = publish.get("youtube") if isinstance(publish, dict) else None
+        video_id = str(youtube.get("id") or "").strip() if isinstance(youtube, dict) else ""
+    if not video_id:
+        raise HTTPException(400, "لا يوجد فيديو YouTube مرفوع لهذه المهمة")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise HTTPException(400, "معرّف فيديو YouTube غير صالح")
+    try:
+        from reelkit.publish.youtube import YouTubeUploader
+        status = YouTubeUploader().video_status(video_id)
+    except Exception as e:
+        raise HTTPException(
+            502, f"تعذّر فحص حالة YouTube ({type(e).__name__}). تحقق من الاتصال وربط الحساب.") from e
+    if not isinstance(status, dict):
+        raise HTTPException(502, "أعاد YouTube حالة غير صالحة")
+    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        publish = job.get("publish")
+        youtube = publish.get("youtube") if isinstance(publish, dict) else None
+        if not isinstance(youtube, dict) or youtube.get("id") != video_id:
+            raise HTTPException(409, "تغيّر فيديو YouTube المرتبط بهذه المهمة؛ أعد فتحها")
+        youtube["status"] = status
+        youtube["status_checked_at"] = checked_at
+        _persist()
+    return {"ok": True, "status": status, "status_checked_at": checked_at}
 
 def _logo_list():
     out = []
@@ -2949,6 +3049,7 @@ window.addEventListener("unhandledrejection",e=>{
   toast("⚠️ "+msg,"err");
 });
 let CFG={},JOBS=[],CUR=null;
+const PUBLISHING_JOBS=new Set();
 let SCOUT_REVIEW=null,SCOUT_SELECTED_ID="",SCOUT_SELECTED_INDEX=-1,SCOUT_STARTING=false,SCOUT_POLL_ID="";
 const SCOUT_SESSION_KEY="elhadath-reels.scout-session";
 function scoutStorageGet(){try{return sessionStorage.getItem(SCOUT_SESSION_KEY)||""}catch(e){return ""}}
@@ -3705,10 +3806,115 @@ async function copyLog(id){
   catch(e){toast("تعذّر النسخ","err");}
 }
 
+function rightsReviewMarkup(r){
+  if(!r)return "";
+  const bases={own:"أملك حقوق الصورة والصوت",licensed:"لدي ترخيص",permission:"لدي إذن مكتوب",public_domain:"ملك عام / ترخيص يسمح بالاستخدام",unknown:"غير متأكد"};
+  const privacy={private:"خاص",unlisted:"غير مدرج",public:"عام"};
+  const yes=v=>v===true?"نعم":v===false?"لا":"غير مسجل";
+  const state=r.form_complete===true?"اكتملت متطلبات النموذج":r.form_complete===false?"لم تكتمل متطلبات النموذج":"غير مسجلة";
+  const errors=Array.isArray(r.gate_errors)?r.gate_errors:[];
+  return `<div class="warn" style="margin:8px 0;border-color:#c59b45">
+    <b>آخر سجل لمراجعة الحقوق</b>
+    <div style="margin-top:5px">حالة البوابة: <b>${state}</b> · الخصوصية: <b>${esc(privacy[r.privacy]||r.privacy||"غير مسجل")}</b></div>
+    <div>أساس الاستخدام: ${esc(bases[r.basis]||r.basis||"غير مسجل")}</div>
+    <div>مصدر المحتوى: ${esc(r.source_reference||"—")}</div>
+    <div>مرجع الترخيص/الإذن: ${esc(r.evidence_reference||"—")}</div>
+    <div>مراجعة الصورة: ${yes(r.visual_rights_confirmed)} · مراجعة الصوت: ${yes(r.audio_rights_confirmed)} · مراجعة المرجع: ${yes(r.evidence_reviewed)}</div>
+    <div>إقرار التنبيه: ${yes(r.rights_acknowledged)} · إفصاح المحتوى الاصطناعي: ${yes(r.contains_synthetic_media)}</div>
+    ${errors.length?`<div>المطلوب: ${errors.map(esc).join(" · ")}</div>`:""}
+    <div style="font-size:11px;color:var(--mut)">هذا السجل يوثّق الإجابات المقدّمة فقط؛ لا يثبت الملكية أو الترخيص.</div>
+    ${r.submitted_at?`<div style="font-size:11px;color:var(--mut)">وقت التسجيل: ${esc(r.submitted_at)}</div>`:""}
+  </div>`;
+}
+function youtubeStatusLabel(s){
+  if(!s)return "لم تُفحص بعد";
+  const upload=String(s.upload_status||"").toLowerCase(),processing=String(s.processing_status||"").toLowerCase();
+  if(s.rejection_reason||upload==="rejected")return "مرفوض";
+  if(s.failure_reason||s.processing_failure_reason||upload==="failed"||processing==="failed"||processing==="terminated")return "فشل";
+  const blocked=Array.isArray(s.region_restriction?.blocked)?s.region_restriction.blocked:[];
+  const pending=processing==="processing"||upload==="uploaded";
+  const complete=processing==="succeeded"||upload==="processed";
+  if(blocked.length)return complete?"مكتمل — مع قيود جغرافية":"قيود جغرافية";
+  if(pending)return "قيد المعالجة";
+  if(complete)return "مكتمل";
+  return upload||processing||"غير معروف";
+}
+function youtubeStatusDetails(y){
+  const s=y?.status;
+  if(!s)return `<b>حالة YouTube:</b> لم يُفحص الفيديو بعد. سيُحدّث تلقائياً بعد الرفع، ويمكنك الفحص يدوياً.`;
+  const uploads={uploaded:"تم الرفع",processed:"اكتملت المعالجة",failed:"فشل",rejected:"مرفوض",deleted:"محذوف"};
+  const processing={processing:"قيد المعالجة",succeeded:"مكتمل",failed:"فشل",terminated:"متوقف"};
+  const privacy={private:"خاص",unlisted:"غير مدرج",public:"عام"};
+  const upload=String(s.upload_status||"").toLowerCase(),proc=String(s.processing_status||"").toLowerCase();
+  const region=s.region_restriction||{};
+  const blocked=Array.isArray(region.blocked)?region.blocked:[];
+  const allowed=Array.isArray(region.allowed)?region.allowed:[];
+  const regionText=blocked.length?`محظور في: ${esc(blocked.join(", "))}`:allowed.length?`متاح فقط في: ${esc(allowed.join(", "))}`:"";
+  const reasons=[s.rejection_reason,s.failure_reason,s.processing_failure_reason].filter(v=>typeof v==="string"&&v);
+  let checked="";
+  if(y.status_checked_at){const d=new Date(y.status_checked_at);if(!Number.isNaN(d.getTime()))checked=d.toLocaleString();}
+  return `<b>حالة YouTube:</b> ${esc(youtubeStatusLabel(s))}
+    <div>الرفع: ${esc(uploads[upload]||s.upload_status||"—")} · المعالجة: ${esc(processing[proc]||s.processing_status||"—")} · الخصوصية: ${esc(privacy[String(s.privacy_status||"").toLowerCase()]||s.privacy_status||"—")}</div>
+    ${regionText?`<div>قيود المناطق: ${regionText}</div>`:""}
+    ${reasons.length?`<div>التفاصيل: ${reasons.map(esc).join(" · ")}</div>`:""}
+    <div style="font-size:11px;color:var(--mut)">تفاصيل Content ID والمطالبات تُراجع في YouTube Studio.</div>
+    ${checked?`<div style="font-size:11px;color:var(--mut)">آخر فحص: ${esc(checked)}</div>`:""}`;
+}
+function youtubeStatusPanel(publish,jobId){
+  const y=publish?.youtube||{};
+  if(!y.id)return "";
+  const videoId=String(y.id),safeId=/^[A-Za-z0-9_-]{11}$/.test(videoId)?videoId:"";
+  const owner=esc(jobId||"");
+  return `<div id="yt_status_panel" data-job-id="${owner}" class="warn" style="margin-top:8px;border-color:#1d5c3e">
+    <div id="yt_status_summary" data-job-id="${owner}">${youtubeStatusDetails(y)}</div>
+    <div class="acts" style="margin-top:8px">
+      ${safeId?`<button id="yt_status_btn" data-job-id="${owner}" class="btn gray sm" onclick="refreshYoutubeStatus('${owner}')">↻ فحص الحالة</button>`:""}
+      <a class="btn gray sm" href="https://studio.youtube.com" target="_blank" rel="noopener noreferrer">فتح YouTube Studio</a>
+      ${safeId?`<a class="btn gray sm" href="https://youtu.be/${safeId}" target="_blank" rel="noopener noreferrer">فتح الفيديو</a>`:""}
+    </div>
+  </div>`;
+}
+async function refreshYoutubeStatus(id,silent=false){
+  const element=selector=>Array.from(document.querySelectorAll(selector)).find(node=>node.dataset.jobId===id);
+  const button=element("#yt_status_btn"),summary=element("#yt_status_summary");
+  if(button){button.disabled=true;button.textContent="جارٍ الفحص…";}
+  if(summary&&!silent)summary.innerHTML='<span class="spin"></span> جارٍ فحص حالة YouTube…';
+  try{
+    const response=await fetch(`/api/jobs/${encodeURIComponent(id)}/youtube-status`,{method:"POST"});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(data.detail||`فشل الطلب (${response.status})`);
+    const job=JOBS.find(x=>x.id===id);
+    if(job){job.publish=job.publish||{};job.publish.youtube=job.publish.youtube||{};
+      job.publish.youtube.status=data.status;job.publish.youtube.status_checked_at=data.status_checked_at;}
+    const current=element("#yt_status_summary");
+    if(current)current.innerHTML=youtubeStatusDetails({status:data.status,status_checked_at:data.status_checked_at});
+    if(!silent)toast("تحدّثت حالة YouTube","ok");
+    const s=data.status||{};
+    return {pending:String(s.processing_status||"").toLowerCase()==="processing"||String(s.upload_status||"").toLowerCase()==="uploaded",status:s};
+  }catch(e){
+    const current=element("#yt_status_summary");
+    if(current)current.innerHTML=`<b>⚠️ تعذّر فحص الحالة.</b> ${esc(e.message||"")}`;
+    if(!silent)toast("تعذّر فحص حالة YouTube","err");
+    return {error:e};
+  }finally{
+    const current=element("#yt_status_btn");
+    if(current){current.disabled=false;current.textContent="↻ فحص الحالة";}
+  }
+}
+function scheduleYoutubeStatusChecks(id,attempt=0){
+  const delays=[15000,30000];
+  if(attempt>=delays.length)return;
+  setTimeout(async()=>{
+    const result=await refreshYoutubeStatus(id,true);
+    if(result?.pending)scheduleYoutubeStatusChecks(id,attempt+1);
+  },delays[attempt]);
+}
+
 /* ---------- job modal ---------- */
 function openJob(id){
   CUR=JOBS.find(j=>j.id===id);if(!CUR)return;
   const j=CUR, url=j.media||`/media/${j.id}/${(j.output||"").split(/[\\/]/).pop()}`;
+  const publishDisabled=j.publish_in_progress?"disabled title=\"يوجد نشر جارٍ لهذه المهمة\"":"";
   const cov=(()=>{const m=(j.log||[]).join(" ").match(/تغطية زمنية\s*(\d+)/);return m?m[1]+"%":null;})();
   const eng=(()=>{const t=(j.log||[]).join(" ");return t.includes("محرّك احترافي")?"احترافي 🏆":(t.includes("player-cam")?"كاميرا اللاعب":"كلاسيكي");})();
   const frm=(()=>{const m=(j.log||[]).join(" ").match(/الإطار:\s*الكرة تبعد[^]*?وسطياً\s*([\d.]+)%[^]*?≤\s*([\d.]+)%/);return m?{avg:m[1],p95:m[2]}:null;})();
@@ -3759,10 +3965,11 @@ function openJob(id){
         <label>التاجات (بفاصلة)</label><input id="m_tags" value="${esc((j.tags||[]).join(", "))}">
         <div class="acts">
           <button class="btn sec sm" onclick="sug('${j.id}')">✨ اقترح عنوان</button>
-          <button class="btn sm" onclick="pub('${j.id}',['telegram'])">📤 تيليجرام</button>
-          <button class="btn sm" onclick="pub('${j.id}',['youtube'])">▶️ مراجعة YouTube</button>
+          <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['telegram'],this)">📤 تيليجرام</button>
+          <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['youtube'],this)">▶️ مراجعة YouTube</button>
         </div>
-        <div id="m_res"></div>
+        <div id="rightsReviewPanel" data-job-id="${esc(j.id)}">${rightsReviewMarkup(j.rights_review)}</div>
+        <div id="m_res" data-job-id="${esc(j.id)}">${youtubeStatusPanel(j.publish,j.id)}</div>
         <div class="warn">⚠️ رفع يوتيوب عبر API يبقى <b>private</b> حتى يجتاز مشروعك تدقيق YouTube.</div>
       </div></div>`;
   $("modal").classList.add("on");
@@ -3788,38 +3995,76 @@ async function sug(id){
   $("m_tags").value=(r.tags||[]).join(", ");
   $("m_res").innerHTML=`<div class="warn">OCR: <span style="direction:ltr;display:inline-block">${esc((r.raw_ocr||"—").slice(0,80))}</span></div>`;
 }
-async function pub(id,targets){
+async function pub(id,targets,trigger=null){
+  if(PUBLISHING_JOBS.has(id))return;
   if(targets.includes("youtube")){
-    $("m_res").innerHTML=`<div class="warn" style="border-color:#c59b45">
+    const job=JOBS.find(x=>x.id===id)||{};
+    const saved=job.rights_review||{};
+    if(job.publish?.youtube?.id&&!confirm("هذه المهمة لديها فيديو YouTube مرفوع بالفعل. الرفع مرة أخرى سينشئ نسخة جديدة؛ هل تريد المتابعة؟"))return;
+    const privacy=saved.privacy||"private",basis=saved.basis||"unknown";
+    const statusPanel=youtubeStatusPanel(job.publish,id);
+    $("m_res").innerHTML=`${statusPanel}<div class="warn" style="border-color:#c59b45;margin-top:8px">
       <b>🛡️ بوابة حقوق الصورة والصوت</b>
       <p style="margin:6px 0">YouTube يفحص الصوت والصورة آلياً. القص أو الشعار أو الإسناد لا يمنح ترخيصاً ولا يضمن إزالة المطالبة.</p>
       <div class="mgrid" style="margin-top:8px"><div><label>وضع الرفع</label><select id="pub_privacy">
-        <option value="private">خاص — مراجعة أولية (موصى به)</option><option value="unlisted">غير مدرج — بعد مراجعة الحقوق</option><option value="public">عام — بعد توثيق الحقوق</option></select></div>
+        <option value="private" ${privacy==="private"?"selected":""}>خاص — مراجعة أولية (موصى به)</option><option value="unlisted" ${privacy==="unlisted"?"selected":""}>غير مدرج — بعد مراجعة الحقوق</option><option value="public" ${privacy==="public"?"selected":""}>عام — بعد توثيق الحقوق</option></select></div>
         <div><label>أساس استخدام المحتوى</label><select id="rights_basis">
-          <option value="unknown">غير متأكد / يحتاج مراجعة</option><option value="own">أملك حقوق الصورة والصوت</option><option value="licensed">لدي ترخيص يغطي YouTube</option><option value="permission">لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain">ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
-      <label>مصدر الصورة أو مرجعها</label><input id="rights_source" placeholder="رابط المصدر أو اسم الملف/المباراة">
-      <label>مرجع الترخيص أو الإذن (إن وجد)</label><input id="rights_evidence" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
+          <option value="unknown" ${basis==="unknown"?"selected":""}>غير متأكد / يحتاج مراجعة</option><option value="own" ${basis==="own"?"selected":""}>أملك حقوق الصورة والصوت</option><option value="licensed" ${basis==="licensed"?"selected":""}>لدي ترخيص يغطي YouTube</option><option value="permission" ${basis==="permission"?"selected":""}>لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain" ${basis==="public_domain"?"selected":""}>ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
+      <label>مصدر الصورة أو مرجعها</label><input id="rights_source" value="${esc(saved.source_reference||"")}" placeholder="رابط المصدر أو اسم الملف/المباراة">
+      <label>مرجع الترخيص أو الإذن (إن وجد)</label><input id="rights_evidence" value="${esc(saved.evidence_reference||"")}" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
       <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_visual"> راجعت حق استخدام المحتوى المرئي</label>
       <label style="display:block"><input type="checkbox" id="rights_audio"> راجعت حق استخدام الصوت والموسيقى</label>
       <label style="display:block"><input type="checkbox" id="rights_reviewed"> راجعت مستند/مرجع الحقوق قبل النشر</label>
-      <label style="display:block"><input type="checkbox" id="rights_synthetic"> يحتوي الفيديو على تغيير واقعي أو توليد اصطناعي قد يضلل المشاهد</label>
+      <label style="display:block"><input type="checkbox" id="rights_synthetic" ${saved.contains_synthetic_media?"checked":""}> يحتوي الفيديو على تغيير واقعي أو توليد اصطناعي قد يضلل المشاهد</label>
       <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_ack"> قرأت التنبيه: هذا لا يثبت الملكية ولا يقرر fair use ولا يمنع Content ID</label>
-      <div class="acts" style="margin-top:10px"><button class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)})">متابعة الرفع بعد المراجعة</button> <a class="btn gray sm" href="https://studio.youtube.com" target="_blank">فتح YouTube Studio</a></div></div>`;
+      <div class="acts" style="margin-top:10px"><button id="pubSubmitBtn" data-job-id="${esc(id)}" class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)},this)">متابعة الرفع بعد المراجعة</button> <a class="btn gray sm" href="https://studio.youtube.com" target="_blank" rel="noopener noreferrer">فتح YouTube Studio</a></div></div>`;
     return;
   }
-  await submitPub(id,targets);
+  await submitPub(id,targets,trigger);
 }
-async function submitPub(id,targets){
+async function submitPub(id,targets,trigger=null){
+  if(PUBLISHING_JOBS.has(id))return;
+  PUBLISHING_JOBS.add(id);
+  const button=trigger||Array.from(document.querySelectorAll("#pubSubmitBtn")).find(node=>node.dataset.jobId===id),originalLabel=button?.textContent||"";
+  if(button){button.disabled=true;button.textContent="جارٍ التنفيذ…";}
   const rights={rights_basis:$("rights_basis")?.value||"unknown",source_reference:$("rights_source")?.value||"",evidence_reference:$("rights_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
-  const body={targets,title:$("m_title").value,description:$("m_desc").value,
-    tags:$("m_tags").value.split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
-  $("m_res").innerHTML='<div class="warn"><span class="spin"></span> جاري الرفع بعد فحص الحقوق…</div>';
-  const r=await (await fetch(`/api/jobs/${id}/publish`,{method:"POST",
-    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
-  $("m_res").innerHTML=Object.entries(r).map(([k,v])=>v.ok
-    ? `<div class="warn" style="border-color:#1d5c3e;color:#9fe8c4">✅ ${k}: تم ${v.url?`— <a href="${v.url}" target="_blank">${v.url}</a>`:""}</div>`
-    : `<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${k}: ${esc(v.error)}</div>`).join("");
-  toast("انتهت عملية النشر أو المراجعة","ok");poll();
+  const body={targets,title:$("m_title")?.value||"",description:$("m_desc")?.value||"",
+    tags:($("m_tags")?.value||"").split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
+  if($("m_res"))$("m_res").innerHTML='<div class="warn"><span class="spin"></span> جارٍ النشر بعد فحص الحقوق…</div>';
+  try{
+    const response=await fetch(`/api/jobs/${encodeURIComponent(id)}/publish`,{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.detail||`فشل الطلب (${response.status})`);
+    const rows=Object.entries(result).map(([target,out])=>out?.ok
+      ? `<div class="warn" style="border-color:#1d5c3e;color:#9fe8c4">✅ ${esc(target)}: تم ${typeof out.url==="string"&&/^https:\/\/youtu\.be\/[A-Za-z0-9_-]{11}$/.test(out.url)?`— <a href="${esc(out.url)}" target="_blank" rel="noopener noreferrer">${esc(out.url)}</a>`:""}</div>`
+      : `<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${esc(target)}: ${esc(out?.error||out?.code||"فشل")}</div>`).join("");
+    const youtube=result.youtube;
+    const freshUpload=!!(youtube?.ok&&/^[A-Za-z0-9_-]{11}$/.test(String(youtube.id||"")));
+    if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
+    if(targets.includes("youtube")){
+      const details=result.youtube?.details||{};
+      const review={basis:rights.rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,
+        visual_rights_confirmed:rights.visual_rights_confirmed,audio_rights_confirmed:rights.audio_rights_confirmed,
+        evidence_reviewed:rights.evidence_reviewed,rights_acknowledged:rights.rights_acknowledged,
+        contains_synthetic_media:rights.contains_synthetic_media,privacy:details.privacy||(youtube?.scheduled_for?"private":body.privacy),
+        form_complete:typeof details.ok==="boolean"?details.ok:result.youtube?.code!=="rights_gate",
+        gate_errors:Array.isArray(details.errors)?details.errors:[],submitted_at:new Date().toISOString()};
+      const job=JOBS.find(x=>x.id===id);if(job)job.rights_review=review;
+      const panel=Array.from(document.querySelectorAll("#rightsReviewPanel")).find(node=>node.dataset.jobId===id);
+      if(panel)panel.innerHTML=rightsReviewMarkup(review);
+    }
+    if(freshUpload)scheduleYoutubeStatusChecks(id);
+    const succeeded=Object.values(result).some(item=>item?.ok);
+    toast(succeeded?"انتهت عملية النشر":"لم يكتمل النشر",succeeded?"ok":"err");
+  }catch(e){
+    if($("m_res"))$("m_res").innerHTML=`<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${esc(e.message||"تعذّر تنفيذ الطلب")}</div>`;
+    toast("تعذّر تنفيذ طلب النشر","err");
+  }finally{
+    PUBLISHING_JOBS.delete(id);
+    const currentButton=button?.isConnected?button:Array.from(document.querySelectorAll("#pubSubmitBtn")).find(node=>node.dataset.jobId===id);
+    if(currentButton){currentButton.disabled=false;currentButton.textContent=originalLabel||"متابعة الرفع بعد المراجعة";}
+  }
 }
 
 /* ---------- settings ---------- */
