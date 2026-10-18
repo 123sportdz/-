@@ -211,6 +211,9 @@ def main(argv=None):
     ap.add_argument("--logo-plate", action="store_true", help="خلفية داكنة خلف الشعار")
     ap.add_argument("--no-logo", action="store_true", help="تعطيل الشعار لهذا المقطع")
     ap.add_argument("--no-brand", action="store_true", help="do not draw any branding")
+    ap.add_argument("--hide-channel-name", action="store_true",
+                    help="إخفاء اسم القناة في الشارة مع إبقاء الرابط والشعار")
+
     watermarks = ap.add_mutually_exclusive_group()
     watermarks.add_argument("--keep-watermarks", dest="keep_watermarks", action="store_true",
                             help="الحفاظ على علامات المصدر (الافتراضي)")
@@ -342,6 +345,8 @@ def main(argv=None):
     ap.add_argument("--keep-temp", action="store_true")
     ap.add_argument("-q", "--quiet", action="store_true")
     a = ap.parse_args(argv)
+    brand_name = "" if a.no_brand or a.hide_channel_name else a.name
+    brand_url = "" if a.no_brand else a.url
     try:
         a.commentary_script = VO.normalize_script(a.commentary_script)
         VO.normalize_controls({
@@ -553,7 +558,7 @@ def main(argv=None):
                 canvas = cv2.resize(frv[y0:y0+h0, x0:x0+w0], (out_w, out_h),
                                     interpolation=cv2.INTER_AREA)
                 if not a.no_brand:
-                    canvas = G.draw_brand(canvas, a.name, a.url)
+                    canvas = G.draw_brand(canvas, brand_name, brand_url)
                 if a.caption:
                     canvas = G.lower_third(canvas, a.caption)
                 if logo_layer is not None:
@@ -1093,8 +1098,8 @@ def main(argv=None):
         n = RD.render(readable, audio, a.output, dict(info, W=info["width"], H=info["height"]),
                       cam, mode, bx, det, out_w=out_w, out_h=out_h,
                       remove_watermarks=not a.keep_watermarks,
-                      brand_name=("" if a.no_brand else a.name),
-                      brand_url=("" if a.no_brand else a.url),
+                      brand_name=brand_name,
+                      brand_url=brand_url,
                       use_trail=a.show_trail, crf=a.crf, preset=a.preset,
                       layout=a.layout, player_x=player_x, split_labels=a.split_labels,
                       accent=accent_rgb, ball_color=ball_bgr, brand_y=a.brand_y,
@@ -1152,8 +1157,8 @@ def main(argv=None):
                 import reelkit.thumb as TH
                 tpath = os.path.splitext(a.output)[0] + "_thumb.jpg"
                 TH.make_thumb(a.output, tpath, title=(a.title or a.caption),
-                              brand=("" if a.no_brand else a.name),
-                              url=("" if a.no_brand else a.url), t_key=t_key)
+                              brand=brand_name,
+                              url=brand_url, t_key=t_key)
                 log(f"🖼️  صورة مصغّرة: {tpath}  (1280x720)")
             except Exception as e:
                 log(f"⚠️  تعذّر إنشاء الصورة المصغّرة ({type(e).__name__}: {str(e)[:80]})")
@@ -1162,7 +1167,7 @@ def main(argv=None):
         if a.rights_package or a.transformative:
             try:
                 from reelkit import rights as RT
-                brand_on = bool(not a.no_brand and (a.name or a.url))
+                brand_on = bool(brand_name or brand_url)
                 cut = (a.start is not None or a.end is not None)
                 feats = []
                 if commentary_text:
@@ -1170,7 +1175,7 @@ def main(argv=None):
                 if a.source_credit:
                     feats.append(f"إسناد المصدر داخل الفيديو: {a.source_credit}")
                 if brand_on:
-                    feats.append(f"هوية القناة/العلامة: {a.name or a.url}")
+                    feats.append(f"هوية القناة/العلامة: {brand_name or brand_url}")
                 if cut:
                     _s0 = f"{a.start:g}s" if a.start is not None else "البداية"
                     _e0 = f"{a.end:g}s" if a.end is not None else "النهاية"

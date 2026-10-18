@@ -1,6 +1,7 @@
 {
   "brand_name": "الجزائر الجديدة TV",
   "brand_url": "youtube.com/@aljazaer7tv",
+  "show_channel_name": true,
   "telegram_token": "",
   "telegram_chat": "",
   "telegram_channel": "",
