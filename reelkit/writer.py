@@ -51,6 +51,7 @@ LENGTHS = {
     "medium": ("متوسط", 900),
     "long": ("مفصل", 1400),
 }
+SCRIPT_WORD_LIMITS = {"short": 22, "medium": 40, "long": 65}
 MODE_GUIDANCE = {
     "poem": "اكتب تعليقاً شعرياً أصلياً من سطرين إلى أربعة، مستوحى من الحركة الظاهرة في لقطة كرة القدم؛ لا تكتب قصيدة عامة ولا تقلّد شاعراً بعينه.",
     "article": "اكتب وصفاً رياضياً موجزاً للريل، لا مقالة عامة؛ ركّز على الحدث وأهميته من دون اختلاق معلومات.",
@@ -124,6 +125,7 @@ def build_prompt(payload, visual_reference=False):
         raise WriterInputError("اختر ريلًا من المهام المكتملة أو اكتب تفاصيل لقطة كرة القدم.")
 
     length_label, max_tokens = LENGTHS[length]
+    word_limit = SCRIPT_WORD_LIMITS[length] if mode == "script" else None
     video_note = "حلّل الصور المرفقة من الريل واستند إلى ما يظهر فيها فقط." if visual_reference else "لا توجد صور مرفقة؛ استند إلى النصوص والملاحظات فقط."
     prompt = "\n".join((
         "أنت محرر ومعلّق رياضي محترف لمشروع الحدث، متخصص في محتوى كرة القدم العمودي القصير.",
@@ -131,6 +133,7 @@ def build_prompt(payload, visual_reference=False):
         f"نوع المحتوى: {MODES[mode]}. {MODE_GUIDANCE[mode]}",
         f"اللغة: {LANGUAGES[language]}. النبرة: {tone}. المنصة: {PLATFORMS[platform]}.",
         f"الحجم: {length_label}; أخرج أقصر نص يفي بالمهمة، من دون حشو.",
+        *( [f"للتعليق الصوتي، الحد الأعلى {word_limit} كلمة؛ اكتب جملة أو جملتين يمكن قراءتهما بسرعة طبيعية."] if word_limit else [] ),
         f"الجمهور: {audience or 'مشجعو كرة القدم'}.",
         f"الحدث المطلوب: {topic or 'صف الحركة المؤكدة في الريل.'}",
         f"سياق المهمة المكتملة: العنوان={clip_title or 'غير محدد'}؛ كابشن المصدر={clip_caption or 'غير موجود'}؛ المدة={clip_duration or 'غير معروفة'}.",
@@ -140,7 +143,7 @@ def build_prompt(payload, visual_reference=False):
         "لا تخترع أسماء فرق أو لاعبين أو نتيجة أو دقيقة أو بطولة. اذكرها فقط إن وردت صراحةً في الملاحظات أو ظهرت بوضوح. عند الشك، استخدم وصفاً عاماً للحركة.",
         "أخرج النص النهائي فقط؛ لا تشرح خطواتك ولا تضف حقائق غير موجودة.",
     ))
-    return {"mode": mode, "topic": topic, "prompt": prompt, "max_tokens": max_tokens, "platform": platform}
+    return {"mode": mode, "topic": topic, "prompt": prompt, "max_tokens": max_tokens, "platform": platform, "word_limit": word_limit}
 
 
 def generate(payload, api_key=None, model=None, video_path=None, output_dir=None):
@@ -183,6 +186,8 @@ def generate(payload, api_key=None, model=None, video_path=None, output_dir=None
         text = "".join(part.get("text", "") for part in response_parts if isinstance(part, dict)).strip()
         if not text:
             raise WriterProviderError("لم يُرجع النموذج نصاً. عدّل الطلب وحاول مجدداً.")
+        if request["word_limit"] is not None:
+            text = AI.limit_commentary_words(text, request["word_limit"])
         if len(text) > MAX_TEXT_CHARS:
             text = text[:MAX_TEXT_CHARS].rstrip()
         return {
@@ -191,6 +196,7 @@ def generate(payload, api_key=None, model=None, video_path=None, output_dir=None
             "platform": request["platform"],
             "model": str(model_name),
             "word_count": len(re.findall(r"\S+", text)),
+            "word_limit": request["word_limit"],
             "frames_attached": len(image_frames),
         }
     except WriterProviderError:

@@ -57,7 +57,7 @@
       <div class="field"><label for="language">لغة الإخراج</label><select id="language"><option value="ar">العربية الفصحى</option><option value="dz">الدارجة الجزائرية</option><option value="fr">Français</option><option value="en">English</option></select></div>
     </div>
     <div class="two">
-      <div class="field"><label for="length">الطول</label><select id="length"><option value="short" selected>قصير — مناسب للريل</option><option value="medium">متوسط</option><option value="long">مفصّل</option></select></div>
+      <div class="field"><label for="length">الطول <span id="lengthHint" class="hint"></span></label><select id="length"><option value="short" selected>قصير — مناسب للريل</option><option value="medium">متوسط</option><option value="long">مفصّل</option></select></div>
       <div class="field"><label for="tone">النبرة</label><select id="tone"><option>حماسي وطبيعي</option><option>شاعري دون مبالغة</option><option>تحليلي ومهني</option><option>جزائري عفوي</option><option>هادئ وواضح</option></select></div>
     </div>
     <div class="two">
@@ -87,6 +87,8 @@
 const $=id=>document.getElementById(id);
 const modes={poem:"تعليق شعري",article:"وصف موسّع",story:"سرد اللقطة",script:"تعليق صوتي",social:"منشور للمنصة",rewrite:"تنقيح رياضي",ideas:"أفكار ريل",custom:"نص مخصص",title:"عناوين",description:"وصف ووسوم",caption:"كابشن",hook:"افتتاحية",recap:"ملخص"};
 const languages={ar:"العربية",dz:"الدارجة الجزائرية",fr:"الفرنسية",en:"الإنجليزية"};
+const scriptWordLimits={short:22,medium:40,long:65};
+function updateLengthHint(){const hint=$("lengthHint");if(!hint)return;hint.textContent=currentMode==="script"?`للتعليق الصوتي: حد أقصى ${scriptWordLimits[$("length").value]||22} كلمة`:"";}
 const $safe=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 let currentMode="script",activeId="",activeJobTitle="",jobs=[],drafts=[],toastTimer;
 async function api(url,options={}){const headers=new Headers(options.headers||{});headers.set("Accept","application/json");if(options.body&&!headers.has("Content-Type"))headers.set("Content-Type","application/json");const response=await fetch(url,{...options,headers});let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.detail||"تعذّر إكمال الطلب.");return data}
@@ -95,19 +97,20 @@ function currentJob(){return jobs.find(job=>job.id===$("jobSelect").value)||null
 function updateJobContext(){const job=currentJob(),box=$("jobInfo");if(job){activeJobTitle=job.title||job.label||"ريل مكتمل";const duration=job.duration?`${Math.round(job.duration)} ثانية`:"مدة غير مسجلة";box.textContent=`${activeJobTitle} · ${duration} · سيحلّل Gemini ثلاث صور ثابتة من هذا الريل.`;box.classList.add("show");$("privacyNote").textContent="عند التوليد تُرسل إلى Gemini ثلاث صور ثابتة من الريل المحدد ونصوص السياق فقط؛ لا يُرسل الفيديو كاملاً ولا يحدث نشر تلقائي."}else{box.textContent="";box.classList.remove("show");$("privacyNote").textContent="المدخلات النصية تُرسل إلى Gemini عند التوليد؛ المسودات محلية ولا نشر تلقائي."}}
 function formData(){const job=currentJob();return{mode:currentMode,job_id:job?.id||"",job_title:job?.title||activeJobTitle,topic:$("topic").value.trim(),source:$("source").value.trim(),language:$("language").value,length:$("length").value,tone:$("tone").value,audience:$("audience").value.trim(),instructions:$("instructions").value.trim(),platform:$("platform").value}}
 function payloadForSave(){return{ id:activeId||undefined,title:$("draftTitle").value.trim(),...formData(),text:$("output").value }}
-function setMode(mode){if(!modes[mode])return;currentMode=mode;document.querySelectorAll(".mode").forEach(button=>{const active=button.dataset.mode===mode;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))})}
+function setMode(mode){if(!modes[mode])return;currentMode=mode;document.querySelectorAll(".mode").forEach(button=>{const active=button.dataset.mode===mode;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))});updateLengthHint()}
 function setEditorVisible(visible){$("emptyResult").hidden=visible;$("editor").hidden=!visible}
 function updateWordCount(){const text=$("output").value.trim();$("wordCount").textContent=`${text?text.split(/\s+/u).length:0} كلمة`}
 function activateEditor(text="",title=""){setEditorVisible(true);$("output").value=text;$("draftTitle").value=title;updateWordCount()}
 document.querySelectorAll(".mode").forEach(button=>button.addEventListener("click",()=>setMode(button.dataset.mode)));
 $("jobSelect").addEventListener("change",updateJobContext);
+$("length").addEventListener("change",updateLengthHint);
 $("output").addEventListener("input",updateWordCount);
 $("manualEntry").addEventListener("click",()=>{activeId="";activateEditor();$("output").focus()});
 $("generate").addEventListener("click",async()=>{
   const request=formData();if(!request.job_id&&!request.topic&&!request.source){notify("اختر ريلًا مكتملاً أو اكتب تفاصيل اللقطة أولاً.",true);$("topic").focus();return}
   if($("output").value.trim()&&!confirm("سيحل النص الجديد محل مساحة التحرير الحالية. احفظه أولاً إن أردت الاحتفاظ به. هل أتابع؟"))return;
   const button=$("generate");button.disabled=true;button.classList.add("busy");
-  try{const result=await api("/api/creative/generate",{method:"POST",body:JSON.stringify(request)});activeId="";setMode(result.mode||currentMode);activateEditor(result.text,request.topic||request.job_title||request.source.slice(0,120));const frameNote=result.frames_attached?` · استند إلى ${result.frames_attached} صور من الريل`:"";notify(`اكتمل محتوى الريل · ${result.word_count} كلمة${frameNote}`)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.classList.remove("busy")}
+  try{const result=await api("/api/creative/generate",{method:"POST",body:JSON.stringify(request)});activeId="";setMode(result.mode||currentMode);activateEditor(result.text,request.topic||request.job_title||request.source.slice(0,120));const sizeNote=result.word_limit?`${result.word_count}/${result.word_limit} كلمة`:`${result.word_count} كلمة`;const frameNote=result.frames_attached?` · استند إلى ${result.frames_attached} صور من الريل`:"";notify(`اكتمل محتوى الريل · ${sizeNote}${frameNote}`)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.classList.remove("busy")}
 });
 $("saveDraft").addEventListener("click",async()=>{
   if(!$("output").value.trim()){notify("اكتب نصاً قبل الحفظ.",true);return}
@@ -140,6 +143,7 @@ $("draftList").addEventListener("click",async event=>{
     $("instructions").value=item.instructions||"";
     $("language").value=item.language||"ar";
     $("length").value=item.length||"short";
+    updateLengthHint();
     $("tone").value=item.tone||"حماسي وطبيعي";
     $("audience").value=item.audience||"";
     $("platform").value=item.platform||"general";

@@ -275,6 +275,8 @@ def main(argv=None):
                     help="أسلوب النص والإلقاء: broadcast | algerian | analyst | cinematic | calm")
     ap.add_argument("--commentary-energy", type=int, default=70,
                     help="حماسة المعلّق من 0 هادئ جداً إلى 100 حماسي؛ يوجّه النص وGemini TTS")
+    ap.add_argument("--commentary-words", type=int, default=22,
+                    help="الحد الأعلى لكلمات التعليق الذي يكتبه الذكاء الاصطناعي (8–80، افتراضي 22)")
     ap.add_argument("--caption", default="", help="كابشن المصدر (يحسّن التعليق والعنوان)")
     ap.add_argument("--voice", default="", help=f"صوت قديم للتوافق (Edge: {VO.EDGE_DEFAULT} | Gemini: Fenrir…)")
     ap.add_argument("--voice-engine", choices=["auto", "gemini", "edge"], default="auto")
@@ -353,6 +355,7 @@ def main(argv=None):
             "voice_engine": a.voice_engine,
             "commentary_style": a.commentary_style,
             "commentary_energy": a.commentary_energy,
+            "commentary_words": a.commentary_words,
             "edge_voice": a.edge_voice,
             "gemini_voice": a.gemini_voice,
             "voice_rate": a.voice_rate,
@@ -1008,7 +1011,8 @@ def main(argv=None):
                         pass
                     c = AI.commentary(readable, caption=a.caption, ocr=ocr_txt,
                                       title=a.title, api_key=None, model=None,
-                                      style=a.commentary_style, energy=a.commentary_energy)
+                                      style=a.commentary_style, energy=a.commentary_energy,
+                                      words=a.commentary_words)
                     commentary_text = c.get("commentary", "")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد التعليق ({type(e).__name__}: {str(e)[:90]})")

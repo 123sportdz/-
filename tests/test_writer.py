@@ -28,6 +28,15 @@ def test_length_controls_output_budget_without_mislabeling_tokens_as_words():
     assert "3200 كلمة" not in request["prompt"]
     assert "أقصر نص يفي بالمهمة" in request["prompt"]
 
+@pytest.mark.parametrize(("length", "word_limit"), [("short", 22), ("medium", 40), ("long", 65)])
+def test_script_length_selects_an_explicit_word_limit(length, word_limit):
+    request = writer.build_prompt({"mode": "script", "topic": "هدف", "length": length})
+    assert request["word_limit"] == word_limit
+    assert f"الحد الأعلى {word_limit} كلمة" in request["prompt"]
+
+    other_mode = writer.build_prompt({"mode": "caption", "topic": "هدف", "length": length})
+    assert other_mode["word_limit"] is None
+
 
 @pytest.mark.parametrize("field,value", [
     ("mode", "unknown"),
@@ -68,6 +77,7 @@ def test_generate_uses_server_key_and_returns_only_generated_text(monkeypatch):
         "model": "gemini-test",
         "word_count": 5,
         "frames_attached": 0,
+        "word_limit": None,
     }
     assert calls["key"] == "server-secret"
     assert "server-secret" not in json.dumps(result)
@@ -78,6 +88,24 @@ def test_generate_requires_a_configured_key(monkeypatch):
     monkeypatch.setattr(writer.AI, "_key", lambda key: None)
     with pytest.raises(writer.WriterConfigurationError, match="مفتاح Gemini"):
         writer.generate({"topic": "فكرة"})
+
+
+def test_generate_hard_caps_ai_voice_script_words(monkeypatch):
+    captured = {}
+    generated = " ".join(f"كلمة{i}" for i in range(1, 36))
+    monkeypatch.setattr(writer.AI, "_key", lambda key: "test-key")
+    monkeypatch.setattr(writer.AI, "pick_model", lambda *_args, **_kwargs: "gemini-test")
+
+    def fake_http(_url, body, key, **_kwargs):
+        captured["body"] = body
+        return {"candidates": [{"content": {"parts": [{"text": generated}]}}]}
+
+    monkeypatch.setattr(writer.AI, "_http", fake_http)
+    result = writer.generate({"mode": "script", "topic": "هدف", "length": "short"})
+    assert "الحد الأعلى 22 كلمة" in captured["body"]["contents"][0]["parts"][0]["text"]
+    assert result["word_limit"] == 22
+    assert result["word_count"] == len(result["text"].split())
+    assert result["word_count"] <= 22
 
 
 def test_generate_sanitizes_provider_errors(monkeypatch):

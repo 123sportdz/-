@@ -152,3 +152,48 @@ def test_dashboard_can_hide_only_the_channel_name():
     visible_args = make_args({"show_channel_name": True, "name": "My channel"}, "source.mp4", "output.mp4")
     assert "--hide-channel-name" not in visible_args
     assert visible_args[visible_args.index("--name") + 1] == "My channel"
+
+
+def test_commentary_word_limit_cli_and_dashboard_flags_are_wired():
+    cli = _cli_argument("--commentary-words")
+    keywords = {item.arg: item.value for item in cli.keywords}
+    assert ast.literal_eval(keywords["default"]) == 22
+    assert isinstance(keywords["type"], ast.Name) and keywords["type"].id == "int"
+
+    tree = ast.parse((ROOT / "reel.py").read_text(encoding="utf-8"))
+    call = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "commentary"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "AI"
+    )
+    words = next(item.value for item in call.keywords if item.arg == "words")
+    assert isinstance(words, ast.Attribute) and words.attr == "commentary_words"
+
+
+def test_autopilot_validates_and_forwards_commentary_word_limit():
+    path = ROOT / "autopilot.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    argument = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--commentary-words"
+    )
+    keywords = {item.arg: item.value for item in argument.keywords}
+    assert ast.literal_eval(keywords["default"]) == 22
+    assert isinstance(keywords["type"], ast.Name) and keywords["type"].id == "int"
+
+    process = _function(path, "process")
+    process_source = ast.get_source_segment(path.read_text(encoding="utf-8"), process)
+    assert '"--commentary-words"' in process_source
+    assert 'getattr(a, "commentary_words", 22)' in process_source
+    main = _function(path, "main")
+    main_source = ast.get_source_segment(path.read_text(encoding="utf-8"), main)
+    assert "VOICE.normalize_controls" in main_source
+    assert "ap.error" in main_source
