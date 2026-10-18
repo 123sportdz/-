@@ -185,20 +185,29 @@ COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكت�
 - الصور: لقطات من المقطع.
 
 قواعد:
-- عربية فصيحة مبسّطة، حماسية، بلا مبالغات رخيصة.
+- أسلوب الإلقاء المطلوب: {style}
+- مستوى الحماسة: {energy}/100؛ طبّق الدرجة على الكلمات وعلامات الوقف دون اختلاق معلومات.
+- عربية واضحة وطبيعية، بلا مبالغة أو معلومات غير مؤكدة.
 - اذكر الفريق/اللاعب/الدقيقة فقط لو تأكدت منها من المعلومات أو الصور.
 - لا تكتب أي تنسيق أو عنوان أو رموز — النص فقط كما يُقال بالصوت.
 أعد JSON: {{"commentary":"..."}}"""
 
 
-def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None, timeout=90):
-    """يكتب نص التعليق الصوتي (جملة قصيرة)."""
+def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None,
+               timeout=90, style="broadcast", energy=70):
+    """يكتب نص التعليق الصوتي (جملة قصيرة) بالأسلوب المطلوب."""
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
+    from .voice import COMMENTARY_STYLES, normalize_controls
+    if not isinstance(style, str) or style not in COMMENTARY_STYLES:
+        style = "broadcast"
+    energy = normalize_controls({"commentary_style": style, "commentary_energy": energy})["commentary_energy"]
     mdl = pick_model(key, prefer=model)
     parts = [{"text": COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
-                                               title=title or "—")}]
+                                               title=title or "—",
+                                               style=COMMENTARY_STYLES[style]["text"],
+                                               energy=energy)}]
     if video and os.path.exists(video):
         for b64 in _frames(video, times=(0.35,)):
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})

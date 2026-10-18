@@ -267,11 +267,25 @@ def main(argv=None):
                     help="إظهار وسوم WIDE/PLAYER (مخفية افتراضياً لإخراج أنظف)")
     ap.add_argument("--commentary", action="store_true",
                     help="🎙️ تعليق عربي مولّد (إنتاجك الخاص) بدل الاعتماد على صوت القناة")
+    ap.add_argument("--commentary-script", default="", help="نص تعليق يدوي (حد أقصى 500 حرف؛ يتجاوز توليد نص Gemini)")
+    ap.add_argument("--commentary-style", choices=tuple(VO.COMMENTARY_STYLES), default="broadcast",
+                    help="أسلوب النص والإلقاء: broadcast | algerian | analyst | cinematic | calm")
+    ap.add_argument("--commentary-energy", type=int, default=70,
+                    help="حماسة المعلّق من 0 هادئ جداً إلى 100 حماسي؛ يوجّه النص وGemini TTS")
     ap.add_argument("--caption", default="", help="كابشن المصدر (يحسّن التعليق والعنوان)")
-    ap.add_argument("--voice", default="", help=f"اسم الصوت (Edge: {VO.EDGE_DEFAULT} | Gemini: Fenrir…)")
+    ap.add_argument("--voice", default="", help=f"صوت قديم للتوافق (Edge: {VO.EDGE_DEFAULT} | Gemini: Fenrir…)")
     ap.add_argument("--voice-engine", choices=["auto", "gemini", "edge"], default="auto")
-    ap.add_argument("--voice-duck", type=float, default=0.22, help="تخفيض صوت القناة (0.22 = 22%%)")
+    ap.add_argument("--edge-voice", choices=tuple(VO.EDGE_VOICES), default=VO.EDGE_DEFAULT)
+    ap.add_argument("--gemini-voice", choices=VO.GEMINI_VOICES, default="Fenrir")
+    ap.add_argument("--voice-rate", type=int, default=10, help="سرعة Edge كنسبة مئوية (-20 إلى +50؛ 0 = طبيعي)")
+    ap.add_argument("--voice-pitch", type=int, default=0, help="طبقة Edge بالهرتز (-12 إلى +12)")
+    ap.add_argument("--voice-gain", type=float, default=1.9, help="مكسب صوت المعلّق أثناء المكس (0.5 إلى 3)")
+    ap.add_argument("--voice-duck", type=float, default=0.22, help="مستوى صوت الملعب تحت التعليق (0 = كتم، 1 = كامل)")
+    ap.add_argument("--voice-mix", choices=["auto", "fixed", "original", "voice_only"], default="auto",
+                    help="auto: خفض ديناميكي أثناء الكلام | fixed: مستوى ثابت | original: المكس الأصلي | voice_only: المعلّق فقط")
     ap.add_argument("--commentary-text-only", action="store_true", help="تعليق مكتوب بلا صوت")
+    ap.add_argument("--no-commentary-text", dest="commentary_show", action="store_false", default=True,
+                    help="إخفاء صندوق نص المعلّق على الفيديو مع إبقاء الصوت إن فُعّل")
     ap.add_argument("--accent", default="auto",
                     help="لون الهوية: auto = يتلوّن بلون لبس الفريق | #RRGGBB | blue/red/…")
     ap.add_argument("--tracker", choices=["auto", "pro", "classic"], default="auto",
@@ -328,6 +342,24 @@ def main(argv=None):
     ap.add_argument("--keep-temp", action="store_true")
     ap.add_argument("-q", "--quiet", action="store_true")
     a = ap.parse_args(argv)
+    try:
+        a.commentary_script = VO.normalize_script(a.commentary_script)
+        VO.normalize_controls({
+            "voice_engine": a.voice_engine,
+            "commentary_style": a.commentary_style,
+            "commentary_energy": a.commentary_energy,
+            "edge_voice": a.edge_voice,
+            "gemini_voice": a.gemini_voice,
+            "voice_rate": a.voice_rate,
+            "voice_pitch": a.voice_pitch,
+            "voice_mix": a.voice_mix,
+            "voice_gain": a.voice_gain,
+            "voice_duck": a.voice_duck,
+        })
+    except ValueError as exc:
+        ap.error(str(exc))
+    if a.commentary_script:
+        a.commentary = True
 
     def log(*m):
         if not a.quiet:
@@ -957,42 +989,56 @@ def main(argv=None):
                 a.commentary = True
                 log("🎙️ فعّلت التعليق العربي الأصلي؛ هذا لا يمنح حقاً في اللقطات الأصلية")
         if a.commentary or a.commentary_text_only:
-            log("      🎙️ صياغة التعليق العربي …")
-            try:
-                ocr_txt = ""
+            if a.commentary_script:
+                commentary_text = a.commentary_script
+                log("      🎙️ استخدام نص التعليق اليدوي")
+            else:
+                log("      🎙️ صياغة التعليق العربي …")
                 try:
-                    from reelkit import title as T
-                    ocr_txt = T.read_scoreboard(readable)[0][:200]
-                except Exception:
-                    pass
-                c = AI.commentary(readable, caption=a.caption, ocr=ocr_txt,
-                                  api_key=None, model=None)
-                commentary_text = c.get("commentary", "")
+                    ocr_txt = ""
+                    try:
+                        from reelkit import title as T
+                        ocr_txt = T.read_scoreboard(readable)[0][:200]
+                    except Exception:
+                        pass
+                    c = AI.commentary(readable, caption=a.caption, ocr=ocr_txt,
+                                      title=a.title, api_key=None, model=None,
+                                      style=a.commentary_style, energy=a.commentary_energy)
+                    commentary_text = c.get("commentary", "")
+                except Exception as e:
+                    log(f"      ⚠️ تعذّر توليد التعليق ({type(e).__name__}: {str(e)[:90]})")
+            if commentary_text:
                 log(f"      التعليق: {commentary_text}")
-            except Exception as e:
-                log(f"      ⚠️ تعذّر توليد التعليق ({type(e).__name__}: {str(e)[:90]})")
             if commentary_text and not a.commentary_text_only:
                 try:
                     wav = os.path.join(workdir, "commentary.wav")
-                    r = VO.say(commentary_text, wav, engine=a.voice_engine, voice=(a.voice or None))
+                    r = VO.say(commentary_text, wav, engine=a.voice_engine,
+                               voice=(a.voice or None), style=a.commentary_style,
+                               rate=a.voice_rate, pitch=a.voice_pitch,
+                               edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
+                               energy=a.commentary_energy)
                     voice_wav = r["path"]; voice_engine = r["engine"]
                     log(f"      🔊 الصوت: {voice_engine} — {r['seconds']} ثانية")
-                    # احتياط: لو التعليق أطول من المقطع نسرّع الإلقاء حتى يكفي.
-                    # كان النداء الثاني بنفس المعاملات فينتج نفس المدة (كود ميت).
                     if r["seconds"] > max(4.0, info["duration"] * 0.85) and voice_engine == "edge":
-                        r2 = VO.say(commentary_text, wav, engine="edge",
-                                    voice=(a.voice or None), rate="+35%")
-                        if 0 < r2["seconds"] < r["seconds"]:
-                            r = r2; voice_wav = r["path"]
-                            log(f"      ⏩ أسرعنا الإلقاء: {r['seconds']} ثانية")
+                        faster_rate = min(50, a.voice_rate + 20)
+                        if faster_rate > a.voice_rate:
+                            r2 = VO.say(commentary_text, wav, engine="edge",
+                                        voice=(a.voice or None), style=a.commentary_style,
+                                        rate=faster_rate, pitch=a.voice_pitch,
+                                        edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
+                                        energy=a.commentary_energy)
+                            if 0 < r2["seconds"] < r["seconds"]:
+                                r = r2; voice_wav = r["path"]
+                                log(f"      ⏩ أسرعنا الإلقاء: {r['seconds']} ثانية")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد الصوت ({type(e).__name__}: {str(e)[:90]}) — سيظهر التعليق كتابةً")
 
         # ---------- 🔤 كابشن كلمة-بكلمة (متزامن مع التعليق) ----------
         cap_cues = None
         _cap_cfg = str(CFG.get("captions", "auto")).lower()
-        cap_on = (a.captions == "on") or (a.captions == "auto" and
-                                          _cap_cfg not in ("off", "0", "no", "false"))
+        cap_on = a.commentary_show and ((a.captions == "on") or
+                                         (a.captions == "auto" and
+                                          _cap_cfg not in ("off", "0", "no", "false")))
         if cap_on and commentary_text:
             try:
                 from reelkit import captions as CP
@@ -1058,8 +1104,10 @@ def main(argv=None):
                       cam_y=cam_y, zoom=zoom,
                       ball_y=(by if pro is not None else None),
                       burst_t=(t_key if a.burst else None), burst_text=a.goal_text,
-                      voice_wav=voice_wav, duck=a.voice_duck,
-                      commentary_text=commentary_text, commentary_show=bool(commentary_text),
+                      voice_wav=voice_wav, duck=a.voice_duck, voice_gain=a.voice_gain,
+                      voice_mix=a.voice_mix,
+                      commentary_text=commentary_text,
+                      commentary_show=bool(commentary_text) and a.commentary_show,
                       source_credit=a.source_credit,
                       cues=cap_cues, loudnorm=not a.no_loudnorm, encoder=a.encoder,
                       progress=None if a.quiet else (lambda s: print(s, flush=True)))

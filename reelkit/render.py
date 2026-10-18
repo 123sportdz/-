@@ -4,7 +4,7 @@
   1) الفيديو يُرمّز بلا صوت إلى ملف مؤقت
   2) يُدمج الصوت (الأصلي المخفوض + التعليق المولّد) بـ -c:v copy (فوري)
 """
-import collections, os, subprocess, sys, tempfile
+import collections, math, os, subprocess, sys, tempfile
 import cv2, numpy as np
 
 from . import overlay as OV
@@ -15,6 +15,17 @@ from . import encode as ENC
 
 # تأخير بدء التعليق الصوتي في المزيج — يُستخدم أيضاً لبداية الكابشن (مصدر واحد للحقيقة)
 VOICE_DELAY_MS = 500
+
+
+def _duck_ratio(background_level):
+    try:
+        level = float(background_level)
+    except (TypeError, ValueError, OverflowError):
+        level = 0.22
+    if not math.isfinite(level):
+        level = 0.22
+    level = max(0.0, min(1.0, level))
+    return 1.0 + (1.0 - level) * 14.0
 
 
 def compose_bg(frame, out_w, out_h):
@@ -37,10 +48,12 @@ def _loudnorm_chain(fc, label="a"):
 
 
 def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=1.9,
-         voice_delay_ms=VOICE_DELAY_MS, loudnorm=True):
+         voice_delay_ms=VOICE_DELAY_MS, loudnorm=True, voice_mix="auto"):
     """يدمج الصوت مع الفيديو بلا إعادة ترميز (-c:v copy)."""
     have_bg = bool(audio) and os.path.exists(audio)
     have_vo = bool(voice_wav) and os.path.exists(voice_wav)
+    if voice_mix not in ("auto", "fixed", "original", "voice_only"):
+        raise ValueError("نمط مزج الصوت غير معروف")
     if not (have_bg or have_vo):
         from .ffio import safe_move
         safe_move(tmp_video, out_path)
@@ -76,28 +89,46 @@ def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=
         raise RuntimeError("تعذّر قياس مدة الفيديو الوسيط — أوقفت مزج الصوت بدل أمر قد يعلّق ffmpeg")
     tail += ["-movflags", "+faststart", out_path]
 
+    # 🔊 v1.51: sidechain ducking
+    duck_ratio = _duck_ratio(duck)
+
     # 🔊 v1.51: sidechain ducking — التعليق يخفض صوت الجمهور **فقط أثناء الكلام**،
     # فيهدر الهدف (أقوى لحظة عاطفية) بكامل قوته. قبل كان يُخفض المصدر كله إلى 22%.
     # مع تراجع تلقائي للأسلوب القديم لو فشلsidechain في نسخة ffmpeg قديمة.
     variants = []
     if have_bg and have_vo:
-        variants.append((
-            f"[{bg_i}:a]aformat=sample_rates=48000:channel_layouts=stereo[bg0];"
-            f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,aformat=sample_rates=48000:channel_layouts=stereo,"
-            f"volume={voice_gain},asplit=2[vo][vosc];"
-            f"[bg0][vosc]sidechaincompress=threshold=0.03:ratio=12:attack=15:release=350:makeup=1[bgd];"
-            f"[bgd][vo]amix=inputs=2:duration=first:normalize=0[a0]",
-            ["-map", "0:v", "-map", "[a]"]))
-        variants.append((
-            f"[{bg_i}:a]volume={duck},aformat=channel_layouts=stereo[bg];"
-            f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
-            f"aformat=channel_layouts=stereo[vo];"
-            f"[bg][vo]amix=inputs=2:duration=first:normalize=0[a0]",
-            ["-map", "0:v", "-map", "[a]"]))
+        maps = ["-map", "0:v", "-map", "[a]"]
+        voice_filter = (f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
+                        "aformat=sample_rates=48000:channel_layouts=stereo")
+        if voice_mix == "voice_only":
+            variants.append((f"{voice_filter},apad[a0]", maps))
+        elif voice_mix == "original":
+            variants.append((
+                f"[{bg_i}:a]aformat=sample_rates=48000:channel_layouts=stereo[bg];"
+                f"{voice_filter}[vo];[bg][vo]amix=inputs=2:duration=first:normalize=0[a0]",
+                maps))
+        elif voice_mix == "fixed":
+            variants.append((
+                f"[{bg_i}:a]volume={duck},aformat=sample_rates=48000:channel_layouts=stereo[bg];"
+                f"{voice_filter}[vo];[bg][vo]amix=inputs=2:duration=first:normalize=0[a0]",
+                maps))
+        else:
+            variants.append((
+                f"[{bg_i}:a]aformat=sample_rates=48000:channel_layouts=stereo[bg0];"
+                f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,aformat=sample_rates=48000:channel_layouts=stereo,"
+                f"volume={voice_gain},asplit=2[vo][vosc];"
+                f"[bg0][vosc]sidechaincompress=threshold=0.03:ratio={duck_ratio:.2f}:attack=15:release=350:makeup=1[bgd];"
+                f"[bgd][vo]amix=inputs=2:duration=first:normalize=0[a0]",
+                maps))
+            variants.append((
+                f"[{bg_i}:a]volume={duck},aformat=channel_layouts=stereo[bg];"
+                f"{voice_filter}[vo];[bg][vo]amix=inputs=2:duration=first:normalize=0[a0]",
+                maps))
     elif have_bg:
         variants.append((f"[{bg_i}:a]volume=1.0[a0]", ["-map", "0:v", "-map", "[a]"]))
     else:
-        variants.append((f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,apad[a0]",
+        variants.append((f"[{vo_i}:a]adelay={voice_delay_ms}:all=1,volume={voice_gain},"
+                         f"aformat=sample_rates=48000:channel_layouts=stereo,apad[a0]",
                          ["-map", "0:v", "-map", "[a]"]))
     if loudnorm:
         # 🔊 جرّب النسخة المطبَّعة أولاً، ولو تعذّر الفلتر (ffmpeg قديم جداً) نرجع للخام
@@ -135,7 +166,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
            cam_y=None, zoom=None, ball_y=None, burst_t=None, burst_text="هدف!",
            ball_color=None, brand_y=0.065, brand_scale=1.0, score_box=None, score_scale=1.75,
            logo=None, source_credit="", cues=None, loudnorm=True, encoder="auto",
-           _nvenc_retry=True):
+           _nvenc_retry=True, voice_mix="auto"):
     fps = fps or info["fps"]; W = info["W"]; H = info["H"]
     crop_w = min(W, int(round(H * 9 / 16))); crop_h = H
     orois = OV.rois(W, H) if remove_watermarks else []
@@ -390,14 +421,15 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
                 ball_color=ball_color, brand_y=brand_y, brand_scale=brand_scale,
                 score_box=score_box, score_scale=score_scale, logo=logo,
                 source_credit=source_credit, cues=cues, loudnorm=loudnorm,
-                encoder="cpu", _nvenc_retry=False)
+                encoder="cpu", _nvenc_retry=False, voice_mix=voice_mix)
         raise RuntimeError(f"فشل ترميز الفيديو (exit {p.returncode}):\n{tail.strip()}")
 
     if os.environ.get("REEL_DEBUG"):
         print(f"    [dbg] loop done ({n} frames), muxing…", file=sys.stderr, flush=True)
     try:
         _mux(tmp_video, out_path, audio=audio, voice_wav=voice_wav, duck=duck,
-             voice_gain=voice_gain, voice_delay_ms=voice_delay_ms, loudnorm=loudnorm)
+             voice_gain=voice_gain, voice_delay_ms=voice_delay_ms, loudnorm=loudnorm,
+             voice_mix=voice_mix)
     finally:
         # 🧹 لا يتسرّب ملف ‎_video.mp4 الوسيط ولا سجل ffmpeg لو فشل المزج
         if os.path.exists(tmp_video):
