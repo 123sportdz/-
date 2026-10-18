@@ -27,6 +27,7 @@ PUB = ROOT / "reelkit" / "publish"
 sys.path.insert(0, str(ROOT))
 from reelkit import title as TITLEMOD
 from reelkit import ai as AI
+from reelkit import voice as VOICE
 from reelkit import writer as WRITER
 from reelkit.scout_review import ScoutSessionError, ScoutSessionStore, validate_selections
 from reelkit.publish.telegram import TelegramBot, ChannelFeed, fetch_post
@@ -1161,6 +1162,19 @@ def _run_scout_session(sid, source, caption, count):
         SCOUTS.update(sid, status="failed", error=_scout_error(exc))
 
 
+def _voice_payload(values):
+    try:
+        voice = VOICE.normalize_controls(values)
+        voice["commentary_script"] = VOICE.normalize_script(values.get("commentary_script"))
+        show_text = values.get("commentary_show", values.get("commentary_text", True))
+        if not isinstance(show_text, bool):
+            raise ValueError("خيار إظهار نص المعلّق غير صالح")
+        voice["commentary_show"] = show_text
+        return voice
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 def _make_args(payload, src, out):
     args = ["-i", src, "-o", str(out),
             "--subject", payload.get("subject", "action"),
@@ -1229,9 +1243,18 @@ def _make_args(payload, src, out):
     args += ["--show-trail" if show_trail else "--no-trail"]
     if payload.get("no_brand"): args += ["--no-brand"]
     if payload.get("fast"): args += ["--preset", "veryfast", "--crf", "22"]
-    if payload.get("commentary"): args += ["--commentary"]
-    if payload.get("commentary") and not payload.get("commentary_text", True):
-        args += ["--commentary-text-only"]
+    if payload.get("commentary") or payload.get("commentary_script"):
+        voice = _voice_payload(payload)
+        args += ["--commentary", "--commentary-style", voice["commentary_style"],
+                 "--commentary-energy", str(voice["commentary_energy"]),
+                 "--voice-engine", voice["voice_engine"], "--edge-voice", voice["edge_voice"],
+                 "--gemini-voice", voice["gemini_voice"], "--voice-rate", str(voice["voice_rate"]),
+                 "--voice-pitch", str(voice["voice_pitch"]), "--voice-gain", str(voice["voice_gain"]),
+                 "--voice-duck", str(voice["voice_duck"]), "--voice-mix", voice["voice_mix"]]
+        if voice["commentary_script"]:
+            args += ["--commentary-script", voice["commentary_script"]]
+        if not voice["commentary_show"]:
+            args += ["--no-commentary-text"]
     # 🎯 دفعة الأهداف من الواجهة/البوت (كانت غير ممرّرة أبداً لـreel.py)
     try:
         _goals = int(payload.get("goals", 0) or 0)
@@ -1254,6 +1277,10 @@ def _create(payload):
     source_input = (payload.get("input") or "").strip()
     scout_id = (payload.get("scout_id") or "").strip()
     payload = dict(payload)
+    voice = _voice_payload(payload)
+    payload.update(voice)
+    if voice["commentary_script"]:
+        payload["commentary"] = True
     if scout_id:
         session = SCOUTS.get_private(scout_id)
         if not session:
@@ -1538,7 +1565,7 @@ def api_job_dispute(jid: str, payload: dict | None = None):
     if not out or not Path(out).exists():
         raise HTTPException(400, "المخرج غير موجود — أكمل المهمة أولاً")
     opts = job.get("options") or {}
-    commentary_txt = payload.get("commentary") or opts.get("commentary_text") or ""
+    commentary_txt = payload.get("commentary") or opts.get("commentary_script") or ""
     has_commentary = bool(commentary_txt or opts.get("commentary") or opts.get("commentary_text_only"))
     source_txt = payload.get("source") or opts.get("source_credit") or ""
     has_source = bool(source_txt)
@@ -1902,6 +1929,44 @@ def api_logo_settings(payload: dict):
             "logo_pos": CFG.get("logo_pos", "top-right"),
             "logo_scale": CFG.get("logo_scale", 0.16), "logo_opacity": CFG.get("logo_opacity", 0.95),
             "logo_plate": bool(CFG.get("logo_plate"))}}
+
+
+@app.post("/api/voice/preview")
+def api_voice_preview(payload: dict):
+    voice = _voice_payload(payload)
+    text = voice["commentary_script"] or VOICE.normalize_script(payload.get("text"))
+    if not text:
+        raise HTTPException(400, "اكتب جملة قصيرة لمعاينة الصوت")
+    if voice["voice_engine"] == "gemini" and not VOICE._key():
+        raise HTTPException(503, "معاينة Gemini تحتاج مفتاحاً محفوظاً في إعدادات المشروع")
+    fd, temp_path = tempfile.mkstemp(prefix="voice-preview-", suffix=".audio", dir=str(OUT))
+    os.close(fd)
+    try:
+        result = VOICE.say(
+            text, temp_path, engine=voice["voice_engine"], style=voice["commentary_style"],
+            rate=voice["voice_rate"], pitch=voice["voice_pitch"],
+            energy=voice["commentary_energy"],
+            edge_voice=voice["edge_voice"], gemini_voice=voice["gemini_voice"],
+        )
+        audio_path = Path(result.get("path") or temp_path)
+        if audio_path.resolve() != Path(temp_path).resolve():
+            raise HTTPException(502, "تعذر تأمين ملف معاينة الصوت")
+        content = audio_path.read_bytes()
+        if len(content) < 100:
+            raise HTTPException(502, "ملف معاينة الصوت غير صالح")
+        engine = result.get("engine")
+        media_type = "audio/mpeg" if engine == "edge" else "audio/wav"
+        return Response(content, media_type=media_type, headers={
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+            "X-Voice-Engine": str(engine or "unknown"),
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[voice-preview] {type(exc).__name__}")
+        raise HTTPException(502, "تعذرت معاينة الصوت؛ تحقق من المحرك والاتصال") from None
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
 
 
 @app.post("/api/preview")
@@ -2545,6 +2610,23 @@ input,select,textarea{width:100%;background:#0c1219;border:1px solid var(--bd2);
 input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);box-shadow:0 0 0 3px rgba(230,57,70,.14)}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:11px}
 .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:11px}
+.voice-panel{margin-top:14px;padding:14px;border:1px solid #304056;border-radius:13px;background:linear-gradient(160deg,rgba(27,39,54,.94),rgba(12,18,25,.96))}
+.voice-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.voice-head h3{margin:0;color:#e5edf7;font-size:14px}
+.voice-note{color:var(--mut);font-size:11px;line-height:1.5;margin-top:5px}
+.voice-tag{border:1px solid var(--bd2);border-radius:20px;padding:3px 8px;color:#a9dce0;font-size:10px;white-space:nowrap}
+.voice-checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.voice-checks label{margin:0;padding:8px 9px;border:1px solid var(--bd);border-radius:9px;color:var(--tx);font-size:11.5px}
+.voice-checks input{width:auto;vertical-align:middle}
+.voice-presets{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0}
+.voice-presets .btn{margin:0;flex:1;min-width:76px;padding:7px 8px;font-size:11px}
+.voice-range label{display:flex;justify-content:space-between;gap:8px;margin:10px 0 2px;color:var(--mut);font-size:11.5px}
+.voice-range output{color:var(--cyan);font-variant-numeric:tabular-nums}
+.voice-range input[type=range]{padding:0;height:24px;accent-color:var(--cyan)}
+.voice-actions{display:flex;justify-content:flex-start;margin-top:9px}
+.voice-actions .btn{margin:0}
+@media(max-width:620px){.voice-grid,.voice-checks{grid-template-columns:1fr}.voice-tag{font-size:9px}}
+
 .btn{background:linear-gradient(140deg,var(--acc),#b3212c);border:0;color:#fff;padding:12px 16px;border-radius:11px;
  font:inherit;font-weight:700;cursor:pointer;margin-top:14px;width:100%;transition:.15s;
  display:flex;align-items:center;justify-content:center;gap:8px}
@@ -2753,9 +2835,60 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         <label><input type="checkbox" id="autoyt"> 🚀 رفع تلقائي لليوتيوب</label>
         <label><input type="checkbox" id="autotg"> 📤 نشر تلقائي على تيليجرام</label>
       </div>
-      <div class="row">
-        <label><input type="checkbox" id="commentary"> 🎙️ تعليق عربي مولّد (إنتاجك الخاص)</label>
-        <label><input type="checkbox" id="commtext" checked> إظهار التعليق كتابةً</label>
+      <div class="voice-panel" id="voicePanel">
+        <div class="voice-head">
+          <div><h3>🎙️ استوديو صوت المعلّق</h3><div class="voice-note">اختر شخصية التعليق، ثم استمع لمعاينة قبل الرندر.</div></div>
+          <span class="voice-tag">محليّاً في هذا المتصفح</span>
+        </div>
+        <div class="voice-checks">
+          <label><input type="checkbox" id="commentary"> تفعيل المعلّق الذكي</label>
+          <label><input type="checkbox" id="commtext" checked> إظهار النص على الفيديو</label>
+        </div>
+        <div class="row voice-grid">
+          <div><label for="voice_engine">محرّك الصوت</label><select id="voice_engine">
+            <option value="auto">تلقائي (Gemini ثم Edge)</option><option value="edge">Edge — مجاني</option><option value="gemini">Gemini — يحتاج مفتاحاً</option>
+          </select></div>
+          <div><label for="commentary_style">أسلوب التعليق</label><select id="commentary_style">
+            <option value="broadcast">🎙️ معلّق رياضي حماسي</option><option value="algerian">🇩🇿 روح جزائرية</option>
+            <option value="analyst">📊 محلّل هادئ</option><option value="cinematic">🎬 سينمائي متصاعد</option><option value="calm">🧭 ملخص هادئ</option>
+          </select></div>
+        </div>
+        <div class="voice-presets">
+          <button class="btn gray sm" type="button" onclick="applyVoicePreset('broadcast')">حماسي</button>
+          <button class="btn gray sm" type="button" onclick="applyVoicePreset('algerian')">جزائري</button>
+          <button class="btn gray sm" type="button" onclick="applyVoicePreset('analyst')">محلّل</button>
+          <button class="btn gray sm" type="button" onclick="applyVoicePreset('cinematic')">سينمائي</button>
+        </div>
+        <div class="row voice-grid">
+          <div id="voiceEdgeWrap"><label for="edge_voice">صوت Edge العربي</label><select id="edge_voice">
+            <option value="ar-DZ-IsmaelNeural">الجزائر — إسماعيل</option><option value="ar-DZ-AminaNeural">الجزائر — أمينة</option>
+            <option value="ar-MA-JamalNeural">المغرب — جمال</option><option value="ar-MA-MounaNeural">المغرب — مونة</option>
+            <option value="ar-TN-HediNeural">تونس — هادي</option><option value="ar-EG-ShakirNeural">مصر — شاكر</option>
+            <option value="ar-SA-HamedNeural">السعودية — حامد</option><option value="ar-SA-ZariyahNeural">السعودية — زارية</option>
+          </select></div>
+          <div id="voiceGeminiWrap"><label for="gemini_voice">صوت Gemini</label><select id="gemini_voice">
+            <option>Fenrir</option><option>Kore</option><option>Charon</option><option>Orus</option><option>Puck</option>
+          </select></div>
+        </div>
+        <div class="row voice-grid">
+          <div class="voice-range"><label for="voice_rate">سرعة Edge <output id="voice_rate_value">+10%</output></label><input id="voice_rate" type="range" min="-20" max="50" value="10" step="1"></div>
+          <div class="voice-range"><label for="voice_pitch">طبقة Edge <output id="voice_pitch_value">0 Hz</output></label><input id="voice_pitch" type="range" min="-12" max="12" value="0" step="1"></div>
+          <div class="voice-range"><label for="voice_gain">قوة صوت المعلّق <output id="voice_gain_value">1.9×</output></label><input id="voice_gain" type="range" min="0.5" max="3" value="1.9" step="0.1"></div>
+          <div class="voice-range"><label for="voice_duck">صوت الخلفية / قوة خفضها <output id="voice_duck_value">22%</output></label><input id="voice_duck" type="range" min="0" max="1" value="0.22" step="0.05"></div>
+        </div>
+        <div class="row voice-grid">
+          <div class="voice-range"><label for="commentary_energy">حماسة النص وGemini <output id="commentary_energy_value">70/100</output></label><input id="commentary_energy" type="range" min="0" max="100" value="70" step="1"></div>
+          <div><label for="voice_mix">طريقة مزج صوت الملعب</label><select id="voice_mix">
+            <option value="auto">تلقائي — يخفض الملعب أثناء الكلام</option><option value="fixed">خفض ثابت للمباراة</option>
+            <option value="original">الصوت الأصلي كاملاً مع المعلّق</option><option value="voice_only">المعلّق فقط، بلا صوت المباراة</option>
+          </select></div>
+        </div>
+        <label for="commentary_script">نص المعلّق (اختياري — يتجاوز كتابة الذكاء الاصطناعي)</label>
+        <textarea id="commentary_script" rows="3" maxlength="500" placeholder="اتركه فارغاً ليكتب Gemini التعليق من اللقطة…"></textarea>
+        <div class="voice-note">الحماسة والأسلوب يوجّهان كتابة النص وصوت Gemini؛ السرعة والطبقة تخص Edge. في المزج الثابت تمثل النسبة مستوى الخلفية، وفي التلقائي تحدد قوة خفضها أثناء الكلام. زر المعاينة يرسل النص المكتوب فقط إلى محرّك الصوت، ولا يرسل الفيديو.</div>
+        <div class="voice-actions"><button class="btn cyan sm" id="voicePreviewBtn" type="button" onclick="previewVoice()">🎧 اسمع معاينة الصوت</button></div>
+        <audio id="voicePreviewAudio" controls preload="none" style="display:none;width:100%;margin-top:10px"></audio>
+        <div id="voicePreviewStatus" class="voice-note" role="status" aria-live="polite"></div>
       </div>
       <div class="warn" id="devWarn" style="display:none">🖥️ <b>كرت الرسومات مفعّل</b> — المعالجة سريعة جداً.</div>
       <button class="btn sec" style="width:100%;margin-top:12px" onclick="preview()">🖼️ معاينة الهوية والخط (سريع)</button>
@@ -3380,7 +3513,7 @@ async function start(){
     replay:$("replay")?$("replay").checked:false,burst:$("burst")?$("burst").checked:false,
     accent:$("accent")?$("accent").value:"auto",hook:$("hook")?$("hook").checked:false,
     no_retry:$("retry")?!$("retry").checked:false,
-    commentary:$("commentary").checked,commentary_text:$("commtext").checked,
+    ...voiceOpts(),
     keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};
   $("goBtn").disabled=true;$("goBtn").innerHTML='<span class="spin"></span> جاري الإرسال…';
   try{
@@ -3587,6 +3720,78 @@ async function probeChan(){
     else toast(m,"err");
   }
 }
+let VOICE_PREVIEW_URL=null;
+const VOICE_PREF_IDS=["voice_engine","commentary_style","commentary_energy","edge_voice","gemini_voice","voice_rate","voice_pitch","voice_gain","voice_duck","voice_mix"];
+function voiceOpts(){return{
+  commentary:$("commentary").checked,commentary_show:$("commtext").checked,
+  commentary_script:$("commentary_script").value.trim(),commentary_style:$("commentary_style").value,
+  commentary_energy:Number($("commentary_energy").value),voice_engine:$("voice_engine").value,
+  edge_voice:$("edge_voice").value,gemini_voice:$("gemini_voice").value,
+  voice_rate:Number($("voice_rate").value),voice_pitch:Number($("voice_pitch").value),
+  voice_gain:Number($("voice_gain").value),voice_duck:Number($("voice_duck").value),
+  voice_mix:$("voice_mix").value
+};}
+function saveVoicePrefs(){
+  try{const data={};VOICE_PREF_IDS.forEach(id=>data[id]=$(id).value);localStorage.setItem("elhadath_voice_v1",JSON.stringify(data));}catch(e){}
+}
+function updateVoiceControls(save=true){
+  const rate=Number($("voice_rate").value),pitch=Number($("voice_pitch").value);
+  $("voice_rate_value").textContent=(rate>0?"+":"")+rate+"%";
+  $("voice_pitch_value").textContent=(pitch>0?"+":"")+pitch+" Hz";
+  $("voice_gain_value").textContent=Number($("voice_gain").value).toFixed(1)+"×";
+  $("voice_duck_value").textContent=Math.round(Number($("voice_duck").value)*100)+"%";
+  $("commentary_energy_value").textContent=Math.round(Number($("commentary_energy").value))+"/100";
+  const engine=$("voice_engine").value;
+  $("voiceEdgeWrap").hidden=engine==="gemini";
+  $("voiceGeminiWrap").hidden=engine==="edge";
+  if(save)saveVoicePrefs();
+}
+function initVoiceControls(){
+  try{
+    const saved=JSON.parse(localStorage.getItem("elhadath_voice_v1")||"{}");
+    VOICE_PREF_IDS.forEach(id=>{
+      const el=$(id),value=saved&&saved[id];
+      if(!el||value===undefined)return;
+      if(el.tagName==="SELECT"&&Array.from(el.options).some(option=>option.value===String(value)))el.value=String(value);
+      else if(el.type==="range"&&Number.isFinite(Number(value)))el.value=String(value);
+    });
+  }catch(e){}
+  VOICE_PREF_IDS.forEach(id=>{
+    const el=$(id);if(!el)return;
+    el.addEventListener("input",()=>updateVoiceControls());
+    el.addEventListener("change",()=>updateVoiceControls());
+  });
+  $("commentary_script").addEventListener("input",()=>{if($("commentary_script").value.trim())$("commentary").checked=true;});
+  updateVoiceControls(false);
+}
+function applyVoicePreset(name){
+  const presets={
+    broadcast:{commentary_style:"broadcast",commentary_energy:82,voice_engine:"auto",edge_voice:"ar-DZ-IsmaelNeural",gemini_voice:"Fenrir",voice_rate:10,voice_pitch:0,voice_gain:1.9,voice_duck:0.22,voice_mix:"auto"},
+    algerian:{commentary_style:"algerian",commentary_energy:94,voice_engine:"edge",edge_voice:"ar-DZ-IsmaelNeural",gemini_voice:"Kore",voice_rate:16,voice_pitch:1,voice_gain:2.1,voice_duck:0.16,voice_mix:"auto"},
+    analyst:{commentary_style:"analyst",commentary_energy:30,voice_engine:"auto",edge_voice:"ar-DZ-AminaNeural",gemini_voice:"Kore",voice_rate:0,voice_pitch:-2,voice_gain:1.65,voice_duck:0.32,voice_mix:"auto"},
+    cinematic:{commentary_style:"cinematic",commentary_energy:76,voice_engine:"auto",edge_voice:"ar-DZ-IsmaelNeural",gemini_voice:"Charon",voice_rate:-5,voice_pitch:-3,voice_gain:2.0,voice_duck:0.18,voice_mix:"auto"}
+  };
+  const preset=presets[name];if(!preset)return;
+  Object.entries(preset).forEach(([id,value])=>{if($(id))$(id).value=String(value);});
+  $("commentary").checked=true;updateVoiceControls();toast("طُبّق ملف صوت المعلّق","ok");
+}
+async function previewVoice(){
+  const button=$("voicePreviewBtn"),status=$("voicePreviewStatus"),old=button.textContent;
+  button.disabled=true;button.textContent="جارٍ صنع معاينة قصيرة…";status.textContent="يُرسل النص فقط إلى محرّك الصوت المختار.";
+  try{
+    const payload={...voiceOpts(),text:$("commentary_script").value.trim()||"الكرة تصل إلى المرمى… يا لها من تسديدة رائعة!"};
+    const response=await fetch("/api/voice/preview",{method:"POST",headers:{"Content-Type":"application/json","Accept":"audio/*, application/json"},body:JSON.stringify(payload)});
+    if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||"تعذّرت معاينة الصوت");}
+    const blob=await response.blob();
+    if(VOICE_PREVIEW_URL)URL.revokeObjectURL(VOICE_PREVIEW_URL);
+    VOICE_PREVIEW_URL=URL.createObjectURL(blob);
+    const audio=$("voicePreviewAudio");audio.src=VOICE_PREVIEW_URL;audio.style.display="block";audio.volume=1;audio.load();
+    status.textContent="المعاينة جاهزة عبر "+(response.headers.get("X-Voice-Engine")||"المحرّك المختار")+". يمكنك الاستماع ثم تعديل الإعدادات.";
+    audio.play().catch(()=>{});
+  }catch(error){status.textContent=String(error.message||error);toast("تعذّرت معاينة الصوت","err");}
+  finally{button.disabled=false;button.textContent=old;}
+}
+
 function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").value,
   quality:$("quality").value,layout:$("layout").value,
   max_dur:$("maxdur")?$("maxdur").value:"58",thumb:$("thumb")?$("thumb").checked:true,
@@ -3596,7 +3801,7 @@ function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").val
   replay:$("replay")?$("replay").checked:false,burst:$("burst")?$("burst").checked:false,
   accent:$("accent")?$("accent").value:"auto",hook:$("hook")?$("hook").checked:false,
   no_retry:$("retry")?!$("retry").checked:false,
-  commentary:$("commentary").checked,commentary_text:$("commtext").checked,
+  ...voiceOpts(),
   auto_youtube:$("autoyt").checked,auto_telegram:$("autotg").checked,
   keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};}
 
@@ -4319,6 +4524,7 @@ async function saveSet(){
 }
 
 loadCfg();poll();
+initVoiceControls();
 initScoutReview();
 document.addEventListener("keydown",e=>{
   if(e.ctrlKey||e.metaKey||e.altKey)return;

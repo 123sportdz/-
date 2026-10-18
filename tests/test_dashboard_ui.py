@@ -44,3 +44,13 @@ def test_embedded_dashboard_javascript_is_syntactically_valid():
     result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     Path(path).unlink(missing_ok=True)
+
+
+def test_voice_studio_exposes_energy_mix_and_preview_controls():
+    html = dashboard.HTML
+    js = "\n".join(_scripts())
+    for element_id in ("commentary_energy", "voice_mix", "commentary_script", "voicePreviewBtn"):
+        assert f'id="{element_id}"' in html
+    assert "function previewVoice()" in js
+    assert "elhadath_voice_v1" in js
+    assert "/api/voice/preview" in js
