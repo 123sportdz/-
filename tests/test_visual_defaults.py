@@ -134,3 +134,21 @@ def test_channel_bug_stays_in_the_top_safe_corner():
     assert ys.min() > 20
     assert ys.max() < 350
     assert changed.sum() < original.shape[0] * original.shape[1] * 0.05
+
+
+def test_dashboard_can_hide_only_the_channel_name():
+    make_args = _make_args()
+    assert _cli_argument("--hide-channel-name")
+    args = make_args({
+        "show_channel_name": False,
+        "name": "My channel",
+        "url": "youtube.com/@mychannel",
+    }, "source.mp4", "output.mp4")
+
+    assert "--hide-channel-name" in args
+    assert "--name" not in args
+    assert args[args.index("--url") + 1] == "youtube.com/@mychannel"
+
+    visible_args = make_args({"show_channel_name": True, "name": "My channel"}, "source.mp4", "output.mp4")
+    assert "--hide-channel-name" not in visible_args
+    assert visible_args[visible_args.index("--name") + 1] == "My channel"

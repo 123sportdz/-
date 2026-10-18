@@ -60,7 +60,8 @@ _TXT = dict(text=True, encoding="utf-8", errors="replace")
 
 # ------------------------------------------------------------------ config
 def load_cfg(persist=False):
-    cfg = {"brand_name": "", "brand_url": "", "telegram_token": "", "telegram_chat": "",
+    cfg = {"brand_name": "", "brand_url": "", "show_channel_name": True,
+           "telegram_token": "", "telegram_chat": "",
            "telegram_channel": "", "youtube_channel_id": "", "youtube_privacy": "private",
            "device": "", "gemini_api_key": "", "gemini_model": "",
            "auto_ai_title": True, "auto_youtube": False, "auto_telegram": False,
@@ -76,6 +77,8 @@ def load_cfg(persist=False):
             cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except Exception:
             pass
+    if not isinstance(cfg.get("show_channel_name"), bool):
+        cfg["show_channel_name"] = True
     for k, env in [("brand_name","BRAND_NAME"), ("brand_url","BRAND_URL"),
                    ("telegram_token","TELEGRAM_BOT_TOKEN"), ("telegram_chat","TELEGRAM_CHAT_ID"),
                    ("telegram_channel","TELEGRAM_CHANNEL"), ("youtube_privacy","YOUTUBE_PRIVACY")]:
@@ -603,6 +606,7 @@ def api_config():
     except Exception:
         cuda, gpu_name = False, ""
     return {"brand_name": CFG["brand_name"], "brand_url": CFG["brand_url"],
+            "show_channel_name": CFG.get("show_channel_name", True),
             "telegram": bool(CFG["telegram_token"] and CFG["telegram_chat"]),
             "telegram_channel": CFG["telegram_channel"],
             "youtube": bool(find_client_secret()),
@@ -615,7 +619,7 @@ def api_config():
 
 # المفاتيح المسموح حفظها (كان الشرط `k in CFG` يمنع حفظ أي خيار جديد مثل جدولة الذروة!)
 ALLOWED_CFG_KEYS = {
-    "brand_name", "brand_url", "telegram_token", "telegram_chat", "telegram_channel",
+    "brand_name", "brand_url", "show_channel_name", "telegram_token", "telegram_chat", "telegram_channel",
     "youtube_channel_id", "youtube_privacy", "device", "gemini_api_key", "gemini_model",
     "auto_ai_title", "auto_youtube", "auto_telegram", "schedule_peak", "auto_translate",
     "max_dur", "accent", "tracker", "zoom", "no_ai",
@@ -665,6 +669,11 @@ def api_settings_set(payload: dict):
             continue
         if str(k).startswith("tg_") and str(v).strip() == "":
             continue          # لا تمسح api_id/api_hash/الجلسة بقيمة فاضية
+        if k == "show_channel_name":
+            if not isinstance(v, bool):
+                raise HTTPException(400, "خيار إظهار اسم القناة يجب أن يكون صحيحاً")
+            CFG[k] = v
+            continue
         if k in _CFG_NUM:
             try:
                 CFG[k] = _coerce_cfg_num(k, v)
@@ -1183,8 +1192,15 @@ def _make_args(payload, src, out):
             "--imgsz", str(payload.get("imgsz", 1280)),
             "--quality", payload.get("quality", "auto"),
             "--layout", payload.get("layout", "single")]
-    if payload.get("name"): args += ["--name", payload["name"]]
-    elif CFG.get("brand_name"): args += ["--name", CFG["brand_name"]]
+    show_channel_name = payload.get("show_channel_name", CFG.get("show_channel_name", True))
+    if not isinstance(show_channel_name, bool):
+        raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
+    if not show_channel_name:
+        args += ["--hide-channel-name"]
+    elif payload.get("name"):
+        args += ["--name", payload["name"]]
+    elif CFG.get("brand_name"):
+        args += ["--name", CFG["brand_name"]]
     if payload.get("url"): args += ["--url", payload["url"]]
     elif CFG.get("brand_url"): args += ["--url", CFG["brand_url"]]
     if payload.get("caption"): args += ["--caption", payload["caption"]]
@@ -1277,6 +1293,10 @@ def _create(payload):
     source_input = (payload.get("input") or "").strip()
     scout_id = (payload.get("scout_id") or "").strip()
     payload = dict(payload)
+    show_channel_name = payload.get("show_channel_name", CFG.get("show_channel_name", True))
+    if not isinstance(show_channel_name, bool):
+        raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
+    payload["show_channel_name"] = show_channel_name
     voice = _voice_payload(payload)
     payload.update(voice)
     if voice["commentary_script"]:
@@ -1983,7 +2003,13 @@ async def api_preview(payload: dict):
         raise HTTPException(400, f"تعذّر جلب المقطع: {str(e)[:120]}")
     outp = OUT / "preview.mp4"
     args = ["-i", local, "-o", str(outp), "--preview", "--quality", "fast"]
-    args += ["--name", payload.get("name") or CFG.get("brand_name") or ""]
+    show_channel_name = payload.get("show_channel_name", CFG.get("show_channel_name", True))
+    if not isinstance(show_channel_name, bool):
+        raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
+    if show_channel_name:
+        args += ["--name", payload.get("name") or CFG.get("brand_name") or ""]
+    else:
+        args += ["--hide-channel-name"]
     args += ["--url", payload.get("url") or CFG.get("brand_url") or ""]
     if payload.get("caption"):
         args += ["--caption", payload["caption"]]
@@ -2779,6 +2805,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         <option value="#1E46EB">أزرق</option><option value="#E12D37">أحمر</option>
         <option value="#2CB05F">أخضر</option><option value="#F0BE28">أصفر</option>
         <option value="#9628DC">بنفسجي</option></select></div>
+      <label style="align-self:flex-end"><input type="checkbox" id="showChannelName" checked> إظهار اسم القناة في هذا المقطع</label>
       <div><label>🎯 شدّة التتبّع (الإطار)</label><select id="framing">
         <option value="tight">ملتصق — الكرة وسط الإطار (أفضل تتبّع)</option>
         <option value="normal" selected>متوازن (موصى به)</option>
@@ -3070,6 +3097,9 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <div class="row">
       <div><label>اسم الهوية (يُرسم على الريل)</label><input id="set_name"></div>
       <div><label>الرابط / الهاندل</label><input id="set_url"></div>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="set_show_channel_name" checked> إظهار اسم القناة افتراضياً في المقاطع الجديدة</label>
     </div>
     <div class="row">
       <div><label>قناة تيليجرام (للسحب)</label><input id="set_ch"></div>
@@ -3395,6 +3425,7 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
 async function loadCfg(){
   CFG=await (await fetch("/api/config")).json();
   $("ch").value=CFG.telegram_channel||"";
+  if($("showChannelName"))$("showChannelName").checked=CFG.show_channel_name!==false;
   $("devWarn").style.display=CFG.device?"flex":"none";
   const c=(ok,t)=>`<span class="chip ${ok?'on':'off'}"><span class="dot"></span>${t}</span>`;
   $("chips").innerHTML= c(CFG.telegram,"تيليجرام")+c(CFG.youtube_token,"يوتيوب")
@@ -3514,6 +3545,7 @@ async function start(){
     accent:$("accent")?$("accent").value:"auto",hook:$("hook")?$("hook").checked:false,
     no_retry:$("retry")?!$("retry").checked:false,
     ...voiceOpts(),
+    show_channel_name:$("showChannelName")?$("showChannelName").checked:true,
     keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};
   $("goBtn").disabled=true;$("goBtn").innerHTML='<span class="spin"></span> جاري الإرسال…';
   try{
@@ -3802,6 +3834,7 @@ function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").val
   accent:$("accent")?$("accent").value:"auto",hook:$("hook")?$("hook").checked:false,
   no_retry:$("retry")?!$("retry").checked:false,
   ...voiceOpts(),
+  show_channel_name:$("showChannelName")?$("showChannelName").checked:true,
   auto_youtube:$("autoyt").checked,auto_telegram:$("autotg").checked,
   keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};}
 
@@ -3860,13 +3893,14 @@ async function preview(){
   toast("⏳ جاري تجهيز المعاينة…");
   try{
     const r=await fetch("/api/preview",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({input:src,caption:$("cap")?$("cap").value:""})});
+      body:JSON.stringify({input:src,caption:$("cap")?$("cap").value:"",
+        show_channel_name:$("showChannelName")?$("showChannelName").checked:true})});
     const j=await r.json();
     if(!r.ok)throw new Error(j.detail||"فشل");
     $("mbox").innerHTML=`<h3>🖼️ معاينة الهوية</h3>`+
       (j.font?`<div class="warn" style="margin:8px 0">الخط: <b>${esc(j.font.bold||"?")}</b> — يرسم عربي: <b>${j.font.arabic_ok?"✅":"❌"}</b>${j.font.arabic_ok?"":" ← شغّل python font_check.py"}</div>`:"")+
       `<img src="${j.png}" style="width:100%;max-width:430px;border-radius:12px;border:1px solid var(--bd);display:block;margin:10px auto">
-       <p style="color:var(--mut);font-size:12.5px">تأكد أن الاسم والرابط ظاهرين <b>بحروف حقيقية</b> (بلا مربعات ▯). لو فيه مربعات ابعث هذه الصورة.</p>`;
+       <p style="color:var(--mut);font-size:12.5px">تحقق من ظهور العناصر التي اخترتها؛ يظهر اسم قناتك فقط عند تفعيل خياره. تأكد من سلامة الحروف العربية.</p>`;
     $("modal").classList.add("on");
     toast("المعاينة جاهزة ✅","ok");
   }catch(e){toast("خطأ: "+e.message,"err");}
@@ -4315,6 +4349,7 @@ async function submitPub(id,targets,trigger=null){
 async function loadSet(){
   const s=await (await fetch("/api/settings")).json();
   $("set_name").value=s.brand_name||"";$("set_url").value=s.brand_url||"";
+  $("set_show_channel_name").checked=s.show_channel_name!==false;
   $("set_ch").value=s.telegram_channel||"";$("set_ytid").value=s.youtube_channel_id||"";
   $("set_tok").value=s.telegram_token||"";$("set_chat").value=s.telegram_chat||"";
   $("set_dev").value=s.device||"";$("set_priv").value=s.youtube_privacy||"private";
@@ -4506,6 +4541,7 @@ async function saveSet(){
   // 🔧 أصلحنا خللاً مزمناً: كانت تُرسل replay/vcenter/hook من عناصر غير موجودة
   // (set_replay/set_vcenter/set_hook) → كل حفظ إعدادات يطفئها في config.json!
   const body={brand_name:$("set_name").value,brand_url:$("set_url").value,
+    show_channel_name:$("set_show_channel_name").checked,
     telegram_channel:$("set_ch").value,youtube_channel_id:$("set_ytid").value,
     telegram_token:$("set_tok").value,telegram_chat:$("set_chat").value,
     device:$("set_dev").value,youtube_privacy:$("set_priv").value,
