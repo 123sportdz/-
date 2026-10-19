@@ -83,10 +83,10 @@
 - `python3 -m pytest -q`: **172 اختباراً ناجحاً** على فرع فلاتر الطابور.
 - `python3 -m compileall -q dashboard.py reel.py reelbot.py autopilot.py reelkit tests`: ناجح.
 - اختُبرت أوضاع المكس الأربعة بمقطع وصوتين اصطناعيين عبر FFmpeg؛ نجحت.
-- `python tools/check_embedded_js.py`: فحص JavaScript المضمّن في اللوحة والاستوديو ناجح.
+- فحص JavaScript المضمّن في اللوحة عبر `node --check` المطابق لفحص CI: ناجح.
+- `python3 selftest.py`: جميع اختبارات الوسائط والرندر والبوت ناجحة على CPU؛ تحذير NNPACK يخص عدم دعم عتاد البيئة فقط.
 - `git diff --check`: ناجح.
-- أضيف GitHub Actions لتشغيل الاختبارات، فحص JavaScript، compileall، وفحص الوسائط الكامل على كل push أو pull request إلى `main`.
-- يجب انتظار نتيجة CI بعد الدفع؛ الفحص المحلي الكامل يحتاج مكتبات الوسائط وFFmpeg وقد يستغرق وقتاً أطول من اختبارات الوحدة.
+- GitHub Actions يشغّل الاختبارات، فحص JavaScript، compileall، واختبار الوسائط الكامل على كل push أو pull request إلى `main`.
 - تم إنشاء GitHub Release رسمي باسم `v1.67` على الرابط: https://github.com/123sportdz/-/releases/tag/v1.67
 - أضيف حاجز جودة نهائي يمنع نشر المخرج إذا فشل فحص الفيديو أو الصوت أو الأبعاد أو المدة، مع تسجيل سبب الرفض.
 - لم يتم تنفيذ رفع حقيقي أو إرسال إلى Telegram؛ اختبارات API تستخدم بدائل محلية.
