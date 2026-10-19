@@ -100,6 +100,60 @@ def test_publish_api_records_review_before_upload(client, monkeypatch):
     assert "job-2" not in dashboard.PUBLISHING
 
 
+def test_scheduled_private_upload_is_gated_as_public(client, monkeypatch):
+    job = {"id": "job-scheduled-unknown", "status": "done", "output": "reel.mp4"}
+    dashboard.JOBS[job["id"]] = job
+    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: "2026-10-21T12:00:00Z")
+    monkeypatch.setattr(
+        dashboard,
+        "_do_publish_once",
+        lambda *args, **kwargs: pytest.fail("scheduled unknown-rights upload must not run"),
+    )
+    rights = valid_rights()
+    rights["rights_basis"] = "unknown"
+    rights["evidence_reference"] = ""
+    rights["evidence_reviewed"] = False
+
+    response = client.post(
+        "/api/jobs/job-scheduled-unknown/publish",
+        json={"targets": ["youtube"], "schedule": "peak", "rights": rights},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["youtube"]["code"] == "rights_gate"
+    assert job["rights_review"]["privacy"] == "private"
+    assert job["rights_review"]["effective_privacy"] == "public"
+    assert job["rights_review"]["scheduled"] is True
+    assert job["rights_review"]["form_complete"] is False
+
+
+def test_scheduled_upload_passes_schedule_through_publish_gate(client, monkeypatch):
+    job = {"id": "job-scheduled-license", "status": "done", "output": "reel.mp4"}
+    dashboard.JOBS[job["id"]] = job
+    scheduled_for = "2026-10-21T12:00:00Z"
+    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: scheduled_for)
+    calls = []
+
+    class FakeUploader:
+        def upload(self, *args, **kwargs):
+            calls.append(kwargs)
+            return {"id": VIDEO_ID}
+
+    monkeypatch.setattr(youtube_module, "YouTubeUploader", FakeUploader)
+
+    response = client.post(
+        "/api/jobs/job-scheduled-license/publish",
+        json={"targets": ["youtube"], "schedule": "peak", "rights": valid_rights()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["youtube"]["scheduled_for"] == scheduled_for
+    assert calls and calls[0]["privacy"] == "private"
+    assert calls[0]["publish_at"] == scheduled_for
+    assert job["rights_review"]["effective_privacy"] == "public"
+    assert job["rights_review"]["scheduled"] is True
+
+
 def test_publish_api_rejects_invalid_targets_and_concurrent_publish(client, monkeypatch):
     job = {"id": "job-3", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job

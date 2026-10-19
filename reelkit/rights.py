@@ -77,16 +77,17 @@ def score(present=None) -> int:
     return int(round(got * 100 / total))
 
 
-def validate_youtube_publish(present=None, privacy="private") -> dict:
+def validate_youtube_publish(present=None, privacy="private", publish_at=None) -> dict:
     """تحقق تشغيلي قبل إرسال الفيديو إلى YouTube.
 
     هذا ليس فحص ملكية ولا رأياً قانونياً. YouTube يفحص الصوت والصورة حتى في
-    الرفع الخاص؛ لذلك نطلب إقراراً واضحاً ومراجعاً للمصدر، ونمنع العام/غير
-    المدرج عندما لا يوجد أساس استخدام موثق. الرفع الخاص يبقى متاحاً للمراجعة
-    فقط مع تنبيه أن Content ID قد يضع مطالبة عليه.
+    الرفع الخاص؛ لذلك نطلب إقراراً واضحاً ومراجعاً للمصدر. الموعد المجدول
+    يتحول إلى نشر عام، حتى لو رفعه YouTube مؤقتاً بخصوصية private.
     """
     p = present if isinstance(present, dict) else {}
     privacy = str(privacy or "private").strip().lower()
+    scheduled = bool(str(publish_at or "").strip())
+    effective_privacy = "public" if scheduled else privacy
     basis = str(p.get("rights_basis") or "unknown").strip().lower()
     source = _clean(p.get("source_reference"), 1000)
     evidence = _clean(p.get("evidence_reference"), 1000)
@@ -105,18 +106,22 @@ def validate_youtube_publish(present=None, privacy="private") -> dict:
         errors.append("اختر أساس استخدام واضحاً")
     if basis in {"licensed", "permission"} and not evidence:
         errors.append("أدخل مرجع الترخيص أو الإذن (رابط/مسار/رقم عقد)")
-    if privacy in {"public", "unlisted"} and basis in {"unknown", ""}:
+    if effective_privacy in {"public", "unlisted"} and basis in {"unknown", ""}:
         errors.append("لا يمكن النشر العام أو غير المدرج دون أساس استخدام موثق")
-    if privacy in {"public", "unlisted"} and p.get("evidence_reviewed") is not True:
+    if effective_privacy in {"public", "unlisted"} and p.get("evidence_reviewed") is not True:
         errors.append("يجب تأكيد مراجعة مستند أو مرجع الحقوق قبل النشر")
+    if "contains_synthetic_media" in p and not isinstance(p["contains_synthetic_media"], bool):
+        errors.append("قيمة الإفصاح عن المحتوى الاصطناعي يجب أن تكون منطقية")
     return {
         "ok": not errors,
         "errors": errors,
         "basis": RIGHTS_BASES.get(basis, basis),
         "privacy": privacy,
-        "review_only": privacy == "private" and basis == "unknown",
+        "effective_privacy": effective_privacy,
+        "scheduled": scheduled,
+        "review_only": effective_privacy == "private" and basis == "unknown",
         "warning": ("الرفع الخاص لا يمنع Content ID؛ راجع YouTube Studio قبل تغيير الخصوصية."
-                    if privacy == "private" else "هذا الإقرار لا يلغي المطالبات ولا يثبت fair use."),
+                    if effective_privacy == "private" else "هذا الإقرار لا يلغي المطالبات ولا يثبت fair use."),
     }
 
 

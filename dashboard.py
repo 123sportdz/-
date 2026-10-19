@@ -1688,6 +1688,8 @@ def _record_rights_review(job, rights, privacy, gate):
         "rights_acknowledged": rights.get("rights_acknowledged") is True,
         "contains_synthetic_media": rights.get("contains_synthetic_media") is True,
         "privacy": str(privacy or "private")[:20],
+        "effective_privacy": str((gate or {}).get("effective_privacy") or privacy or "private")[:20],
+        "scheduled": (gate or {}).get("scheduled") is True,
         "form_complete": bool((gate or {}).get("ok")),
         "gate_errors": [str(error)[:200] for error in errors[:20]],
         "submitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1738,7 +1740,7 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
         return result
     if "youtube" in targets:
         from reelkit import rights as RT
-        gate = RT.validate_youtube_publish(rights, privacy=privacy)
+        gate = RT.validate_youtube_publish(rights, privacy=privacy, publish_at=publish_at)
         _record_rights_review(job, rights, privacy, gate)
         _persist()
         if not gate["ok"]:
@@ -1820,7 +1822,7 @@ def api_publish(jid: str, payload: dict):
             privacy = "private"
         if "youtube" in targets:
             from reelkit import rights as RT
-            gate = RT.validate_youtube_publish(rights, privacy=privacy)
+            gate = RT.validate_youtube_publish(rights, privacy=privacy, publish_at=publish_at)
             if not gate["ok"]:
                 _record_rights_review(job, rights, privacy, gate)
                 _persist()

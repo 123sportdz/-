@@ -373,6 +373,20 @@ def main(argv=None):
         if not a.quiet:
             print(*m, flush=True)
 
+    def report_quality(stage=""):
+        try:
+            from reelkit.quality import check as _qa
+            _q = _qa(a.output, out_w, out_h, max_duration=a.max_dur,
+                     audio_required=bool(audio or voice_wav))
+            label = f"فحص الجودة ({stage})" if stage else "فحص الجودة"
+            if _q.get("ok"):
+                log(f"✅ {label}: {_q.get('width')}x{_q.get('height')} @ {_q.get('fps'):g}fps"
+                    f" | صوت: {'نعم' if _q.get('audio') else 'لا'} | {_q.get('duration'):g}s")
+            else:
+                log(f"⚠️ {label}: " + "; ".join(_q.get("issues") or ["مشكلة غير معروفة"]))
+        except Exception as _qe:
+            log(f"⚠️ تعذّر فحص الجودة ({type(_qe).__name__}: {str(_qe)[:60]})")
+
     t0 = time.time()
     if a.clear_cache:
         import shutil as _sh
@@ -1120,18 +1134,8 @@ def main(argv=None):
                       source_credit=a.source_credit,
                       cues=cap_cues, loudnorm=not a.no_loudnorm, encoder=a.encoder,
                       progress=None if a.quiet else (lambda s: print(s, flush=True)))
-        # v1.64: فحص جودة المخرج على سطر الأوامر (كما في اللوحة) — يكشف رندر مكسور فوراً
-        try:
-            from reelkit.quality import check as _qa
-            _q = _qa(a.output, out_w, out_h, max_duration=a.max_dur,
-                     audio_required=bool(audio))
-            if _q.get("ok"):
-                log(f"✅ فحص الجودة: {_q.get('width')}x{_q.get('height')} @ {_q.get('fps'):g}fps"
-                    f" | صوت: {'نعم' if _q.get('audio') else 'لا'} | {_q.get('duration'):g}s")
-            else:
-                log("⚠️ فحص الجودة: " + "; ".join(_q.get("issues") or ["مشكلة غير معروفة"]))
-        except Exception as _qe:
-            log(f"⚠️ تعذّر فحص الجودة ({type(_qe).__name__}: {str(_qe)[:60]})")
+        # v1.66: افحص الفيديو والصوت المتوقع بعد الرندر، بما فيه تعليق AI المُولّد.
+        report_quality()
         if a.replay and str(a.replay).lower() != "off" and t_key is not None:
             try:
                 from reelkit import replay as RP
@@ -1144,6 +1148,7 @@ def main(argv=None):
                 if got:
                     from reelkit.ffio import safe_move
                     safe_move(got, a.output)
+                    report_quality("بعد الإعادة")
                     log(f"🎬 أُدرجت إعادة بطيئة ({slow:g}×) للحظة {t_key:.2f}s")
                 else:
                     if os.path.exists(tmp_r):        # ملف إعادة جزئي متبقٍ — نحذفه من مجلد المخرجات

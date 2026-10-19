@@ -54,6 +54,63 @@ def test_youtube_rights_gate_accepts_reviewed_license():
     assert result["ok"] is True
 
 
+def test_scheduled_private_upload_is_gated_as_public_release():
+    payload = {
+        "rights_basis": "unknown",
+        "source_reference": "https://example.test/source",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "rights_acknowledged": True,
+    }
+
+    result = rights.validate_youtube_publish(
+        payload, privacy="private", publish_at="2026-10-21T12:00:00Z"
+    )
+
+    assert result["ok"] is False
+    assert result["privacy"] == "private"
+    assert result["effective_privacy"] == "public"
+    assert result["scheduled"] is True
+    assert result["review_only"] is False
+    assert any("أساس استخدام" in item for item in result["errors"])
+
+
+def test_scheduled_upload_accepts_reviewed_license_for_public_release():
+    payload = {
+        "rights_basis": "licensed",
+        "source_reference": "https://example.test/source",
+        "evidence_reference": "license-2026-01.pdf",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "rights_acknowledged": True,
+    }
+
+    result = rights.validate_youtube_publish(
+        payload, privacy="private", publish_at="2026-10-21T12:00:00Z"
+    )
+
+    assert result["ok"] is True
+    assert result["effective_privacy"] == "public"
+    assert result["scheduled"] is True
+
+
+def test_synthetic_media_attestation_must_be_boolean():
+    payload = {
+        "rights_basis": "own",
+        "source_reference": "my-footage.mp4",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "rights_acknowledged": True,
+        "contains_synthetic_media": "false",
+    }
+
+    result = rights.validate_youtube_publish(payload, privacy="private")
+
+    assert result["ok"] is False
+    assert any("الإفصاح" in item for item in result["errors"])
+
+
 def test_youtube_rights_gate_requires_literal_boolean_attestations():
     expected_errors = {
         "rights_acknowledged": "يجب تأكيد قراءة تنبيه حقوق النشر",
