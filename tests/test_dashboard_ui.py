@@ -54,11 +54,41 @@ def test_embedded_dashboard_javascript_is_syntactically_valid():
 def test_voice_studio_exposes_energy_mix_and_preview_controls():
     html = dashboard.HTML
     js = "\n".join(_scripts())
-    for element_id in ("commentary_energy", "voice_mix", "commentary_script", "voicePreviewBtn"):
+    for element_id in ("commentary_energy", "commentary_words", "voice_mix", "commentary_script", "voicePreviewBtn"):
         assert f'id="{element_id}"' in html
     assert "function previewVoice()" in js
+    assert '"commentary_words"' in js
     assert "elhadath_voice_v1" in js
     assert "/api/voice/preview" in js
+
+
+def test_creative_studio_script_length_hint_matches_backend_and_parses():
+    from pathlib import Path
+    import subprocess
+    import tempfile
+
+    from reelkit.writer import SCRIPT_WORD_LIMITS
+
+    path = Path(dashboard.__file__).with_name("creative_studio.html")
+    html = path.read_text(encoding="utf-8")
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+    assert scripts
+    js = "\\n".join(scripts)
+    expected = "scriptWordLimits={" + ",".join(
+        f"{name}:{limit}" for name, limit in SCRIPT_WORD_LIMITS.items()
+    ) + "}"
+    assert expected in js
+    assert 'id="lengthHint"' in html
+    assert '$("length").value=item.length||"short";\n    updateLengthHint();' in js
+
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+        handle.write(js)
+        script_path = handle.name
+    try:
+        result = subprocess.run(["node", "--check", script_path], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    finally:
+        Path(script_path).unlink(missing_ok=True)
 
 
 def test_channel_name_default_is_saved_and_requires_a_boolean(tmp_path, monkeypatch):

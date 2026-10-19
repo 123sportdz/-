@@ -16,6 +16,9 @@ def test_voice_defaults_and_ranges():
     assert defaults["edge_voice"] == voice.EDGE_DEFAULT
     assert defaults["voice_gain"] == 1.9
     assert defaults["commentary_energy"] == 70
+    assert defaults["commentary_words"] == 22
+    assert voice.normalize_controls({"commentary_words": 8})["commentary_words"] == 8
+    assert voice.normalize_controls({"commentary_words": 80})["commentary_words"] == 80
     assert defaults["voice_mix"] == "auto"
     assert voice.normalize_controls({"voice_rate": -20, "voice_pitch": 12})["voice_rate"] == -20
     with pytest.raises(ValueError):
@@ -28,6 +31,12 @@ def test_voice_defaults_and_ranges():
         voice.normalize_controls({"voice_engine": "unknown"})
     with pytest.raises(ValueError):
         voice.normalize_controls({"commentary_energy": 101})
+    with pytest.raises(ValueError):
+        voice.normalize_controls({"commentary_words": 7})
+    with pytest.raises(ValueError):
+        voice.normalize_controls({"commentary_words": 81})
+    with pytest.raises(ValueError):
+        voice.normalize_controls({"commentary_words": True})
     with pytest.raises(ValueError):
         voice.normalize_controls({"voice_mix": "not-a-mode"})
 
@@ -175,6 +184,45 @@ def test_ai_commentary_uses_selected_style_in_prompt(monkeypatch):
     assert "15/100" in prompt
 
 
+def test_ai_commentary_enforces_requested_word_limit(monkeypatch):
+    captured = {}
+    generated = " ".join(f"كلمة{i}" for i in range(1, 35))
+    payload = {"candidates": [{"content": {"parts": [{"text": json.dumps({"commentary": generated})}]}}]}
+    monkeypatch.setattr(ai, "_key", lambda _key=None: "test-key")
+    monkeypatch.setattr(ai, "pick_model", lambda *_args, **_kwargs: "test-model")
+
+    def fake_http(_url, body, **_kwargs):
+        captured["body"] = body
+        return payload
+
+    monkeypatch.setattr(ai, "_http", fake_http)
+    result = ai.commentary(caption="هدف", words=12)
+    prompt = captured["body"]["contents"][0]["parts"][0]["text"]
+    assert "بحد أقصى 12 كلمة" in prompt
+    assert captured["body"]["generationConfig"]["maxOutputTokens"] == 144
+    assert result["word_limit"] == 12
+    assert result["word_count"] == len(result["commentary"].split())
+    assert result["word_count"] <= 12
+    assert result["commentary"].endswith("…")
+
+
+def test_commentary_word_cap_prefers_a_complete_sentence():
+    text = " ".join(["هدف"] * 14 + ["مكتمل."] + ["كلمة"] * 10)
+    result = ai.limit_commentary_words(text, 22)
+
+    assert len(result.split()) == 15
+    assert result.endswith("مكتمل.")
+
+
+def test_commentary_word_cap_preserves_closing_quotes_after_sentence():
+    text = " ".join(["هدف"] * 14 + ['"مكتمل."'] + ["زائد"] * 10)
+    result = ai.limit_commentary_words(text, 22)
+
+    assert len(result.split()) == 15
+    assert result.endswith('"')
+    assert not result.endswith("…")
+
+
 def test_dashboard_passes_voice_controls_and_manual_script():
     args = dashboard._make_args({
         "commentary": True,
@@ -182,6 +230,7 @@ def test_dashboard_passes_voice_controls_and_manual_script():
         "commentary_script": "  جملة\n يدوية  ",
         "commentary_style": "cinematic",
         "commentary_energy": 76,
+        "commentary_words": 64,
         "voice_engine": "edge",
         "edge_voice": "ar-DZ-AminaNeural",
         "gemini_voice": "Charon",
@@ -199,6 +248,7 @@ def test_dashboard_passes_voice_controls_and_manual_script():
     assert value("--commentary-script") == "جملة يدوية"
     assert value("--commentary-style") == "cinematic"
     assert value("--commentary-energy") == "76"
+    assert value("--commentary-words") == "64"
     assert value("--voice-engine") == "edge"
     assert value("--edge-voice") == "ar-DZ-AminaNeural"
     assert value("--gemini-voice") == "Charon"
@@ -210,6 +260,12 @@ def test_dashboard_passes_voice_controls_and_manual_script():
     hidden_text_args = dashboard._make_args({"commentary": True, "commentary_text": False}, "input.mp4", "output.mp4")
     assert "--no-commentary-text" in hidden_text_args
     assert "--commentary-text-only" not in hidden_text_args
+
+
+def test_dashboard_rejects_invalid_commentary_word_limit():
+    with pytest.raises(dashboard.HTTPException) as error:
+        dashboard._voice_payload({"commentary_words": 81})
+    assert error.value.status_code == 400
 
 
 def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch):

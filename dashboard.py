@@ -1263,6 +1263,7 @@ def _make_args(payload, src, out):
         voice = _voice_payload(payload)
         args += ["--commentary", "--commentary-style", voice["commentary_style"],
                  "--commentary-energy", str(voice["commentary_energy"]),
+                 "--commentary-words", str(voice["commentary_words"]),
                  "--voice-engine", voice["voice_engine"], "--edge-voice", voice["edge_voice"],
                  "--gemini-voice", voice["gemini_voice"], "--voice-rate", str(voice["voice_rate"]),
                  "--voice-pitch", str(voice["voice_pitch"]), "--voice-gain", str(voice["voice_gain"]),
@@ -2903,8 +2904,9 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
           <div class="voice-range"><label for="voice_gain">قوة صوت المعلّق <output id="voice_gain_value">1.9×</output></label><input id="voice_gain" type="range" min="0.5" max="3" value="1.9" step="0.1"></div>
           <div class="voice-range"><label for="voice_duck">صوت الخلفية / قوة خفضها <output id="voice_duck_value">22%</output></label><input id="voice_duck" type="range" min="0" max="1" value="0.22" step="0.05"></div>
         </div>
-        <div class="row voice-grid">
+        <div class="row3 voice-grid">
           <div class="voice-range"><label for="commentary_energy">حماسة النص وGemini <output id="commentary_energy_value">70/100</output></label><input id="commentary_energy" type="range" min="0" max="100" value="70" step="1"></div>
+          <div class="voice-range"><label for="commentary_words">طول التعليق الذي يكتبه AI <output id="commentary_words_value">22 كلمة</output></label><input id="commentary_words" type="range" min="8" max="80" value="22" step="1"></div>
           <div><label for="voice_mix">طريقة مزج صوت الملعب</label><select id="voice_mix">
             <option value="auto">تلقائي — يخفض الملعب أثناء الكلام</option><option value="fixed">خفض ثابت للمباراة</option>
             <option value="original">الصوت الأصلي كاملاً مع المعلّق</option><option value="voice_only">المعلّق فقط، بلا صوت المباراة</option>
@@ -2912,7 +2914,7 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         </div>
         <label for="commentary_script">نص المعلّق (اختياري — يتجاوز كتابة الذكاء الاصطناعي)</label>
         <textarea id="commentary_script" rows="3" maxlength="500" placeholder="اتركه فارغاً ليكتب Gemini التعليق من اللقطة…"></textarea>
-        <div class="voice-note">الحماسة والأسلوب يوجّهان كتابة النص وصوت Gemini؛ السرعة والطبقة تخص Edge. في المزج الثابت تمثل النسبة مستوى الخلفية، وفي التلقائي تحدد قوة خفضها أثناء الكلام. زر المعاينة يرسل النص المكتوب فقط إلى محرّك الصوت، ولا يرسل الفيديو.</div>
+        <div class="voice-note">يحدد المؤشر الحد الأعلى لتعليق AI (8–80 كلمة، 22 افتراضياً)؛ النص اليدوي يتجاوز هذا الحد. الحماسة والأسلوب يوجّهان الكتابة وصوت Gemini، والسرعة والطبقة تخص Edge. في المزج الثابت تمثل النسبة مستوى الخلفية، وفي التلقائي تحدد قوة خفضها أثناء الكلام. المعاينة ترسل النص فقط، ولا ترسل الفيديو.</div>
         <div class="voice-actions"><button class="btn cyan sm" id="voicePreviewBtn" type="button" onclick="previewVoice()">🎧 اسمع معاينة الصوت</button></div>
         <audio id="voicePreviewAudio" controls preload="none" style="display:none;width:100%;margin-top:10px"></audio>
         <div id="voicePreviewStatus" class="voice-note" role="status" aria-live="polite"></div>
@@ -3753,11 +3755,11 @@ async function probeChan(){
   }
 }
 let VOICE_PREVIEW_URL=null;
-const VOICE_PREF_IDS=["voice_engine","commentary_style","commentary_energy","edge_voice","gemini_voice","voice_rate","voice_pitch","voice_gain","voice_duck","voice_mix"];
+const VOICE_PREF_IDS=["voice_engine","commentary_style","commentary_energy","commentary_words","edge_voice","gemini_voice","voice_rate","voice_pitch","voice_gain","voice_duck","voice_mix"];
 function voiceOpts(){return{
   commentary:$("commentary").checked,commentary_show:$("commtext").checked,
   commentary_script:$("commentary_script").value.trim(),commentary_style:$("commentary_style").value,
-  commentary_energy:Number($("commentary_energy").value),voice_engine:$("voice_engine").value,
+  commentary_energy:Number($("commentary_energy").value),commentary_words:Number($("commentary_words").value),voice_engine:$("voice_engine").value,
   edge_voice:$("edge_voice").value,gemini_voice:$("gemini_voice").value,
   voice_rate:Number($("voice_rate").value),voice_pitch:Number($("voice_pitch").value),
   voice_gain:Number($("voice_gain").value),voice_duck:Number($("voice_duck").value),
@@ -3773,6 +3775,7 @@ function updateVoiceControls(save=true){
   $("voice_gain_value").textContent=Number($("voice_gain").value).toFixed(1)+"×";
   $("voice_duck_value").textContent=Math.round(Number($("voice_duck").value)*100)+"%";
   $("commentary_energy_value").textContent=Math.round(Number($("commentary_energy").value))+"/100";
+  $("commentary_words_value").textContent=Math.round(Number($("commentary_words").value))+" كلمة";
   const engine=$("voice_engine").value;
   $("voiceEdgeWrap").hidden=engine==="gemini";
   $("voiceGeminiWrap").hidden=engine==="edge";

@@ -57,7 +57,7 @@ DEFAULTS = {
     "voice_engine": "auto", "commentary_style": "broadcast",
     "edge_voice": EDGE_DEFAULT, "gemini_voice": "Fenrir",
     "voice_rate": 10, "voice_pitch": 0, "commentary_energy": 70,
-    "voice_gain": 1.9, "voice_duck": 0.22, "voice_mix": "auto",
+    "commentary_words": 22, "voice_gain": 1.9, "voice_duck": 0.22, "voice_mix": "auto",
 }
 STYLE = COMMENTARY_STYLES["broadcast"]["tts"]
 
@@ -94,6 +94,7 @@ def normalize_controls(values=None):
     if gemini_voice not in GEMINI_VOICES:
         raise ValueError("صوت Gemini غير معروف")
     energy = _bounded_int(values.get("commentary_energy", DEFAULTS["commentary_energy"]), "حماسة التعليق", 0, 100)
+    words = _bounded_int(values.get("commentary_words", DEFAULTS["commentary_words"]), "طول التعليق", 8, 80)
     mix = str(values.get("voice_mix", DEFAULTS["voice_mix"])).strip()
     if mix not in ("auto", "fixed", "original", "voice_only"):
         raise ValueError("نمط مزج الصوت غير معروف")
@@ -115,7 +116,7 @@ def normalize_controls(values=None):
         "voice_engine": engine, "commentary_style": style,
         "edge_voice": edge_voice, "gemini_voice": gemini_voice,
         "voice_rate": rate, "voice_pitch": pitch, "commentary_energy": energy,
-        "voice_mix": mix, "voice_gain": gain, "voice_duck": duck,
+        "commentary_words": words, "voice_mix": mix, "voice_gain": gain, "voice_duck": duck,
     }
 
 

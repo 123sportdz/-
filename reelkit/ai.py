@@ -177,8 +177,7 @@ def gemini_title(video=None, caption="", ocr="", brand="الجزائر الجد�
     raise RuntimeError(f"فشل توليد العنوان: {last}")
 
 
-COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكتب **تعليقاً صوتياً قصيراً جداً** (جملة أو جملتان،
-بحد أقصى 22 كلمة) يُقرأ فوق مقطع هدف كرة قدم. المعلومات المتاحة:
+COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكتب تعليقاً صوتياً يُقرأ فوق مقطع كرة قدم، في جملة أو جملتين، وبحد أقصى {words} كلمة. اجعل النص أقصر إذا كانت اللقطة قصيرة. المعلومات المتاحة:
 - كابشن المصدر: {caption}
 - OCR لوحة النتيجة: {ocr}
 - العنوان: {title}
@@ -187,37 +186,75 @@ COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكت�
 قواعد:
 - أسلوب الإلقاء المطلوب: {style}
 - مستوى الحماسة: {energy}/100؛ طبّق الدرجة على الكلمات وعلامات الوقف دون اختلاق معلومات.
+- التزم بحد الكلمات بدقة، ولا تعوّضه بحشو أو تكرار.
 - عربية واضحة وطبيعية، بلا مبالغة أو معلومات غير مؤكدة.
 - اذكر الفريق/اللاعب/الدقيقة فقط لو تأكدت منها من المعلومات أو الصور.
 - لا تكتب أي تنسيق أو عنوان أو رموز — النص فقط كما يُقال بالصوت.
 أعد JSON: {{"commentary":"..."}}"""
 
 
+def limit_commentary_words(text, max_words=22):
+    from .voice import normalize_controls
+
+    limit = normalize_controls({"commentary_words": max_words})["commentary_words"]
+    if not isinstance(text, str):
+        return ""
+    words = " ".join(text.split()).split()
+    if len(words) <= limit:
+        return " ".join(words)
+    words = words[:limit]
+    min_boundary = max(1, int(limit * 0.65))
+    trailing = "\"'’”»)]}"
+    boundary = 0
+    for index, word in enumerate(words, start=1):
+        if index >= min_boundary and word.rstrip(trailing).endswith((".", "!", "?", "؟", "…")):
+            boundary = index
+    if boundary:
+        words = words[:boundary]
+    result = " ".join(words).rstrip(" ،,;:—-")
+    if not result.rstrip(trailing).endswith((".", "!", "?", "؟", "…")):
+        result += "…"
+    return result
+
+
 def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None,
-               timeout=90, style="broadcast", energy=70):
-    """يكتب نص التعليق الصوتي (جملة قصيرة) بالأسلوب المطلوب."""
+               timeout=90, style="broadcast", energy=70, words=22):
+    """يكتب نص التعليق الصوتي بالأسلوب المطلوب وضمن حد الكلمات المحدد."""
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
     from .voice import COMMENTARY_STYLES, normalize_controls
     if not isinstance(style, str) or style not in COMMENTARY_STYLES:
         style = "broadcast"
-    energy = normalize_controls({"commentary_style": style, "commentary_energy": energy})["commentary_energy"]
+    controls = normalize_controls({
+        "commentary_style": style,
+        "commentary_energy": energy,
+        "commentary_words": words,
+    })
+    energy = controls["commentary_energy"]
+    words = controls["commentary_words"]
     mdl = pick_model(key, prefer=model)
     parts = [{"text": COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
                                                title=title or "—",
                                                style=COMMENTARY_STYLES[style]["text"],
-                                               energy=energy)}]
+                                               energy=energy, words=words)}]
     if video and os.path.exists(video):
         for b64 in _frames(video, times=(0.35,)):
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
     body = {"contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": 0.95, "maxOutputTokens": 2048,
+            "generationConfig": {"temperature": 0.95, "maxOutputTokens": min(720, words * 8 + 48),
                                  "responseMimeType": "application/json"}}
     r = _http(f"{API}/models/{mdl}:generateContent", body, key=key, timeout=timeout)
     txt = "".join(p.get("text", "") for p in r["candidates"][0]["content"]["parts"])
     j = _extract(txt, "commentary")
-    return {"commentary": (j.get("commentary") or "").strip(), "model": mdl, "raw": txt[:200]}
+    commentary_text = limit_commentary_words(j.get("commentary"), words)
+    return {
+        "commentary": commentary_text,
+        "word_count": len(commentary_text.split()),
+        "word_limit": words,
+        "model": mdl,
+        "raw": txt[:200],
+    }
 
 
 def ai_meta(video, caption="", ocr="", brand="", api_key=None, model=None):

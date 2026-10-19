@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from reelkit.publish.telegram import ChannelFeed, TelegramBot
 from reelkit import title as TITLEMOD
 from reelkit import ai as AI
+from reelkit import voice as VOICE
 
 STATE = ROOT / "state.json"
 OUT = ROOT / "outputs"; OUT.mkdir(exist_ok=True)
@@ -90,7 +91,7 @@ def process(post, a, state):
     if a.start: cmd += ["--start", a.start]
     if a.end: cmd += ["--end", a.end]
     if a.keep_watermarks: cmd += ["--keep-watermarks"]
-    if a.commentary: cmd += ["--commentary"]
+    if a.commentary: cmd += ["--commentary", "--commentary-words", str(getattr(a, "commentary_words", 22))]
     if a.voice: cmd += ["--voice", a.voice]
     if post.get("text"): cmd += ["--caption", post["text"][:400]]
     if (a.device or CFG.get("device")): cmd += ["--device", str(a.device or CFG.get("device"))]
@@ -211,6 +212,8 @@ def main():
     ap.add_argument("--keep-watermarks", action="store_true")
     ap.add_argument("--quality", default="auto", choices=["auto","fast","balanced","high","ultra"])
     ap.add_argument("--commentary", action="store_true", help="🎙️ تعليق عربي مولّد")
+    ap.add_argument("--commentary-words", type=int, default=22,
+                    help="الحد الأعلى لكلمات التعليق المولّد (8–80، افتراضي 22)")
     ap.add_argument("--layout", default="single", choices=["single","split"])
     ap.add_argument("--voice", default="")
     ap.add_argument("--device", default=None, help="cpu | 0 (أول كرت) | cuda:0")
@@ -222,6 +225,10 @@ def main():
     ap.add_argument("--peak", action="store_true",
                     help="🕓 جدولة النشر لأقرب ذروة مشاهدة بدل النشر الفوري (publishAt)")
     a = ap.parse_args()
+    try:
+        VOICE.normalize_controls({"commentary_words": a.commentary_words})
+    except ValueError as exc:
+        ap.error(str(exc))
     from reelkit.publish.telegram import parse_telegram_ref
     chan, _ = parse_telegram_ref(a.channel)     # يوحّد @name / رابط t.me لاسم قناة نظيف قبل بناء المسارات
     a.channel = chan or a.channel
