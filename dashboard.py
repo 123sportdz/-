@@ -3041,11 +3041,23 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
       <option value="">كل الحالات</option><option value="done">مكتملة</option>
       <option value="running">قيد المعالجة</option><option value="failed">فاشلة</option>
       <option value="queued">في الانتظار</option></select>
+    <select id="fltWorkflow" style="max-width:250px" onchange="renderJobs()" aria-label="تصفية حسب متابعة الحقوق وYouTube">
+      <option value="">كل مسارات المتابعة</option>
+      <option value="rights_pending">بحاجة لاستكمال بيانات الحقوق</option>
+      <option value="rights_recorded">نموذج مراجعة الحقوق مكتمل</option>
+      <option value="yt_all">كل مرفوعات YouTube</option>
+      <option value="yt_unchecked">YouTube: حالة غير مفحوصة</option>
+      <option value="yt_processing">YouTube: قيد المعالجة</option>
+      <option value="yt_attention">YouTube: يحتاج مراجعة</option>
+      <option value="yt_ready">YouTube: اكتملت المعالجة</option>
+    </select>
+    <button class="btn gray sm" onclick="resetJobFilters()" title="مسح البحث والتصنيفات">↺ مسح الفلاتر</button>
     <select id="srt" style="max-width:190px" onchange="renderJobs()" aria-label="ترتيب المهام">
       <option value="new">🆕 الأحدث أولاً</option><option value="old">🕒 الأقدم أولاً</option>
       <option value="dur">⏱ الأطول مدةً</option><option value="time">⚙️ الأطول معالجةً</option></select>
     <button class="btn gray sm" title="تصدير سجل المهام إلى ملف CSV" onclick="exportJobsCsv()">📊 تصدير CSV</button>
   </div>
+  <div id="jobsSummary" role="status" aria-live="polite" style="font-size:12px;color:var(--mut);margin:-5px 0 12px"></div>
   <div id="jobs"></div>
 </section>
 
@@ -3958,6 +3970,7 @@ async function poll(){
     const flt=$("flt");if(flt)Array.from(flt.options).forEach(o=>{
       const base=o.dataset.label||o.textContent.replace(/\s*\(\d+\)$/,"");
       o.dataset.label=base;o.textContent=(o.value&&counts[o.value]!==undefined)?base+" ("+counts[o.value]+")":base;});
+    updateWorkflowFilterCounts();
     renderJobs();renderRecent();updateLive();
   }catch(e){}
   setTimeout(poll,2500);
@@ -3970,8 +3983,39 @@ function stageOf(j){
 function matches(j){
   const q=$("q").value.trim().toLowerCase(), f=$("flt").value;
   if(f&&j.status!==f)return false;
+  const workflow=$("fltWorkflow")?.value||"";
+  if(!workflowMatches(j,workflow))return false;
   if(!q)return true;
   return ((j.label||"")+(j.title||"")+(j.input||"")).toLowerCase().includes(q);
+}
+function workflowMatches(j,filter){
+  if(!filter)return true;
+  const rights=j.rights_review||null;
+  const yt=((j.publish||{}).youtube)||{};
+  const uploaded=typeof yt.id==="string"&&yt.id.trim().length>0;
+  const state=yt.status?youtubeStatusLabel(yt.status):"";
+  if(filter==="rights_pending")return j.status==="done"&&(!rights||rights.form_complete!==true);
+  if(filter==="rights_recorded")return j.status==="done"&&rights?.form_complete===true;
+  if(filter==="yt_all")return uploaded;
+  if(filter==="yt_unchecked")return uploaded&&!yt.status;
+  if(filter==="yt_processing")return uploaded&&state==="قيد المعالجة";
+  if(filter==="yt_attention")return uploaded&&["فشل","مرفوض","قيود جغرافية","مكتمل — مع قيود جغرافية"].includes(state);
+  if(filter==="yt_ready")return uploaded&&state==="مكتمل";
+  return true;
+}
+function updateWorkflowFilterCounts(){
+  const select=$("fltWorkflow");
+  if(!select)return;
+  Array.from(select.options).forEach(option=>{
+    const base=option.dataset.label||option.textContent.replace(/\s*\(\d+\)$/,""),
+      count=option.value?JOBS.filter(j=>workflowMatches(j,option.value)).length:JOBS.length;
+    option.dataset.label=base;
+    option.textContent=base+" ("+count+")";
+  });
+}
+function resetJobFilters(){
+  $("q").value="";$("flt").value="";$("fltWorkflow").value="";
+  renderJobs();
 }
 function jobCard(j){
   const done=j.status==="done";
@@ -4039,6 +4083,7 @@ function exportJobsCsv(){
 }
 function renderJobs(){
   const list=sortJobs(JOBS.filter(matches));
+  if($("jobsSummary"))$("jobsSummary").textContent=`عرض ${list.length} من ${JOBS.length} مهمة`;
   $("jobs").innerHTML=list.length?list.map(jobCard).join(""):
     '<div class="empty">ما فيه مهام مطابقة</div>';
 }
