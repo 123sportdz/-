@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,49 @@ def test_job_card_shows_youtube_publish_badge_helper():
     assert "function exportJobsCsv()" in js
 
 
+def _extract_simple_js_function(js, name):
+    match = re.search(rf"function {re.escape(name)}\([^)]*\)\{{(.*?)\n\}}", js, re.S)
+    assert match, f"missing {name}"
+    return match.group(0)
+
+
+def test_job_queue_filters_rights_and_youtube_workflow_states():
+    js = "\n".join(_scripts())
+    assert 'id="fltWorkflow"' in dashboard.HTML
+    assert 'id="jobsSummary"' in dashboard.HTML
+    assert "function resetJobFilters()" in js
+    script = "\n".join([
+        _extract_simple_js_function(js, "workflowMatches"),
+        _extract_simple_js_function(js, "youtubeStatusLabel"),
+        "const jobs=JSON.parse(require('fs').readFileSync(0,'utf8'));",
+        "const filters=['rights_pending','rights_recorded','yt_all','yt_unchecked','yt_processing','yt_attention','yt_ready'];",
+        "process.stdout.write(JSON.stringify(jobs.map(j=>Object.fromEntries(filters.map(f=>[f,workflowMatches(j,f)])))));",
+    ])
+    jobs = [
+        {"status": "done"},
+        {"status": "done", "rights_review": {"form_complete": True}},
+        {"status": "done", "publish": {"youtube": {"id": "abcdefghijk"}}},
+        {"status": "done", "publish": {"youtube": {"id": "abcdefghijk", "status_checked_at": "2026-10-18T10:00:00Z", "status": {"upload_status": "uploaded", "processing_status": "processing"}}}},
+        {"status": "done", "publish": {"youtube": {"id": "abcdefghijk", "status": {"upload_status": "processed", "processing_status": "succeeded", "region_restriction": {"blocked": ["US"]}}}}},
+        {"status": "done", "publish": {"youtube": {"id": "abcdefghijk", "status": {"upload_status": "processed", "processing_status": "succeeded", "region_restriction": {"blocked": []}}}}},
+        {"status": "done", "rights_review": {"form_complete": False}},
+        {"status": "queued"},
+    ]
+    result = subprocess.run(
+        ["node", "-e", script], input=json.dumps(jobs), capture_output=True, text=True, check=True,
+    )
+    rows = json.loads(result.stdout)
+    assert rows[0]["rights_pending"] is True
+    assert rows[0]["rights_recorded"] is False
+    assert rows[1]["rights_recorded"] is True
+    assert rows[2]["yt_all"] is True and rows[2]["yt_unchecked"] is True
+    assert rows[3]["yt_processing"] is True and rows[3]["yt_unchecked"] is False
+    assert rows[4]["yt_attention"] is True and rows[4]["yt_ready"] is False
+    assert rows[5]["yt_ready"] is True
+    assert rows[6]["rights_pending"] is True and rows[6]["rights_recorded"] is False
+    assert rows[7]["rights_pending"] is False
+
+
 def test_keyboard_shortcuts_bound_outside_form_fields():
     js = "\n".join(_scripts())
     assert 'document.addEventListener("keydown"' in js
@@ -39,7 +83,6 @@ def test_keyboard_shortcuts_bound_outside_form_fields():
 def test_embedded_dashboard_javascript_is_syntactically_valid():
     js = "\n".join(_scripts())
     # Node accepts the modern syntax the dashboard uses; parse it via --check.
-    import subprocess
     import tempfile
     from pathlib import Path
 
