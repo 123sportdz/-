@@ -1,9 +1,9 @@
 # تقرير حالة مشروع Elhadath Reels
 
 - **تاريخ التقرير:** 2026-10-19
-- **آخر إصدار في CHANGELOG:** v1.67 (لا توجد GitHub Releases أو tags بعد)
+- **آخر إصدار في CHANGELOG:** v1.67
 - **الفرع الرئيسي:** `main`
-- **آخر commit على main:** سيُحدّث بعد دفع هذه الحزمة
+- **آخر commit على main:** `70eb2fd` — `release: publish v1.67 with CI and production upgrades`
 - **فرع العمل الحالي:** `main` — إصدار الاستقرار والتحقق التلقائي
 
 هذا الملف هو نقطة استئناف العمل القادمة. يجب قراءته مع `AGENTS.md` و`QUICKSTART.md` قبل تنفيذ تغييرات كبيرة.
@@ -87,6 +87,7 @@
 - `git diff --check`: ناجح.
 - أضيف GitHub Actions لتشغيل الاختبارات، فحص JavaScript، compileall، وفحص الوسائط الكامل على كل push أو pull request إلى `main`.
 - يجب انتظار نتيجة CI بعد الدفع؛ الفحص المحلي الكامل يحتاج مكتبات الوسائط وFFmpeg وقد يستغرق وقتاً أطول من اختبارات الوحدة.
+- تم إنشاء GitHub Release رسمي باسم `v1.67` على الرابط: https://github.com/123sportdz/-/releases/tag/v1.67
 - لم يتم تنفيذ رفع حقيقي أو إرسال إلى Telegram؛ اختبارات API تستخدم بدائل محلية.
 
 ## ما تبقى من العمل — حسب الأولوية
@@ -162,7 +163,7 @@
 
 ## مرجع العمل
 
-- أساس `main`: `ac7b292`
-- فرع التعديلات: `feat/commentary-length-control`
+- أساس `main`: `70eb2fd`
+- الإصدار الرسمي: `v1.67`
 - رابط المشروع: https://github.com/123sportdz/-
 - فرع النسخة السابقة المحسّنة: `release/v1.65-improved`
