@@ -1701,6 +1701,16 @@ def _publish_in_progress_result(targets):
             for target in targets or []}
 
 
+def _quality_gate(job):
+    """حاجز نشر نهائي: لا نرسل مخرجاً فشل فحصه الآلي."""
+    report = job.get("quality_report")
+    if not isinstance(report, dict) or report.get("ok", True):
+        return None
+    issues = [str(item)[:180] for item in (report.get("issues") or [])[:8]]
+    return {"ok": False, "code": "quality_gate",
+            "error": "المقطع لم يجتز فحص الجودة: " + (" | ".join(issues) or "راجع تقرير الجودة")}
+
+
 def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     jid = str(job.get("id") or "")
     if jid:
@@ -1720,6 +1730,12 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
 def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     result = {}
     rights = rights or {}
+    quality_failure = _quality_gate(job)
+    if quality_failure:
+        result.update({target: dict(quality_failure) for target in targets})
+        job.setdefault("publish", {}).update(result)
+        _persist()
+        return result
     if "youtube" in targets:
         from reelkit import rights as RT
         gate = RT.validate_youtube_publish(rights, privacy=privacy)
@@ -1786,6 +1802,9 @@ def api_publish(jid: str, payload: dict):
             raise HTTPException(404, "job not found")
         if job.get("status") != "done":
             raise HTTPException(400, "المقطع لسه ما خلص")
+        quality_failure = _quality_gate(job)
+        if quality_failure:
+            raise HTTPException(422, quality_failure["error"])
         if jid in PUBLISHING:
             raise HTTPException(409, "توجد عملية نشر قائمة لهذه المهمة؛ انتظر اكتمالها")
         PUBLISHING.add(jid)

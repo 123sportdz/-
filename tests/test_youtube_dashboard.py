@@ -51,6 +51,28 @@ def test_publish_api_records_incomplete_rights_without_uploading(client, monkeyp
     assert "submitted_at" in job["rights_review"]
 
 
+def test_publish_api_blocks_output_that_failed_quality_gate(client, monkeypatch):
+    job = {
+        "id": "job-quality-failed", "status": "done", "output": "reel.mp4",
+        "quality_report": {"ok": False, "issues": ["اختفى مسار الصوت من المخرج"]},
+    }
+    dashboard.JOBS[job["id"]] = job
+    monkeypatch.setattr(
+        youtube_module,
+        "YouTubeUploader",
+        lambda: pytest.fail("quality-failed output must not reach YouTube"),
+    )
+
+    response = client.post(
+        "/api/jobs/job-quality-failed/publish",
+        json={"targets": ["youtube"], "privacy": "private", "rights": valid_rights()},
+    )
+
+    assert response.status_code == 422
+    assert "مسار الصوت" in response.json()["detail"]
+    assert "publish" not in job
+
+
 def test_publish_api_records_review_before_upload(client, monkeypatch):
     job = {"id": "job-2", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job

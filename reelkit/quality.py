@@ -64,6 +64,8 @@ def check(path, expected_w=1080, expected_h=1920, max_duration=0, audio_required
             report["issues"].append("اختفى مسار الصوت من المخرج")
         if video and report["fps"] <= 0:
             report["issues"].append("معدل الإطارات غير صالح")
+        if video and report["duration"] <= 0:
+            report["issues"].append("مدة الفيديو غير صالحة أو الملف غير قابل للتشغيل")
         if video and expected_w and expected_h and (report["width"], report["height"]) != (expected_w, expected_h):
             report["issues"].append(f"الأبعاد {report['width']}x{report['height']} بدل {expected_w}x{expected_h}")
         if max_duration and report["duration"] > float(max_duration) + max(0.25, 0.02 * float(max_duration)):
