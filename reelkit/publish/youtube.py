@@ -244,7 +244,8 @@ class YouTubeUploader:
 
     def upload(self, path, title, description="", tags=(), privacy="private",
                category_id=CATEGORY_SPORTS, made_for_kids=False, publish_at=None,
-               expected_channel_id=None, thumbnail=None, contains_synthetic_media=False):
+               expected_channel_id=None, thumbnail=None, contains_synthetic_media=False,
+               rights=None):
         path = os.fspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"ملف الفيديو غير موجود: {path}")
@@ -253,6 +254,14 @@ class YouTubeUploader:
             raise ValueError("عنوان فيديو YouTube مطلوب")
         if privacy not in {"private", "unlisted", "public"}:
             raise ValueError("الخصوصية يجب أن تكون private أو unlisted أو public")
+        from reelkit import rights as RIGHTS
+        gate = RIGHTS.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
+        if not gate["ok"]:
+            raise ValueError("رفض الرفع بسبب بوابة الحقوق: " + "؛ ".join(gate["errors"]))
+        if not isinstance(rights, dict):
+            rights = {}
+        contains_synthetic_media = (contains_synthetic_media is True or
+                                    rights.get("contains_synthetic_media") is True)
         description = str(description or "")
         tags = list(tags or ())
         yt = self._service()
@@ -326,6 +335,7 @@ def _cli():
     ap.add_argument("--whoami", action="store_true", help="اعرض القناة المرتبطة بالتوكن")
     ap.add_argument("--video-status", metavar="VIDEO_ID", help="افحص حالة المعالجة والرفض والقيود الجغرافية")
     ap.add_argument("--expect-channel", help="تحقق من معرّف القناة المتوقع (UC…)")
+    ap.add_argument("--rights-file", help="ملف JSON بنموذج الحقوق لهذا الفيديو؛ لا يثبت الملكية")
     ap.add_argument("--client-secret", default="client_secret.json")
     a = ap.parse_args()
     if a.auth:
@@ -340,10 +350,12 @@ def _cli():
         up = YouTubeUploader(a.client_secret)
         print(json.dumps(up.video_status(a.video_status), ensure_ascii=False, indent=2)); return
     if a.upload:
+        from reelkit import rights as RIGHTS
+        rights = RIGHTS.load_rights_file(a.rights_file)
         up = YouTubeUploader(a.client_secret)
         r = up.upload(a.upload, a.title or os.path.basename(a.upload), a.description,
                       [t.strip() for t in a.tags.split(",") if t.strip()], privacy=a.privacy,
-                      expected_channel_id=a.expect_channel)
+                      expected_channel_id=a.expect_channel, rights=rights)
         print("https://youtu.be/" + str(r.get("id"))); return
     print(__doc__)
 

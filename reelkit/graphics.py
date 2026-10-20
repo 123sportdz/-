@@ -493,7 +493,7 @@ def ar(text):
     except ImportError:
         return text
 
-BRAND_Y = 0.065
+BRAND_Y = 0.13
 
 
 def draw_brand(img_bgr, name="", url="", accent=(60, 60, 230), y=None, scale=1.0):

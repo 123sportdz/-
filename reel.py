@@ -196,8 +196,8 @@ def main(argv=None):
     ap.add_argument("--end", type=_ts_arg, help="trim end (seconds or mm:ss / hh:mm:ss)")
     ap.add_argument("--name", default="", help="اسم مختصر لشارة القناة أعلى الإطار (يدعم العربية)")
     ap.add_argument("--url", default="", help="رابط القناة في السطر الثاني من الشارة")
-    ap.add_argument("--brand-y", type=float, default=0.065,
-                    help="موضع شارة القناة (0.065 = أعلى الإطار، بعيداً عن حركة اللعب)")
+    ap.add_argument("--brand-y", type=float, default=0.13,
+                    help="موضع شارة القناة (0.13 = أسفل نطاق لوحة النتيجة عادةً)")
     ap.add_argument("--brand-scale", type=float, default=1.0,
                     help="حجم شريط الهوية (1.0 افتراضي، 0.62 أصغر وأنظف)")
     ap.add_argument("--logo", default=None,
@@ -1012,8 +1012,10 @@ def main(argv=None):
                     c = AI.commentary(readable, caption=a.caption, ocr=ocr_txt,
                                       title=a.title, api_key=None, model=None,
                                       style=a.commentary_style, energy=a.commentary_energy,
-                                      words=a.commentary_words)
+                                      words=a.commentary_words, duration=info.get("duration"))
                     commentary_text = c.get("commentary", "")
+                    if c.get("duration_limited"):
+                        log(f"      ⏱️ قُصّر سقف التعليق إلى {c['word_limit']} كلمة ليلائم مدة المقطع")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد التعليق ({type(e).__name__}: {str(e)[:90]})")
             if commentary_text:
@@ -1027,18 +1029,59 @@ def main(argv=None):
                                edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
                                energy=a.commentary_energy)
                     voice_wav = r["path"]; voice_engine = r["engine"]
+                    available_seconds = max(0.0, float(info["duration"]) - RD.VOICE_DELAY_MS / 1000.0 - 0.25)
+                    edge_rate_used = a.voice_rate
                     log(f"      🔊 الصوت: {voice_engine} — {r['seconds']} ثانية")
-                    if r["seconds"] > max(4.0, info["duration"] * 0.85) and voice_engine == "edge":
+                    if not (r["seconds"] > 0):
+                        voice_wav = None
+                        if a.voice_mix == "voice_only":
+                            audio = None
+                        log("      ⚠️ تعذّر قياس مدة الصوت؛ أوقفته لتجنّب القطع، وسيبقى النص للمراجعة")
+                    elif r["seconds"] > available_seconds and voice_engine == "edge":
                         faster_rate = min(50, a.voice_rate + 20)
                         if faster_rate > a.voice_rate:
-                            r2 = VO.say(commentary_text, wav, engine="edge",
-                                        voice=(a.voice or None), style=a.commentary_style,
-                                        rate=faster_rate, pitch=a.voice_pitch,
-                                        edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
-                                        energy=a.commentary_energy)
-                            if 0 < r2["seconds"] < r["seconds"]:
-                                r = r2; voice_wav = r["path"]
-                                log(f"      ⏩ أسرعنا الإلقاء: {r['seconds']} ثانية")
+                            try:
+                                r2 = VO.say(commentary_text, wav, engine="edge",
+                                            voice=(a.voice or None), style=a.commentary_style,
+                                            rate=faster_rate, pitch=a.voice_pitch,
+                                            edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
+                                            energy=a.commentary_energy)
+                            except Exception as exc:
+                                log(f"      ⚠️ تعذّر تسريع الإلقاء ({type(exc).__name__})")
+                            else:
+                                if 0 < r2["seconds"] < r["seconds"]:
+                                    r = r2; voice_wav = r["path"]; edge_rate_used = faster_rate
+                                    log(f"      ⏩ أسرعنا الإلقاء: {r['seconds']} ثانية")
+                    if r["seconds"] > available_seconds and not a.commentary_script:
+                        for _fit_attempt in range(2):
+                            current_words = len(commentary_text.split())
+                            target_words = VO.fit_word_limit(
+                                current_words, info["duration"], r["seconds"],
+                                delay_seconds=RD.VOICE_DELAY_MS / 1000.0, tail_seconds=0.25)
+                            if target_words >= current_words:
+                                break
+                            shorter = AI.limit_commentary_words(commentary_text, target_words)
+                            if not shorter or shorter == commentary_text:
+                                break
+                            try:
+                                r2 = VO.say(shorter, wav, engine=voice_engine,
+                                            voice=(a.voice or None), style=a.commentary_style,
+                                            rate=edge_rate_used, pitch=a.voice_pitch,
+                                            edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
+                                            energy=a.commentary_energy)
+                            except Exception as exc:
+                                log(f"      ⚠️ تعذّر ملاءمة طول الصوت ({type(exc).__name__})")
+                                break
+                            if not 0 < r2["seconds"] < r["seconds"]:
+                                break
+                            commentary_text = shorter; r = r2; voice_wav = r["path"]
+                            log(f"      ✂️ قُصّر نص التعليق ليتسع في المقطع ({len(commentary_text.split())} كلمة)")
+                    if r["seconds"] > available_seconds:
+                        voice_wav = None
+                        if a.voice_mix == "voice_only":
+                            audio = None
+                        reason = "النص اليدوي محفوظ" if a.commentary_script else "تعذّرت ملاءمة الصوت"
+                        log(f"      ⚠️ {reason}؛ أوقفت الصوت كي لا يُقطع عند نهاية الفيديو، وبقي النص للمراجعة")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد الصوت ({type(e).__name__}: {str(e)[:90]}) — سيظهر التعليق كتابةً")
 
@@ -1051,12 +1094,18 @@ def main(argv=None):
         if cap_on and commentary_text:
             try:
                 from reelkit import captions as CP
-                if voice_wav:                        # تزامن حقيقي مع الصوت المولّد
-                    dur_v = VO.wav_seconds(voice_wav) or min(info["duration"], 8.0)
-                    _d0 = RD.VOICE_DELAY_MS / 1000.0   # بداية الصوت في المزيج (adelay)
-                    cap_cues = CP.build(commentary_text, start=_d0,
-                                        duration=max(0.6, min(dur_v, info["duration"] - _d0)))
-                elif a.commentary_text_only:         # بلا صوت: وزّع الكلمات على مدة المقطع
+                if voice_wav:
+                    dur_v = VO.audio_seconds(voice_wav)
+                    _d0 = RD.VOICE_DELAY_MS / 1000.0
+                    if dur_v > 0:
+                        cap_cues = CP.build(commentary_text, start=_d0,
+                                            duration=max(0.6, min(dur_v, info["duration"] - _d0)))
+                    else:
+                        voice_wav = None
+                        if a.voice_mix == "voice_only":
+                            audio = None
+                        log("      ⚠️ تعذّر قياس مدة الصوت؛ أوقفنا الصوت والكابشن المتزامن بدلاً من توقيت غير دقيق")
+                if not voice_wav and commentary_text:
                     cap_cues = CP.build(commentary_text, start=0.4,
                                         duration=max(1.0, info["duration"] - 0.8))
                 if cap_cues:

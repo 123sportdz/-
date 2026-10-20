@@ -8,10 +8,12 @@
     from reelkit.voice import say
     say("هدف رائع لمنتخب الجزائر!", "voice.wav")   # يجرّب Gemini ثم Edge
 """
-import base64, json, os, re, time, urllib.request, wave
+import base64, json, math, os, re, time, urllib.error, urllib.request, wave
 
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
-TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"]
+TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts",
+              "gemini-3.1-flash-tts-preview", "gemini-2.5-pro-preview-tts"]
+CURRENT_TTS_MODELS = {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
 # أصوات Gemini المتعددة اللغات (Kore/Fenrir تعمل جيداً بالعربية)
 GEMINI_VOICES = ("Fenrir", "Kore", "Charon", "Orus", "Puck")
 EDGE_VOICES = {
@@ -169,49 +171,107 @@ def _pcm_to_wav(pcm, path, rate=24000, channels=1, width=2):
     return path
 
 
-def tts_gemini(text, out_wav, api_key=None, model=None, voice="Fenrir", timeout=180,
+def _gemini_tts_request(req, timeout):
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read()
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError):
+                raise RuntimeError("استجابة Gemini TTS ليست JSON") from None
+        except urllib.error.HTTPError as exc:
+            if exc.code in retryable_statuses and attempt == 0:
+                time.sleep(1)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            raise
+
+
+def _write_gemini_audio(encoded, out_wav, mime_type=""):
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except (TypeError, ValueError):
+        raise RuntimeError("بيانات صوت Gemini غير صالحة") from None
+    if not audio:
+        raise RuntimeError("Gemini أعاد صوتاً فارغاً")
+    if audio.startswith(b"RIFF") and audio[8:12] == b"WAVE":
+        with open(out_wav, "wb") as output:
+            output.write(audio)
+        return out_wav
+    mime = str(mime_type or "").lower()
+    if "l16" not in mime and "pcm" not in mime:
+        raise RuntimeError("صيغة صوت Gemini غير مدعومة")
+    match = re.search(r"(?:rate|sample_rate)\s*=\s*(\d+)", mime)
+    rate = int(match.group(1)) if match else 24000
+    if not 8000 <= rate <= 192000 or len(audio) % 2:
+        raise RuntimeError("بيانات PCM من Gemini غير صالحة")
+    return _pcm_to_wav(audio, out_wav, rate=rate)
+
+
+def tts_gemini(text, out_wav, api_key=None, model=None, voice="Fenrir", timeout=60,
                style="broadcast", energy=70):
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
-    models = ([model] if model else []) + [m for m in TTS_MODELS if m != model]
+    models = list(dict.fromkeys(([model] if model else []) + TTS_MODELS))
     last = None
-    for m in models:
+    for model_name in models:
         try:
-            style_instruction = COMMENTARY_STYLES.get(style, COMMENTARY_STYLES["broadcast"])["tts"]
             energy = _bounded_int(energy, "حماسة التعليق", 0, 100)
+            style_instruction = COMMENTARY_STYLES.get(style, COMMENTARY_STYLES["broadcast"])["tts"]
             energy_note = f"درجة الحماسة {energy} من 100؛ حافظ على وضوح الكلام ولا تصرخ."
-            body = {"contents": [{"parts": [{"text": f"{style_instruction} {energy_note}\n\nاقرأ النص كما هو دون إضافة معلومات: {text}"}]}],
-                    "generationConfig": {"responseModalities": ["AUDIO"],
-                                         "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig":
-                                                                          {"voiceName": voice}}}}}
-            req = urllib.request.Request(f"{GEMINI_API}/models/{m}:generateContent",
-                                         data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json",
-                                                  "x-goog-api-key": key})
-            d = None
-            for attempt in range(3):
-                try:
-                    with urllib.request.urlopen(req, timeout=timeout) as r:
-                        d = json.loads(r.read())
-                    break
-                except Exception as _e:
-                    if attempt == 2:
-                        raise
-                    time.sleep(2 * (attempt + 1))
-            for part in d["candidates"][0]["content"]["parts"]:
-                if "inlineData" in part:
-                    rate = 24000
-                    mt = part["inlineData"].get("mimeType", "")
-                    mrate = re.search(r"rate=(\d+)", mt)   # كان split هشّاً لو أضافت قوقل معاملاً بعد rate
-                    if mrate:
-                        rate = int(mrate.group(1))
-                    _pcm_to_wav(base64.b64decode(part["inlineData"]["data"]), out_wav, rate=rate)
-                    return out_wav
+            if model_name in CURRENT_TTS_MODELS:
+                part = {"text": text, "speech_metadata": {
+                    "style": f"{style_instruction} {energy_note}"}}
+                voice_config = {"voice": voice}
+            else:
+                part = {"text": f"{style_instruction} {energy_note}\n\nاقرأ النص كما هو دون إضافة معلومات: {text}"}
+                voice_config = {"prebuiltVoiceConfig": {"voiceName": voice}}
+            body = {
+                "contents": [{"role": "user", "parts": [part]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {"voiceConfig": voice_config},
+                },
+            }
+            req = urllib.request.Request(
+                f"{GEMINI_API}/models/{model_name}:generateContent",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json", "x-goog-api-key": key},
+            )
+            response = _gemini_tts_request(req, timeout)
+            candidates = response.get("candidates") if isinstance(response, dict) else None
+            if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                raise RuntimeError("استجابة بلا مرشحين")
+            content = candidates[0].get("content")
+            parts = content.get("parts") if isinstance(content, dict) else None
+            if not isinstance(parts, list):
+                raise RuntimeError("استجابة بلا أجزاء صوتية")
+            for response_part in parts:
+                if not isinstance(response_part, dict):
+                    continue
+                inline = response_part.get("inlineData") or response_part.get("inline_data")
+                if isinstance(inline, dict) and inline.get("data"):
+                    mime_type = inline.get("mimeType") or inline.get("mime_type", "")
+                    return _write_gemini_audio(inline["data"], out_wav, mime_type)
             raise RuntimeError("بلا صوت في الرد")
-        except Exception as e:
-            last = f"{m}: {type(e).__name__} {str(e)[:100]}"
-    raise RuntimeError(f"Gemini TTS فشل — {last}")
+        except urllib.error.HTTPError as exc:
+            last = f"{model_name}: HTTP {exc.code}"
+            if exc.code in (401, 403):
+                break
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            last = f"{model_name}: {type(exc).__name__}"
+            break
+        except Exception as exc:
+            detail = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            last = f"{model_name}: {detail}"
+    raise RuntimeError(f"Gemini TTS فشل — {last or 'لا يوجد نموذج متاح'}")
 
 
 def tts_edge(text, out_wav, voice=EDGE_DEFAULT, rate="+10%", pitch="+0Hz", timeout=180):
@@ -296,6 +356,31 @@ def audio_seconds(path):
         out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                               "format=duration", "-of", "csv=p=0", path],
                              capture_output=True, text=True, timeout=30)
-        return round(float(out.stdout.strip()), 2)
+        if getattr(out, "returncode", 0) != 0:
+            return 0.0
+        duration = float((out.stdout or "").strip())
+        if not math.isfinite(duration) or duration <= 0:
+            return 0.0
+        return round(duration, 2)
     except Exception:
         return 0.0
+
+def fit_word_limit(word_count, clip_seconds, speech_seconds, delay_seconds=0.5, tail_seconds=0.25, safety=0.9):
+    try:
+        count = max(0, int(word_count))
+        clip = float(clip_seconds)
+        speech = float(speech_seconds)
+        delay = float(delay_seconds)
+        tail = float(tail_seconds)
+        margin = float(safety)
+    except (TypeError, ValueError, OverflowError):
+        return max(0, int(word_count)) if isinstance(word_count, int) and not isinstance(word_count, bool) else 0
+    if count <= 1 or not all(math.isfinite(value) for value in (clip, speech, delay, tail, margin)) or clip <= 0 or speech <= 0 or not 0 < margin <= 1:
+        return count
+    available = max(0.0, clip - max(0.0, delay) - max(0.0, tail))
+    if speech <= available:
+        return count
+    if available <= 0:
+        return 1
+    estimate = max(1, int(count * available / speech * margin))
+    return min(count - 1, estimate)

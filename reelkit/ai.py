@@ -7,7 +7,7 @@
 
 المفتاح: config.json -> "gemini_api_key"  أو  متغير البيئة GEMINI_API_KEY
 """
-import base64, json, os, re, subprocess, time, urllib.request, urllib.error
+import base64, json, math, os, re, subprocess, time, urllib.request, urllib.error
 
 DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
                   "gemini-2.5-flash", "gemini-flash-latest"]
@@ -177,18 +177,20 @@ def gemini_title(video=None, caption="", ocr="", brand="الجزائر الجد�
     raise RuntimeError(f"فشل توليد العنوان: {last}")
 
 
-COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكتب تعليقاً صوتياً يُقرأ فوق مقطع كرة قدم، في جملة أو جملتين، وبحد أقصى {words} كلمة. اجعل النص أقصر إذا كانت اللقطة قصيرة. المعلومات المتاحة:
+COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكتب تعليقاً صوتياً يُقرأ فوق مقطع كرة قدم مدته {duration} ثانية، في جملة أو جملتين، وبحد أقصى {words} كلمة. اجعل النص أقصر إذا كانت اللقطة قصيرة. المعلومات المتاحة:
 - كابشن المصدر: {caption}
 - OCR لوحة النتيجة: {ocr}
 - العنوان: {title}
-- الصور: لقطات من المقطع.
+- الصور: ثلاث لقطات ثابتة مرتبة زمنياً من المقطع.
 
 قواعد:
 - أسلوب الإلقاء المطلوب: {style}
 - مستوى الحماسة: {energy}/100؛ طبّق الدرجة على الكلمات وعلامات الوقف دون اختلاق معلومات.
-- التزم بحد الكلمات بدقة، ولا تعوّضه بحشو أو تكرار.
+- التزم بحد الكلمات بدقة، ولا تعوّضه بحشو أو تكرار؛ إذا كان سقف المدة قصيراً فاكتب عبارة موجزة طبيعية.
 - عربية واضحة وطبيعية، بلا مبالغة أو معلومات غير مؤكدة.
-- اذكر الفريق/اللاعب/الدقيقة فقط لو تأكدت منها من المعلومات أو الصور.
+- الصور الثابتة لا تثبت تسلسل الحركة؛ لا تصف هدفاً أو تسديدة أو نتيجة إلا إذا دعمتها اللقطات بوضوح أو وردت في الكابشن/OCR.
+- لا تستنتج أسماء اللاعبين أو الفرق من القمصان؛ اذكرها أو اذكر الدقيقة/النتيجة فقط إذا وردت صراحة في الكابشن أو OCR المقروء بوضوح.
+- إذا لم تتأكد من الحدث، اكتب تعليقاً عاماً يصف ما يظهر ولا يخترع تفاصيل.
 - لا تكتب أي تنسيق أو عنوان أو رموز — النص فقط كما يُقال بالصوت.
 أعد JSON: {{"commentary":"..."}}"""
 
@@ -196,7 +198,10 @@ COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكت�
 def limit_commentary_words(text, max_words=22):
     from .voice import normalize_controls
 
-    limit = normalize_controls({"commentary_words": max_words})["commentary_words"]
+    if isinstance(max_words, int) and not isinstance(max_words, bool) and 1 <= max_words < 8:
+        limit = max_words
+    else:
+        limit = normalize_controls({"commentary_words": max_words})["commentary_words"]
     if not isinstance(text, str):
         return ""
     words = " ".join(text.split()).split()
@@ -217,9 +222,29 @@ def limit_commentary_words(text, max_words=22):
     return result
 
 
+def commentary_word_budget(max_words=22, duration=None, words_per_second=1.8, buffer_seconds=0.8):
+    from .voice import normalize_controls
+
+    requested = normalize_controls({"commentary_words": max_words})["commentary_words"]
+    try:
+        seconds = float(duration)
+        rate = float(words_per_second)
+        buffer = float(buffer_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return requested
+    if (not all(math.isfinite(value) for value in (seconds, rate, buffer))
+            or seconds <= 0 or rate <= 0):
+        return requested
+    budget = max(0.0, seconds - max(0.0, buffer)) * rate
+    if not math.isfinite(budget):
+        return requested
+    duration_cap = max(1, int(budget))
+    return min(requested, duration_cap)
+
+
 def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None,
-               timeout=90, style="broadcast", energy=70, words=22):
-    """يكتب نص التعليق الصوتي بالأسلوب المطلوب وضمن حد الكلمات المحدد."""
+               timeout=90, style="broadcast", energy=70, words=22, duration=None):
+    """يكتب تعليقاً واقعياً ومناسباً لمدة المقطع ضمن سقف الكلمات المحدد."""
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
@@ -232,29 +257,60 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
         "commentary_words": words,
     })
     energy = controls["commentary_energy"]
-    words = controls["commentary_words"]
+    requested_words = controls["commentary_words"]
+    words = commentary_word_budget(requested_words, duration=duration)
+    try:
+        duration_seconds = float(duration)
+    except (TypeError, ValueError):
+        duration_seconds = None
+    if duration_seconds is not None and not math.isfinite(duration_seconds):
+        duration_seconds = None
+    duration_text = f"{duration_seconds:.1f}" if duration_seconds and duration_seconds > 0 else "غير محددة"
     mdl = pick_model(key, prefer=model)
     parts = [{"text": COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
-                                               title=title or "—",
+                                               title=title or "—", duration=duration_text,
                                                style=COMMENTARY_STYLES[style]["text"],
                                                energy=energy, words=words)}]
     if video and os.path.exists(video):
-        for b64 in _frames(video, times=(0.35,)):
+        for b64 in _frames(video, times=(0.15, 0.5, 0.85)):
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
     body = {"contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": 0.95, "maxOutputTokens": min(720, words * 8 + 48),
+            "generationConfig": {"temperature": 0.35, "maxOutputTokens": min(720, words * 8 + 48),
                                  "responseMimeType": "application/json"}}
-    r = _http(f"{API}/models/{mdl}:generateContent", body, key=key, timeout=timeout)
-    txt = "".join(p.get("text", "") for p in r["candidates"][0]["content"]["parts"])
-    j = _extract(txt, "commentary")
-    commentary_text = limit_commentary_words(j.get("commentary"), words)
-    return {
-        "commentary": commentary_text,
-        "word_count": len(commentary_text.split()),
-        "word_limit": words,
-        "model": mdl,
-        "raw": txt[:200],
-    }
+    models = [mdl] + [candidate for candidate in DEFAULT_MODELS if candidate != mdl][:1]
+    last_error = ""
+    for candidate_model in models:
+        try:
+            response = _http(f"{API}/models/{candidate_model}:generateContent", body,
+                             key=key, timeout=timeout, retries=2)
+            candidates = response.get("candidates") if isinstance(response, dict) else None
+            if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                raise ValueError("استجابة بلا مرشحين")
+            content = candidates[0].get("content")
+            response_parts = content.get("parts") if isinstance(content, dict) else None
+            if not isinstance(response_parts, list):
+                raise ValueError("استجابة بلا نص")
+            txt = "".join(part.get("text", "") for part in response_parts if isinstance(part, dict))
+            if not txt.strip():
+                raise ValueError("استجابة فارغة")
+            parsed = _extract(txt, "commentary")
+            commentary_text = limit_commentary_words(parsed.get("commentary"), words)
+            if not commentary_text:
+                raise ValueError("تعليق فارغ")
+            return {
+                "commentary": commentary_text,
+                "word_count": len(commentary_text.split()),
+                "word_limit": words,
+                "requested_word_limit": requested_words,
+                "duration_limited": words < requested_words,
+                "duration_seconds": duration_seconds,
+                "model": candidate_model,
+                "raw": txt[:200],
+            }
+        except Exception as exc:
+            detail = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            last_error = f"{candidate_model}: {detail}"
+    raise RuntimeError(f"فشل توليد التعليق ({last_error or 'لا يوجد نموذج متاح'})")
 
 
 def ai_meta(video, caption="", ocr="", brand="", api_key=None, model=None):

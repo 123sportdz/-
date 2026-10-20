@@ -45,11 +45,11 @@ def _dashboard_html():
 def _make_args():
     path = ROOT / "dashboard.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    function = next(
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_make_args"
-    )
-    module = ast.Module(body=[function], type_ignores=[])
+    functions = {
+        node.name: node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in {"_brand_args", "_make_args"}
+    }
+    module = ast.Module(body=[functions["_brand_args"], functions["_make_args"]], type_ignores=[])
     namespace = {"CFG": {}}
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
     return namespace["_make_args"]
@@ -96,6 +96,13 @@ def test_dashboard_and_cli_default_to_clean_action_framing_without_tracker_graph
     assert args[args.index("--quality") + 1] == "auto"
     assert "--no-trail" in args
 
+    assert args[args.index("--brand-y") + 1] == "0.13"
+    assert args[args.index("--brand-scale") + 1] == "1.0"
+
+    positioned = make_args({"brand_y": 0.18, "brand_scale": 0.8}, "source.mp4", "output.mp4")
+    assert positioned[positioned.index("--brand-y") + 1] == "0.18"
+    assert positioned[positioned.index("--brand-scale") + 1] == "0.8"
+
     show_trail = make_args({"show_trail": True}, "source.mp4", "output.mp4")
     assert "--show-trail" in show_trail
     assert "--no-trail" not in show_trail
@@ -115,18 +122,20 @@ def test_renderer_hides_tracking_graphics_by_default():
     }
 
     assert ast.literal_eval(defaults["use_trail"]) is False
-    assert ast.literal_eval(defaults["brand_y"]) == pytest.approx(0.065)
+    assert ast.literal_eval(defaults["brand_y"]) == pytest.approx(0.13)
 
 
 def test_channel_bug_stays_in_the_top_safe_corner():
     pytest.importorskip("cv2")
     import numpy as np
-    from reelkit.graphics import draw_brand
+    from reelkit.graphics import BRAND_Y, draw_brand
 
     original = np.full((1920, 1080, 3), (45, 120, 50), dtype=np.uint8)
     result = draw_brand(original.copy(), "الجزائر الجديدة TV", "youtube.com/@aljazaer7tv")
     changed = np.any(result != original, axis=2)
     ys, xs = np.where(changed)
+
+    assert BRAND_Y == pytest.approx(0.13)
 
     assert len(xs) > 0
     assert xs.min() > 540

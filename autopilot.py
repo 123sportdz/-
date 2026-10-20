@@ -8,7 +8,7 @@ autopilot.py — الأتمتة الكاملة: قناة تيليجرام -> ر�
 
 لكل رسالة جديدة فيها فيديو:
   1) ينزّلها من القناة (بدون مفاتيح — القنوات العامة)
-  2) يعالجها: عمودي 9:16 + تتبّع + إزالة واترمارك + هويتك
+  2) يعالجها: عمودي 9:16 + تتبّع + حفظ علامات المصدر + هويتك
   3) يبني عنوان/وصف/تاجات (كابشن الرسالة > OCR لوحة النتيجة > قالب)
   4) ينشر: تيليجرام (بوت) و/أو يوتيوب (OAuth) — أو يتركه في outputs/ فقط
 الحالة تُحفظ في state.json حتى ما يعيد معالجة نفس المقطع.
@@ -52,17 +52,56 @@ def save_state(s):
     except Exception:
         pass
 
+def _distribution_rights(a, source_key, scheduled=None):
+    from reelkit import rights as RT
+
+    manifest = getattr(a, "rights_manifest", "") or CFG.get("rights_manifest", "")
+    if manifest:
+        manifest_path = Path(manifest).expanduser()
+        if not manifest_path.is_absolute():
+            manifest_path = ROOT / manifest_path
+        manifest = str(manifest_path)
+    manifest_error = ""
+    try:
+        record = RT.load_rights_manifest_entry(manifest, source_key)
+    except ValueError as exc:
+        record = None
+        manifest_error = str(exc)
+    gates = {}
+    upload = getattr(a, "upload", "none")
+    if upload in ("telegram", "both"):
+        gates["telegram"] = RT.validate_public_distribution(record)
+    if upload in ("youtube", "both"):
+        is_scheduled = (bool(getattr(a, "peak", False) or CFG.get("schedule_peak"))
+                        if scheduled is None else scheduled is True)
+        gates["youtube"] = RT.validate_youtube_publish(
+            record, privacy=CFG.get("youtube_privacy", "private"), scheduled=is_scheduled)
+    if manifest_error:
+        for gate in gates.values():
+            gate["ok"] = False
+            gate["errors"].insert(0, "ملف manifest الحقوق غير صالح")
+    return record, gates, manifest_error
+
+
 def process(post, a, state):
     key = post["url"]
     if key in state:
         rec = state[key]
-        # ⚠️ v1.45: خطأ سابق ≠ تخطٍّ دائم — نعيد المحاولة حتى 3 مرات ثم نتخلى عنه،
-        # وإلا كان أول خطأ عابر (شبكة/ffmpeg) يحرم المقطع من المعالجة للأبد.
-        if not (isinstance(rec, dict) and rec.get("error")):
-            return None
-        if int(rec.get("retries", 0)) >= 3:
-            return None
-        state.pop(key, None)              # اسمح بإعادة المحاولة الآن
+        if isinstance(rec, dict) and rec.get("rights_pending"):
+            if getattr(a, "upload", "none") not in ("telegram", "youtube", "both"):
+                return None
+            _, gates, manifest_error = _distribution_rights(a, key)
+            if manifest_error or not gates or any(not gate.get("ok") for gate in gates.values()):
+                return None
+            state.pop(key, None)
+        else:
+            # ⚠️ v1.45: خطأ سابق ≠ تخطٍّ دائم — نعيد المحاولة حتى 3 مرات ثم نتخلى عنه،
+            # وإلا كان أول خطأ عابر (شبكة/ffmpeg) يحرم المقطع من المعالجة للأبد.
+            if not (isinstance(rec, dict) and rec.get("error")):
+                return None
+            if int(rec.get("retries", 0)) >= 3:
+                return None
+            state.pop(key, None)              # اسمح بإعادة المحاولة الآن
     tag = post["url"].rsplit("/", 1)[-1]
     raw = INCOMING / f"{a.channel.strip('/@')}_{tag}.mp4"
     print(f"  ↓ تنزيل {post['url']} …", flush=True)
@@ -166,6 +205,36 @@ def process(post, a, state):
             save_state(state)
             return out
 
+    publish_at = None
+    if a.upload in ("youtube", "both") and (getattr(a, "peak", False) or CFG.get("schedule_peak")):
+        try:
+            from reelkit import schedule as SCH
+            nxt = SCH.next_slot()
+            publish_at = SCH.iso_utc(nxt)
+            print(f"  🕓 مجدول لذروة: {SCH.describe(nxt)}")
+        except Exception as e:
+            print(f"  ⚠️ الجدولة تعذّرت ({type(e).__name__}) — نشر فوري")
+
+    rights_record = None
+    distribution_gates = {}
+    if a.upload in ("telegram", "youtube", "both"):
+        rights_record, distribution_gates, manifest_error = _distribution_rights(
+            a, key, scheduled=bool(publish_at))
+        failed_gates = {target: gate for target, gate in distribution_gates.items()
+                        if not gate.get("ok")}
+        if failed_gates:
+            for target, gate in failed_gates.items():
+                details = " | ".join(gate.get("errors") or ["مراجعة الحقوق غير مكتملة"])
+                print(f"  ⛔ أوقفنا الإرسال إلى {target}: {details}", flush=True)
+            state[key] = {"title": title, "output": str(out), "at": time.time(),
+                          "rights_pending": True,
+                          "rights_targets": list(distribution_gates),
+                          "rights_errors": {name: gate.get("errors", [])
+                                            for name, gate in failed_gates.items()},
+                          "rights_manifest_error": bool(manifest_error)}
+            save_state(state)
+            return out
+
     if a.upload in ("telegram", "both") and CFG.get("telegram_token") and CFG.get("telegram_chat"):
         try:
             TelegramBot(CFG["telegram_token"], CFG["telegram_chat"]).send_video(str(out), caption=title)
@@ -175,23 +244,13 @@ def process(post, a, state):
     if a.upload in ("youtube", "both"):
         try:
             from reelkit.publish.youtube import YouTubeUploader
-            # 🕓 جدولة الذروة: بدل النشر الفوري في منتصف الليل، نحجز أقرب خانة ذروة
-            # (publishAt يرفعه خاصاً وينشره في الموعد — يوتيوب يتولى التوقيت)
-            publish_at = None
-            if getattr(a, "peak", False) or CFG.get("schedule_peak"):
-                try:
-                    from reelkit import schedule as SCH
-                    nxt = SCH.next_slot()
-                    publish_at = SCH.iso_utc(nxt)
-                    print(f"  🕓 مجدول لذروة: {SCH.describe(nxt)}")
-                except Exception as e:
-                    print(f"  ⚠️ الجدولة تعذّرت ({type(e).__name__}) — نشر فوري")
-            # publishAt يفرض privacy=private من جهة يوتيوب — نمرّرها صراحة بدل خطأ API
             r = YouTubeUploader().upload(str(out), title, s.get("description", ""), s.get("tags") or [],
                                          privacy=("private" if publish_at else
-                                                  CFG.get("youtube_privacy","private")),
+                                                  CFG.get("youtube_privacy", "private")),
                                          expected_channel_id=CFG.get("youtube_channel_id") or None,
-                                         publish_at=publish_at)
+                                         publish_at=publish_at, rights=rights_record,
+                                         contains_synthetic_media=(rights_record or {}).get(
+                                             "contains_synthetic_media") is True)
             print(f"  ✓ يوتيوب: https://youtu.be/{r.get('id')}")
         except Exception as e:
             print(f"  ✗ يوتيوب: {e}")
@@ -218,6 +277,8 @@ def main():
     ap.add_argument("--voice", default="")
     ap.add_argument("--device", default=None, help="cpu | 0 (أول كرت) | cuda:0")
     ap.add_argument("--upload", default="none", choices=["none","telegram","youtube","both"])
+    ap.add_argument("--rights-manifest", default=CFG.get("rights_manifest", ""),
+                    help="JSON يربط الرابط الدقيق لكل مصدر بنموذج مراجعة الحقوق")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-ai", action="store_true", help="بلا Gemini (استخدم الكابشن/OCR فقط)")
     ap.add_argument("--min-transformative", type=int, default=0,

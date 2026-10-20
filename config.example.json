@@ -6,6 +6,7 @@
   "telegram_chat": "",
   "telegram_channel": "",
   "youtube_privacy": "private",
+  "rights_manifest": "rights_manifest.json",
   "youtube_channel_id": "UCTIN753Wd_5nxlOuHvuOhdg",
   "device": "",
   "batch": 0,

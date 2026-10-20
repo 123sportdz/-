@@ -12,8 +12,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 # عتبة "مقتطف قصير": 90 ثانية. فوقها لا نصف المقطع بأنه ليس بثّاً كاملاً.
 SHORT_CLIP_MAX_S = 90.0
@@ -22,7 +24,7 @@ SHORT_CLIP_MAX_S = 90.0
 # البرنامج أصدر حكماً قانونياً؛ الغرض هو منع النشر العام بلا مراجعة واعية.
 RIGHTS_BASES = {
     "own": "أملك حقوق الصورة والصوت",
-    "licensed": "لدي ترخيص/عقد يغطي النشر على YouTube",
+    "licensed": "لدي ترخيص/عقد يغطي وجهة النشر المختارة",
     "permission": "لدي إذن مكتوب من صاحب الحقوق",
     "public_domain": "المادة في الملك العام أو بترخيص يسمح بهذا الاستخدام",
     "unknown": "غير متأكد — أحتاج مراجعة قبل النشر العام",
@@ -77,22 +79,54 @@ def score(present=None) -> int:
     return int(round(got * 100 / total))
 
 
-def validate_youtube_publish(present=None, privacy="private") -> dict:
-    """تحقق تشغيلي قبل إرسال الفيديو إلى YouTube.
+def load_rights_file(path) -> dict:
+    """حمّل نموذج حقوق منفرداً لرفع CLI؛ الملف بيانات مراجعة وليس إثباتاً آلياً."""
+    if not path:
+        raise ValueError("أدخل ملف مراجعة الحقوق قبل رفع YouTube")
+    try:
+        data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("تعذّر قراءة ملف مراجعة الحقوق بصيغة JSON") from exc
+    if not isinstance(data, dict) or "items" in data:
+        raise ValueError("ملف الحقوق المنفرد يجب أن يحتوي حقول مراجعة واحدة، لا manifest")
+    return data
 
-    هذا ليس فحص ملكية ولا رأياً قانونياً. YouTube يفحص الصوت والصورة حتى في
-    الرفع الخاص؛ لذلك نطلب إقراراً واضحاً ومراجعاً للمصدر، ونمنع العام/غير
-    المدرج عندما لا يوجد أساس استخدام موثق. الرفع الخاص يبقى متاحاً للمراجعة
-    فقط مع تنبيه أن Content ID قد يضع مطالبة عليه.
-    """
+
+def load_rights_manifest_entry(path, source_key) -> dict | None:
+    """حمّل سجل حقوقاً مطابقاً حرفياً لمصدر واحد من manifest autopilot."""
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("تعذّر قراءة ملف manifest الحقوق بصيغة JSON") from exc
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, dict):
+        raise ValueError("ملف manifest الحقوق يحتاج كائناً باسم items")
+    exact_source = str(source_key or "")
+    if not exact_source or len(exact_source) > 4000:
+        raise ValueError("مرجع مصدر manifest غير صالح")
+    entry = items.get(exact_source)
+    if entry is None:
+        return None
+    if not isinstance(entry, dict):
+        raise ValueError("سجل الحقوق لهذا المصدر يجب أن يكون كائناً")
+    if not isinstance(entry.get("source_reference"), str) or entry["source_reference"] != exact_source:
+        raise ValueError("مرجع المصدر داخل سجل الحقوق لا يطابق مفتاح manifest")
+    return dict(entry)
+
+
+def _validate_publication(present=None, privacy="private", scheduled=False, target="youtube") -> dict:
     p = present if isinstance(present, dict) else {}
-    privacy = str(privacy or "private").strip().lower()
+    upload_privacy = str(privacy or "private").strip().lower()
+    scheduled = scheduled is True
+    privacy = "public" if scheduled else upload_privacy
     basis = str(p.get("rights_basis") or "unknown").strip().lower()
     source = _clean(p.get("source_reference"), 1000)
     evidence = _clean(p.get("evidence_reference"), 1000)
     errors = []
-    if privacy not in {"private", "unlisted", "public"}:
-        errors.append("خصوصية YouTube غير صالحة")
+    if upload_privacy not in {"private", "unlisted", "public"}:
+        errors.append("خصوصية YouTube غير صالحة" if target == "youtube" else "خصوصية الإرسال غير صالحة")
     if p.get("rights_acknowledged") is not True:
         errors.append("يجب تأكيد قراءة تنبيه حقوق النشر")
     if p.get("visual_rights_confirmed") is not True:
@@ -103,21 +137,40 @@ def validate_youtube_publish(present=None, privacy="private") -> dict:
         errors.append("أدخل مصدر الصورة أو مرجعها للتتبّع")
     if basis not in RIGHTS_BASES:
         errors.append("اختر أساس استخدام واضحاً")
-    if basis in {"licensed", "permission"} and not evidence:
-        errors.append("أدخل مرجع الترخيص أو الإذن (رابط/مسار/رقم عقد)")
+    if basis in {"licensed", "permission", "public_domain"} and not evidence:
+        errors.append("أدخل مرجع الترخيص أو الإذن أو مصدر الملك العام")
     if privacy in {"public", "unlisted"} and basis in {"unknown", ""}:
         errors.append("لا يمكن النشر العام أو غير المدرج دون أساس استخدام موثق")
-    if privacy in {"public", "unlisted"} and p.get("evidence_reviewed") is not True:
-        errors.append("يجب تأكيد مراجعة مستند أو مرجع الحقوق قبل النشر")
+    if privacy in {"public", "unlisted"}:
+        if p.get("evidence_reviewed") is not True:
+            errors.append("يجب مراجعة مرجع الحقوق قبل النشر")
+        if p.get(f"{target}_scope_confirmed") is not True:
+            label = "YouTube" if target == "youtube" else "Telegram"
+            errors.append(f"أكّد أن أساس الحقوق يسمح بالنشر على {label}")
     return {
         "ok": not errors,
         "errors": errors,
         "basis": RIGHTS_BASES.get(basis, basis),
+        "target": target,
+        "target_scope_confirmed": p.get(f"{target}_scope_confirmed") is True,
         "privacy": privacy,
-        "review_only": privacy == "private" and basis == "unknown",
+        "upload_privacy": upload_privacy,
+        "scheduled": scheduled,
+        "review_only": target == "youtube" and privacy == "private" and basis == "unknown",
         "warning": ("الرفع الخاص لا يمنع Content ID؛ راجع YouTube Studio قبل تغيير الخصوصية."
-                    if privacy == "private" else "هذا الإقرار لا يلغي المطالبات ولا يثبت fair use."),
+                    if target == "youtube" and privacy == "private"
+                    else "اكتمال النموذج لا يثبت الملكية أو الترخيص ولا يضمن منع المطالبات."),
     }
+
+
+def validate_youtube_publish(present=None, privacy="private", scheduled=False) -> dict:
+    """بوابة YouTube؛ لا تثبت الملكية أو الترخيص. الجدولة تعامل كنشر عام."""
+    return _validate_publication(present, privacy=privacy, scheduled=scheduled, target="youtube")
+
+
+def validate_public_distribution(present=None) -> dict:
+    """بوابة توزيع عام على Telegram؛ تتطلب تأكيد نطاق الحقوق لهذه الوجهة."""
+    return _validate_publication(present, privacy="public", target="telegram")
 
 
 def _clean(s, limit=4000):

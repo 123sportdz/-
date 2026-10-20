@@ -54,6 +54,8 @@ def _mux(tmp_video, out_path, audio=None, voice_wav=None, duck=0.22, voice_gain=
     have_vo = bool(voice_wav) and os.path.exists(voice_wav)
     if voice_mix not in ("auto", "fixed", "original", "voice_only"):
         raise ValueError("نمط مزج الصوت غير معروف")
+    if voice_mix == "voice_only":
+        have_bg = False
     if not (have_bg or have_vo):
         from .ffio import safe_move
         safe_move(tmp_video, out_path)
@@ -164,7 +166,7 @@ def render(video, audio, out_path, info, cam, mode, ball_x, det,
            voice_wav=None, duck=0.22, voice_gain=1.9, voice_delay_ms=VOICE_DELAY_MS,
            commentary_text="", commentary_show=True, tmp_path=None,
            cam_y=None, zoom=None, ball_y=None, burst_t=None, burst_text="هدف!",
-           ball_color=None, brand_y=0.065, brand_scale=1.0, score_box=None, score_scale=1.75,
+           ball_color=None, brand_y=0.13, brand_scale=1.0, score_box=None, score_scale=1.75,
            logo=None, source_credit="", cues=None, loudnorm=True, encoder="auto",
            _nvenc_retry=True, voice_mix="auto"):
     fps = fps or info["fps"]; W = info["W"]; H = info["H"]
