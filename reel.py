@@ -373,6 +373,20 @@ def main(argv=None):
         if not a.quiet:
             print(*m, flush=True)
 
+    def report_quality(stage=""):
+        try:
+            from reelkit.quality import check as quality_check
+            report = quality_check(a.output, out_w, out_h, max_duration=a.max_dur,
+                                   audio_required=quality_audio_required)
+            label = f"فحص الجودة ({stage})" if stage else "فحص الجودة"
+            if report.get("ok"):
+                log(f"✅ {label}: {report.get('width')}x{report.get('height')} @ {report.get('fps'):g}fps"
+                    f" | صوت: {'نعم' if report.get('audio') else 'لا'} | {report.get('duration'):g}s")
+            else:
+                log(f"⚠️ {label}: " + "; ".join(report.get("issues") or ["مشكلة غير معروفة"]))
+        except Exception as exc:
+            log(f"⚠️ تعذّر فحص الجودة ({type(exc).__name__}: {str(exc)[:60]})")
+
     t0 = time.time()
     if a.clear_cache:
         import shutil as _sh
@@ -501,8 +515,10 @@ def main(argv=None):
 
         log(f"[1/6] normalizing source …")
         try:
-            _vfr = bool(ffio.probe(src).get("vfr"))
+            source_info = ffio.probe(src)
+            _vfr = bool(source_info.get("vfr"))
         except Exception:
+            source_info = {}
             _vfr = False
         # مصادر VFR (تسجيل هاتف): الرندر يكتب بمعدل ثابت والصوت يُستخرج على خط
         # زمن المصدر ⇒ انزياح صوت/صورة يتراكم. نحوّلها لـCFR قبل أي شيء.
@@ -513,6 +529,8 @@ def main(argv=None):
         else:
             readable = ffio.ensure_readable(src, workdir)
         info = ffio.probe(readable)
+        source_audio_available = bool(not a.no_audio and
+                                     (source_info.get("acodec") or info.get("acodec")))
         # بعد تحويل VFR لـCFR يُستخرج الصوت من الملف المحوّل (خطه الزمني ثابت)
         # وإلا انحرف عن الفيديو الجديد رغم التحويل.
         audio = None if a.no_audio else ffio.extract_audio(readable if _vfr else src, workdir)
@@ -1144,6 +1162,8 @@ def main(argv=None):
             except Exception as e:
                 log(f"      ⚠️ تعذّر تحديد اللحظة المفتاحية ({type(e).__name__}: {str(e)[:60]})")
 
+        quality_audio_required = bool(source_audio_available or voice_wav)
+        log(f"[quality] audio_required={'yes' if quality_audio_required else 'no'}")
         detect.release_gpu_memory()
         log(f"[6/6] rendering {out_w}x{out_h} ({'شاشة مقسومة' if a.layout=='split' else 'ريل عادي'}) …")
         if a.source_credit:
@@ -1169,18 +1189,7 @@ def main(argv=None):
                       source_credit=a.source_credit,
                       cues=cap_cues, loudnorm=not a.no_loudnorm, encoder=a.encoder,
                       progress=None if a.quiet else (lambda s: print(s, flush=True)))
-        # v1.64: فحص جودة المخرج على سطر الأوامر (كما في اللوحة) — يكشف رندر مكسور فوراً
-        try:
-            from reelkit.quality import check as _qa
-            _q = _qa(a.output, out_w, out_h, max_duration=a.max_dur,
-                     audio_required=bool(audio))
-            if _q.get("ok"):
-                log(f"✅ فحص الجودة: {_q.get('width')}x{_q.get('height')} @ {_q.get('fps'):g}fps"
-                    f" | صوت: {'نعم' if _q.get('audio') else 'لا'} | {_q.get('duration'):g}s")
-            else:
-                log("⚠️ فحص الجودة: " + "; ".join(_q.get("issues") or ["مشكلة غير معروفة"]))
-        except Exception as _qe:
-            log(f"⚠️ تعذّر فحص الجودة ({type(_qe).__name__}: {str(_qe)[:60]})")
+        report_quality()
         if a.replay and str(a.replay).lower() != "off" and t_key is not None:
             try:
                 from reelkit import replay as RP
@@ -1193,6 +1202,7 @@ def main(argv=None):
                 if got:
                     from reelkit.ffio import safe_move
                     safe_move(got, a.output)
+                    report_quality("بعد الإعادة")
                     log(f"🎬 أُدرجت إعادة بطيئة ({slow:g}×) للحظة {t_key:.2f}s")
                 else:
                     if os.path.exists(tmp_r):        # ملف إعادة جزئي متبقٍ — نحذفه من مجلد المخرجات

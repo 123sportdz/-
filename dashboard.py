@@ -391,6 +391,20 @@ def _probe_meta(path):
     except Exception:
         return {}
 
+def _quality_audio_required_from_logs(logs):
+    lines = [str(line).strip() for line in (logs or [])]
+    marker = "[quality] audio_required="
+    for line in reversed(lines):
+        if line.startswith(marker):
+            return line[len(marker):].strip().lower() == "yes"
+    return any("audio=yes" in line for line in lines)
+
+
+def _quality_output_has_audio(report, logs):
+    if isinstance(report, dict) and "audio" in report:
+        return report.get("audio") is True
+    return any("audio=yes" in str(line) for line in (logs or []))
+
 PROCS = {}          # job_id -> Popen (لإيقاف المهام قيد التشغيل)
 
 def run_job(job_id, args):
@@ -469,9 +483,9 @@ def run_job(job_id, args):
                 dims = str(next((args[i + 1] for i, x in enumerate(args) if x == "--out-size"), "1080x1920"))
                 ew, eh = (int(x) for x in dims.lower().split("x", 1))
                 md = float(next((args[i + 1] for i, x in enumerate(args) if x == "--max-dur"), "0"))
-                source_had_audio = "audio=yes" in " ".join(job.get("log") or [])
+                audio_required = _quality_audio_required_from_logs(job.get("log"))
                 _qrep = quality_check(job["output"], ew, eh, md,
-                                      audio_required=source_had_audio)
+                                      audio_required=audio_required)
                 with _lock:
                     job["quality_report"] = _qrep
                     if not _qrep["ok"]:
@@ -482,9 +496,8 @@ def run_job(job_id, args):
             try:
                 with _lock:
                     job["has_thumb"] = Path(str(job["output"]).replace(".mp4", "_thumb.jpg")).exists()
-                    _lt = " ".join(job.get("log") or [])
-                    if "audio=" in _lt:
-                        job["has_audio"] = "audio=yes" in _lt
+                    job["has_audio"] = _quality_output_has_audio(
+                        job.get("quality_report"), job.get("log"))
                     job["size"] = Path(job["output"]).stat().st_size
             except Exception:
                 pass

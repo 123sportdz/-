@@ -107,6 +107,62 @@ def test_publish_api_records_review_before_upload(client, monkeypatch):
     assert "job-2" not in dashboard.PUBLISHING
 
 
+def test_scheduled_unknown_rights_are_blocked_before_upload(client, monkeypatch):
+    job = {"id": "job-scheduled-unknown", "status": "done", "output": "reel.mp4"}
+    dashboard.JOBS[job["id"]] = job
+    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: "2026-10-21T12:00:00Z")
+    monkeypatch.setattr(
+        dashboard,
+        "_do_publish_once",
+        lambda *args, **kwargs: pytest.fail("unknown-rights scheduled upload must be blocked"),
+    )
+    rights = valid_rights()
+    rights.update(rights_basis="unknown", evidence_reference="", evidence_reviewed=False)
+
+    response = client.post(
+        f"/api/jobs/{job['id']}/publish",
+        json={"targets": ["youtube"], "schedule": "peak", "rights": rights},
+    )
+
+    review = job["rights_review"]["target_reviews"]["youtube"]
+    assert response.status_code == 200
+    assert response.json()["youtube"]["code"] == "rights_gate"
+    assert review["scheduled"] is True
+    assert review["privacy"] == "public"
+    assert review["upload_privacy"] == "private"
+    assert job["rights_review"]["form_complete"] is False
+
+
+def test_scheduled_licensed_upload_keeps_private_upload_and_passes_release_time(client, monkeypatch):
+    job = {"id": "job-scheduled-licensed", "status": "done", "output": "reel.mp4"}
+    dashboard.JOBS[job["id"]] = job
+    scheduled_for = "2026-10-21T12:00:00Z"
+    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: scheduled_for)
+    monkeypatch.setattr(dashboard.SCH, "describe", lambda _value: "local schedule")
+    calls = []
+
+    class FakeUploader:
+        def upload(self, *args, **kwargs):
+            calls.append(kwargs)
+            return {"id": VIDEO_ID}
+
+    monkeypatch.setattr(youtube_module, "YouTubeUploader", FakeUploader)
+
+    response = client.post(
+        f"/api/jobs/{job['id']}/publish",
+        json={"targets": ["youtube"], "schedule": "peak", "rights": valid_rights()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["youtube"]["scheduled_for"] == scheduled_for
+    assert calls and calls[0]["privacy"] == "private"
+    assert calls[0]["publish_at"] == scheduled_for
+    review = job["rights_review"]["target_reviews"]["youtube"]
+    assert review["privacy"] == "public"
+    assert review["upload_privacy"] == "private"
+    assert review["scheduled"] is True
+
+
 def test_telegram_distribution_blocks_unknown_rights_before_sending(client, monkeypatch):
     job = {"id": "tg-rights-blocked", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job

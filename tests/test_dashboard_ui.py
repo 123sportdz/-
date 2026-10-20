@@ -15,6 +15,20 @@ def _scripts():
     return scripts
 
 
+def test_dashboard_audio_quality_uses_renderer_expectation_and_output_probe():
+    assert dashboard._quality_audio_required_from_logs(
+        ["audio=yes", "[quality] audio_required=no"]
+    ) is False
+    assert dashboard._quality_audio_required_from_logs(
+        ["audio=no", "[quality] audio_required=yes"]
+    ) is True
+    assert dashboard._quality_audio_required_from_logs(["audio=yes"]) is True
+    assert dashboard._quality_audio_required_from_logs(["audio=no"]) is False
+    assert dashboard._quality_output_has_audio({"audio": False}, ["audio=yes"]) is False
+    assert dashboard._quality_output_has_audio({"audio": True}, ["audio=no"]) is True
+    assert dashboard._quality_output_has_audio(None, ["audio=yes"]) is True
+
+
 def test_jobs_toolbar_has_sort_and_export_controls():
     html = dashboard.HTML
     assert 'id="srt"' in html
