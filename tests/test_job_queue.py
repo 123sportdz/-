@@ -69,6 +69,26 @@ def test_context_manager_and_slots_roundtrip():
     assert g.available() == 2
 
 
+def test_gpu_detection_keeps_cpu_render_out_of_gpu_gate():
+    assert dashboard._args_use_gpu(["--device", "cpu", "--encoder", "cpu"]) is False
+    assert dashboard._args_use_gpu(["--device", "0", "--encoder", "auto"]) is True
+    assert dashboard._args_use_gpu(["--device", "cpu", "--encoder", "nvenc"]) is True
+
+
+def test_queue_reports_independent_gpu_limit(monkeypatch):
+    monkeypatch.setenv("REEL_MAX_JOBS", "3")
+    monkeypatch.setenv("REEL_GPU_JOBS", "1")
+    monkeypatch.setattr(dashboard, "JOBS", {})
+    monkeypatch.setattr(dashboard, "GPU_SEM", dashboard._PriorityGate(1))
+    response = TestClient(dashboard.app).get("/api/queue")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["limit"] == 3
+    assert body["gpu_limit"] == 1
+    assert body["gpu_available"] == 1
+    assert body["gpu_waiting"] == 0
+
+
 def test_invalid_priority_value_rejected():
     client = TestClient(dashboard.app)
     response = client.post("/api/jobs", json={"input": "x.mp4", "priority": "urgent"})

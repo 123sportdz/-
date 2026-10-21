@@ -201,6 +201,44 @@ class _PriorityGate:
             return self._free
 
 JOB_SEM = _PriorityGate(os.environ.get("REEL_MAX_JOBS", "1"))   # 🚦 بحد أقصى + أولوية
+
+
+def _args_use_gpu(args):
+    """Return whether a render may touch CUDA/NVENC.
+
+    An explicit CPU request is safe to run beside a GPU job.  Auto mode is
+    conservatively treated as GPU-capable when CUDA is available or when the
+    encoder is auto/NVENC, preventing VRAM exhaustion on multi-slot queues.
+    """
+    values = list(args or [])
+    def _value(flag, default=""):
+        try:
+            return str(values[values.index(flag) + 1]).lower()
+        except (ValueError, IndexError):
+            return default
+    device = _value("--device", str(CFG.get("device") or "auto").lower())
+    encoder = _value("--encoder", str(CFG.get("encoder") or "auto").lower())
+    if device in {"cpu", "mps"} and encoder == "cpu":
+        return False
+    if device in {"cuda", "cuda:0", "0"} or encoder == "nvenc":
+        return True
+    if device not in {"", "auto"} and device.startswith("cuda"):
+        return True
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return encoder == "auto" and device not in {"cpu", "mps"}
+
+
+def _gpu_limit():
+    try:
+        return max(1, int(os.environ.get("REEL_GPU_JOBS", "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
+GPU_SEM = _PriorityGate(_gpu_limit())
 AUTOMATION_STATE_FILE = OUT / "automation_state.json"
 _automation_stop = threading.Event()
 _automation_thread = None
@@ -1282,12 +1320,20 @@ def _run_scout_session(sid, source, caption, count):
                       source_path=local, caption=resolved_caption, label=Path(local).name)
         from reelkit import ffio as FFIO
         duration = float(FFIO.probe(local).get("duration") or 0)
+        gpu_token = None
         with JOB_SEM:
-            SCOUTS.update(sid, stage="نرتّب الهتاف ونفحص اللقطات بصرياً", progress=35)
-            from reelkit import highlight as HL
-            ranked = HL.rank(local, count=count, max_dur=58.0, pre=13.0,
-                             device=CFG.get("device") or None,
-                             log=lambda message: print(f"[scout {sid[:8]}] {str(message)[:180]}"))
+            try:
+                if _args_use_gpu(["--device", str(CFG.get("device") or "auto")]):
+                    GPU_SEM.acquire("normal")
+                    gpu_token = True
+                SCOUTS.update(sid, stage="نرتّب الهتاف ونفحص اللقطات بصرياً", progress=35)
+                from reelkit import highlight as HL
+                ranked = HL.rank(local, count=count, max_dur=58.0, pre=13.0,
+                                 device=CFG.get("device") or None,
+                                 log=lambda message: print(f"[scout {sid[:8]}] {str(message)[:180]}"))
+            finally:
+                if gpu_token:
+                    GPU_SEM.release()
         SCOUTS.update(sid, status="ready", duration=duration, candidates=ranked)
     except Exception as exc:
         print(f"[scout {sid[:8]}] {type(exc).__name__}")
@@ -1524,12 +1570,20 @@ def _create(payload):
             return                            # 🔧 حُذفت قبل إقلاع الخيط (سباق حذف)
         jj["stage"] = "في الانتظار…"
         _persist()
-        JOB_SEM.acquire(jj.get("priority", "normal"))   # 🚦 high يسبق normal منضبطاً
+        priority = jj.get("priority", "normal")
+        JOB_SEM.acquire(priority)   # 🚦 high يسبق normal منضبطاً
+        gpu_token = None
         try:
             if JOBS.get(jid, {}).get("status") != "queued":
                 return                    # 🔧 أُلغيت أو حُذفت وهي تنتظر — لا نشغّلها
-            run_job(jid, _make_args(payload, src, out))
+            args = _make_args(payload, src, out)
+            if _args_use_gpu(args):
+                GPU_SEM.acquire(priority)  # 🎮 لا يتزاحم أكثر من REEL_GPU_JOBS على VRAM/NVENC
+                gpu_token = True
+            run_job(jid, args)
         finally:
+            if gpu_token:
+                GPU_SEM.release()
             JOB_SEM.release()
     threading.Thread(target=_runner, daemon=True).start()
     return jid
@@ -2834,9 +2888,14 @@ def api_queue():
         js = list(JOBS.values())
     running = sum(1 for j in js if j.get("status") == "running")
     waiting = sum(1 for j in js if j.get("status") == "queued")
-    return {"running": running, "waiting": waiting,
-            "limit": int(os.environ.get("REEL_MAX_JOBS", "1")),
-            "gpu": bool(CFG.get("device") not in (None, "", "cpu"))}
+    try:
+        limit = max(1, int(os.environ.get("REEL_MAX_JOBS", "1")))
+    except (TypeError, ValueError):
+        limit = 1
+    return {"running": running, "waiting": waiting, "limit": limit,
+            "gpu": bool(CFG.get("device") not in (None, "", "cpu")),
+            "gpu_limit": _gpu_limit(), "gpu_available": GPU_SEM.available(),
+            "gpu_waiting": GPU_SEM.pending_count()}
 
 
 @app.get("/api/sysinfo")
