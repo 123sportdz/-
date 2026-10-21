@@ -4,6 +4,7 @@ __pycache__/
 .tmp/
 .cache/
 outputs/
+audit_log/
 incoming/
 watch/
 state.json

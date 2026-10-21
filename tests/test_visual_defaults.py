@@ -32,14 +32,8 @@ class SelectOptions(HTMLParser):
 
 
 def _dashboard_html():
-    path = ROOT / "dashboard.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    assignment = next(
-        node for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "HTML" for target in node.targets)
-    )
-    return ast.literal_eval(assignment.value)
+    # منذ v1.70 تعيش الواجهة في dashboard_ui.html وتُحمَّل إلى dashboard.HTML
+    return (ROOT / "dashboard_ui.html").read_text(encoding="utf-8")
 
 
 def _make_args():
