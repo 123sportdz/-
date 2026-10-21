@@ -33,6 +33,8 @@ from reelkit.scout_review import ScoutSessionError, ScoutSessionStore, validate_
 from reelkit.publish.telegram import TelegramBot, ChannelFeed, fetch_post
 from reelkit import schedule as SCH
 from reelkit.publish.youtube import find_client_secret
+from reelkit import audit as AUDIT
+from reelkit.errors import friendly_error, error_detail
 
 LOGOS_DIR = ROOT / "logo_library"
 LOGOS_DIR.mkdir(exist_ok=True)
@@ -1825,10 +1827,15 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
 def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     result = {}
     rights = rights if isinstance(rights, dict) else {}
+    jid = str(job.get("id") or "")
+    AUDIT.append_event("publish_requested", jid, targets=list(targets),
+                       privacy=str(privacy or "")[:20], scheduled=bool(publish_at))
     quality_failure = _quality_gate(job)
     if quality_failure:
         result.update({target: dict(quality_failure) for target in targets})
         job.setdefault("publish", {}).update(result)
+        AUDIT.append_event("quality_gate_denied", jid, targets=list(targets),
+                           error=quality_failure.get("error"))
         _persist()
         return result
     gates = {}
@@ -1839,6 +1846,11 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
                 rights, privacy=privacy, scheduled=bool(publish_at))
         if "telegram" in targets:
             gates["telegram"] = RT.validate_public_distribution(rights)
+        for target, gate in gates.items():
+            if not gate.get("ok"):
+                AUDIT.append_event("rights_gate_denied", jid, target=target,
+                                   privacy=str(gate.get("privacy") or "")[:20],
+                                   errors=[str(e)[:180] for e in (gate.get("errors") or [])[:5]])
         review = _record_rights_review(job, rights, gates, targets)
         _persist()
     if publish_at and "youtube" in targets:
@@ -1847,6 +1859,8 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
         except (TypeError, ValueError):
             result["youtube"] = {"ok": False, "error":
                     f"صيغة الجدولة غير صالحة: {publish_at!r} — المطلوب ISO مثل 2026-10-04T19:00:00Z"}
+            AUDIT.append_event("publish_result", jid, target="youtube", ok=False,
+                               code="bad_schedule", error=result["youtube"]["error"])
     if "telegram" in targets:
         gate = gates.get("telegram") or {}
         if not gate.get("ok"):
@@ -1858,7 +1872,12 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
                 r = bot.send_video(job["output"], caption=title + ("\n\n" + desc if desc else ""))
                 result["telegram"] = {"ok": True, "message_id": r.get("message_id")}
             except Exception as e:
-                result["telegram"] = {"ok": False, "error": str(e)}
+                result["telegram"] = {"ok": False, "error": friendly_error(e)}
+                AUDIT.append_event("telegram_share_check", jid, ok=False, error=error_detail(e))
+            AUDIT.append_event("publish_result", jid, target="telegram",
+                               ok=result["telegram"].get("ok") is True,
+                               code=result["telegram"].get("code"),
+                               error=result["telegram"].get("error"))
     if "youtube" in targets and "youtube" not in result:
         gate = gates.get("youtube") or {}
         if not gate.get("ok"):
@@ -1879,7 +1898,14 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
                         datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc))
                 result["youtube"] = item
             except Exception as e:
-                result["youtube"] = {"ok": False, "error": str(e)}
+                result["youtube"] = {"ok": False, "error": friendly_error(e)}
+                AUDIT.append_event("youtube_share_check", jid, ok=False, error=error_detail(e))
+            AUDIT.append_event("publish_result", jid, target="youtube",
+                               ok=result["youtube"].get("ok") is True,
+                               code=result["youtube"].get("code"),
+                               video_id=str(result["youtube"].get("id") or "")[:40],
+                               privacy=str(privacy or "")[:20],
+                               error=result["youtube"].get("error"))
     job.setdefault("publish", {}).update(result)
     job.update(title=title, description=desc, tags=tags)
     _persist()
@@ -1944,6 +1970,16 @@ def api_publish(jid: str, payload: dict):
             PUBLISHING.discard(jid)
 
 
+@app.get("/api/jobs/{jid}/audit")
+def api_job_audit(jid: str):
+    """قراءة فقط: آخر أحداث التدقيق لهذه المهمة. لا يغيّر أي قرار نشر."""
+    with _lock:
+        if jid not in JOBS:
+            raise HTTPException(404, "job not found")
+    return {"ok": True, "events": AUDIT.read_events(job_id=jid, limit=100),
+            "summary": AUDIT.summarize(AUDIT.read_events(job_id=jid, limit=100))}
+
+
 @app.post("/api/jobs/{jid}/youtube-status")
 def api_youtube_status(jid: str):
     with _lock:
@@ -1961,8 +1997,13 @@ def api_youtube_status(jid: str):
         from reelkit.publish.youtube import YouTubeUploader
         status = YouTubeUploader().video_status(video_id)
     except Exception as e:
-        raise HTTPException(
-            502, f"تعذّر فحص حالة YouTube ({type(e).__name__}). تحقق من الاتصال وربط الحساب.") from e
+        AUDIT.append_event("youtube_status_check", jid, ok=False,
+                           video_id=video_id, error=error_detail(e))
+        raise HTTPException(502, friendly_error(
+            e, f"تعذّر فحص حالة YouTube ({type(e).__name__}). تحقق من الاتصال وربط الحساب.")) from e
+    AUDIT.append_event("youtube_status_check", jid, ok=True, video_id=video_id,
+                       privacy=str((status or {}).get("privacy") or "")[:20],
+                       state=str((status or {}).get("state") or "")[:40])
     if not isinstance(status, dict):
         raise HTTPException(502, "أعاد YouTube حالة غير صالحة")
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
