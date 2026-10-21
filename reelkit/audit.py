@@ -23,6 +23,10 @@ EVENT_TYPES = {
     "rights_gate_denied",
     "publish_result",
     "youtube_status_check",
+    # سجّلت بعد استخدامها في dashboard.py بدون تسجيل — كان append_event يرمي
+    # ValueError داخل معالج فشل النشر نفسه فيُفقَد ردّ النشر الأصلي للمستخدم.
+    "youtube_share_check",
+    "telegram_share_check",
 }
 MAX_VALUE_CHARS = 200
 MAX_EVENTS = 5000

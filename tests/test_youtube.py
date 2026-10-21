@@ -73,7 +73,7 @@ def install_google_stubs(monkeypatch):
     class HttpError(Exception):
         pass
 
-    class ResumableUploadError(Exception):
+    class ResumableUploadError(HttpError):   # في الواقع ابن لـHttpError
         pass
 
     http.MediaFileUpload = MediaFileUpload

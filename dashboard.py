@@ -117,6 +117,7 @@ def save_cfg():
             tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, CONFIG_FILE)
             CFG.update(merged)          # مزامنة الذاكرة مع القرص
+        _backup_state(force=True)       # نسخة احتياطية دوّارة للإعدادات بلا الأسرار
         return True
     except Exception:
         return False
@@ -153,6 +154,33 @@ AUTOMATION_STATE_FILE = OUT / "automation_state.json"
 _automation_stop = threading.Event()
 _automation_thread = None
 _automation_runtime = {"status": "stopped", "last_cycle": None, "last_error": "", "queued": 0}
+_BACKUPS_DIR = OUT / "backups"
+_last_backup = 0.0
+_BACKUP_EVERY = 600.0            # seconds: at most one backup per 10 minutes
+_BACKUP_KEEP = 20                # keep the last 20 copies per file
+
+def _backup_state(force=False, root=None):
+    """Rotating backups for jobs.json and config.json (secrets redacted).
+
+    Called after each successful disk write, throttled for non-forced calls.
+    Failures never interrupt the app; config secrets are masked first so no
+    full secret value is ever stored inside a backup.
+    """
+    global _last_backup
+    try:
+        now = time.time()
+        if not force and now - _last_backup < _BACKUP_EVERY:
+            return
+        _last_backup = now
+        base = Path(root) if root else _BACKUPS_DIR
+        base.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        from reelkit.backup import backup_file
+        backup_file(JOBS_FILE, backup_dir=base, keep=_BACKUP_KEEP, suffix=stamp)
+        backup_file(CONFIG_FILE, backup_dir=base, keep=_BACKUP_KEEP, suffix=stamp,
+                    redact=lambda data: masked(data) if isinstance(data, dict) else data)
+    except Exception:
+        pass
 
 def _persist(force=True):
     global _last_persist
@@ -174,6 +202,7 @@ def _persist(force=True):
                 # os.replace داخل القفل: خارجه قد يستبدل خيطان بترتيب معكوس
                 # فيُكتب snapshot أقدم فوق الأحدث.
                 os.replace(tmp, JOBS_FILE)
+                _backup_state(force=force)
             finally:
                 if os.path.exists(tmp):
                     try:
@@ -1421,6 +1450,21 @@ def _create(payload):
                      "label": os.path.basename(src), "status": "queued", "stage": "في الانتظار",
                      "progress": 0, "created": time.time(), "options": payload,
                      "title": "", "description": "", "tags": [], "publish": {}}
+    try:                        # ⏱️ تقدير زمن الرندر قبل البدء (heuristic فقط)
+        from reelkit.estimate import estimate_render_seconds
+        _meta = _probe_meta(src)
+        _rp = payload.get("replay")
+        JOBS[jid]["estimate"] = estimate_render_seconds(
+            _meta.get("duration") or 0,
+            quality=str(payload.get("quality", "auto")),
+            split_screen=payload.get("layout") == "split",
+            replay=bool(_rp) and str(_rp).lower() != "off",
+            engine=str(payload.get("engine", "pro")),
+            gpu=str(CFG.get("device", "")).lower().find("cuda") >= 0,
+            max_duration=float(payload.get("max_dur") or 0),
+        )
+    except Exception:
+        pass
     _persist()
     def _runner():
         jj = JOBS.get(jid)
@@ -1978,6 +2022,110 @@ def api_job_audit(jid: str):
             raise HTTPException(404, "job not found")
     return {"ok": True, "events": AUDIT.read_events(job_id=jid, limit=100),
             "summary": AUDIT.summarize(AUDIT.read_events(job_id=jid, limit=100))}
+
+@app.get("/api/audit")
+def api_audit(limit: int = 200):
+    """سجل تدقيق زمني لكل المهام (قراءة فقط). لا يغيّر أي قرار نشر."""
+    limit = max(1, min(int(limit or 200), 1000))
+    events = AUDIT.read_events(limit=limit)
+    return {"ok": True, "events": events, "summary": AUDIT.summarize(events)}
+
+
+def _job_report_markdown(job):
+    """تقرير تصدير لمهمة واحدة: الحالة + الجودة + الحقوق + النشر. وقائع فقط."""
+    lines = [f"# تقرير المهمة {job.get('id', '')}"]
+    lines.append("")
+    lines.append(f"- الحالة: {job.get('status', '')} — {job.get('stage', '')}")
+    lines.append(f"- المصدر: {job.get('label', job.get('input', ''))}")
+    lines.append(f"- الناتج: {job.get('output', '')}")
+    if job.get("created"):
+        created = datetime.fromtimestamp(float(job["created"]), timezone.utc)
+        lines.append(f"- أُنشئت: {created.isoformat(timespec='seconds')} (UTC)")
+    if job.get("elapsed"):
+        lines.append(f"- زمن التنفيذ: {job['elapsed']}s")
+    q = job.get("quality_report")
+    if isinstance(q, dict):
+        lines.append("")
+        lines.append("## فحص الجودة")
+        lines.append(f"- النتيجة: {'سليم ✅' if q.get('ok') else 'فيه مشاكل ⚠️'}")
+        lines.append(f"- الأبعاد: {q.get('width')}x{q.get('height')} | المدة: {q.get('duration')}s | FPS: {q.get('fps')}")
+        lines.append(f"- فيديو: {'نعم' if q.get('video') else 'لا'} | صوت: {'نعم' if q.get('audio') else 'لا'}")
+        for issue in (q.get("issues") or []):
+            lines.append(f"- مشكلة: {issue}")
+    r = job.get("rights_review")
+    if isinstance(r, dict):
+        lines.append("")
+        lines.append("## نموذج الحقوق")
+        lines.append(f"- النموذج مكتمل: {'نعم' if r.get('form_complete') else 'لا'}")
+        lines.append(f"- أساس الاستخدام: {r.get('rights_basis', '')}")
+        lines.append(f"- مرجع المصدر: {r.get('source_reference', '')}")
+        if r.get("submitted_at"):
+            lines.append(f"- آخر إرسال: {r['submitted_at']}")
+        if r.get("manifest_error"):
+            lines.append(f"- ملاحظة manifest: {r['manifest_error']}")
+    p = job.get("publish")
+    if isinstance(p, dict) and p:
+        lines.append("")
+        lines.append("## النشر")
+        yt = p.get("youtube")
+        if isinstance(yt, dict):
+            lines.append(f"- YouTube: id={yt.get('id', '')} خصوصية={yt.get('privacy', '')}")
+            st = yt.get("status")
+            if isinstance(st, dict):
+                lines.append(f"- حالة YouTube: {st.get('upload_status', '')} / {st.get('privacy_status', '')} / {st.get('processing_status', '')}")
+            if yt.get("status_checked_at"):
+                lines.append(f"- آخر فحص: {yt['status_checked_at']}")
+        tg = p.get("telegram")
+        if isinstance(tg, dict):
+            lines.append(f"- Telegram: {'نجح' if tg.get('ok') else 'فشل'}")
+        for k, v in p.items():
+            if k not in ("youtube", "telegram") and isinstance(v, dict):
+                lines.append(f"- {k}: {'نجح' if v.get('ok') else 'فشل'}")
+    lines.append("")
+    lines.append("> هذا التقرير يوثّق وقائع المهمة فقط — لا يثبت الملكية ولا يمنح ترخيصاً ولا يعفي من مراجعة YouTube Studio.")
+    return "\n".join(lines)
+
+
+@app.get("/api/jobs/{jid}/report")
+def api_job_report(jid: str):
+    """تصدير تقرير مهمة واحدة (جودة + حقوق + نشر) — قراءة فقط."""
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        report = _job_report_markdown(dict(job))
+    return Response(report, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="job-{jid}-report.md"'})
+
+
+@app.get("/audit", response_class=HTMLResponse)
+def api_audit_page():
+    """صفحة سجل الحقوق/التدقيق الزمني (قراءة فقط)."""
+    html = """<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>سجل التدقيق والحقوق</title><style>
+body{font-family:system-ui,'Segoe UI',sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:24px}
+h1{font-size:20px}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 10px;border-bottom:1px solid #262b36;text-align:right;white-space:nowrap}
+th{color:#9fb0c3;background:#161a22;position:sticky;top:0}
+.tag{padding:2px 8px;border-radius:6px;font-size:12px;background:#1d2430;display:inline-block}
+.ok{color:#5bd6a2}.bad{color:#ff8080}.muted{color:#8b93a3}
+</style></head><body>
+<h1>📜 سجل التدقيق الزمني</h1>
+<p class="muted">قراءة فقط — يوثّق قرارات النشر ونتائج بوابة الحقوق. لا يثبت الملكية ولا يمنح ترخيصاً.</p>
+<table><thead><tr><th>الوقت</th><th>الحدث</th><th>المهمة</th><th>النتيجة</th><th>تفاصيل</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">جارٍ التحميل…</td></tr></tbody></table>
+<script>
+fetch('/api/audit?limit=500').then(r=>r.json()).then(d=>{
+  const rows=document.getElementById('rows');
+  const ev=d.events||[];
+  if(!ev.length){rows.innerHTML='<tr><td colspan="5" class="muted">لا أحداث بعد</td></tr>';return}
+  rows.innerHTML=ev.map(e=>{const ok=e.ok===true?'<span class="ok">نجح</span>':e.ok===false?'<span class="bad">فشل</span>':'<span class="muted">—</span>';
+  const det=Object.entries(e).filter(([k])=>!['ts','event','job_id','ok'].includes(k)).map(([k,v])=>k+'='+String(v)).join(' | ');
+  return '<tr><td>'+(e.ts||'')+'</td><td><span class="tag">'+(e.event||'')+'</span></td><td>'+(e.job_id||'')+'</td><td>'+ok+'</td><td class="muted">'+det+'</td></tr>'}).join('')
+}).catch(()=>{document.getElementById('rows').innerHTML='<tr><td colspan="5" class="bad">تعذر تحميل السجل</td></tr>'})
+</script></body></html>"""
+    return HTMLResponse(html)
 
 
 @app.post("/api/jobs/{jid}/youtube-status")

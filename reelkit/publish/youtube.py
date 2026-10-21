@@ -129,6 +129,31 @@ def finish_auth(code, client_secret=None, redirect_uri=LOOPBACK,
         pass
     return tp
 
+# حدود YouTube الرسمية (Data API v3): رفض ما يتجاوزها برسالة عربية واضحة
+# بدل القطع الصامت الذي كان يخفي جزءاً من العنوان أو الوصف دون علم المستخدم.
+TITLE_MAX = 100
+DESCRIPTION_MAX = 5000
+
+
+def validate_upload_limits(title, description=""):
+    """يتحقق من حدود العنوان والوصف ويرفع ValueError برسالة إصلاح عربية.
+
+    ملاحظة: حدّ الوسوم (30 وسمًا) يبقى مُقصّاً تلقائياً كما في السلوك السابق،
+    ومجموع أحرف الوسوم > 480 يُرفض في upload() برسالة قائمة.
+    """
+    title = str(title or "").strip()
+    if len(title) > TITLE_MAX:
+        raise ValueError(
+            f"العنوان أطول من حد YouTube ({TITLE_MAX} حرفاً) بطوله {len(title)} "
+            "— اختصر العنوان (اقتراح تلقائي متاح من زر «اقترح عنواناً» في اللوحة)")
+    description = str(description or "")
+    if len(description) > DESCRIPTION_MAX:
+        raise ValueError(
+            f"الوصف أطول من حد YouTube ({DESCRIPTION_MAX} حرفاً) بطوله {len(description)} "
+            "— اختصر الوصف أو انقل التفاصيل إلى أول تعليق على الفيديو")
+    return True
+
+
 class YouTubeUploader:
     def __init__(self, client_secret="client_secret.json", token_path="token.json"):
         here = os.path.dirname(os.path.abspath(__file__))
@@ -252,6 +277,7 @@ class YouTubeUploader:
         title = str(title or "").strip()
         if not title:
             raise ValueError("عنوان فيديو YouTube مطلوب")
+        validate_upload_limits(title, description)   # فشل سريع قبل أي بوابة أو مصادقة
         if privacy not in {"private", "unlisted", "public"}:
             raise ValueError("الخصوصية يجب أن تكون private أو unlisted أو public")
         from reelkit import rights as RIGHTS
@@ -280,7 +306,7 @@ class YouTubeUploader:
         if expected_channel_id:
             self.verify_channel(expected_channel_id)
         body = {
-            "snippet": {"title": title[:100], "description": description[:5000],
+            "snippet": {"title": title, "description": description,
                         "tags": list(tags)[:30], "categoryId": category_id},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids,
                         # YouTube requires this disclosure for realistic altered/synthetic
