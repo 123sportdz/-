@@ -30,3 +30,6 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+rights_manifest.json
+rights_review.json
+rights_record.json

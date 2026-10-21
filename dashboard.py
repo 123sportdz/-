@@ -63,6 +63,7 @@ def load_cfg(persist=False):
     cfg = {"brand_name": "", "brand_url": "", "show_channel_name": True,
            "telegram_token": "", "telegram_chat": "",
            "telegram_channel": "", "youtube_channel_id": "", "youtube_privacy": "private",
+           "rights_manifest": "rights_manifest.json",
            "device": "", "gemini_api_key": "", "gemini_model": "",
            "auto_ai_title": True, "auto_youtube": False, "auto_telegram": False,
            "schedule_peak": False, "auto_translate": True, "max_dur": 58,
@@ -292,6 +293,7 @@ def _automation_status():
             "upload": CFG.get("automation_upload", "none"),
             "source": CFG.get("automation_source", "telegram"),
             "folder": CFG.get("automation_folder", "watch"),
+            "rights_manifest": CFG.get("rights_manifest", "rights_manifest.json"),
             "automation_quality": CFG.get("automation_quality", "auto"),
             "automation_layout": CFG.get("automation_layout", "single"),
             "automation_subject": CFG.get("automation_subject", "action")}
@@ -389,6 +391,20 @@ def _probe_meta(path):
     except Exception:
         return {}
 
+def _quality_audio_required_from_logs(logs):
+    lines = [str(line).strip() for line in (logs or [])]
+    marker = "[quality] audio_required="
+    for line in reversed(lines):
+        if line.startswith(marker):
+            return line[len(marker):].strip().lower() == "yes"
+    return any("audio=yes" in line for line in lines)
+
+
+def _quality_output_has_audio(report, logs):
+    if isinstance(report, dict) and "audio" in report:
+        return report.get("audio") is True
+    return any("audio=yes" in str(line) for line in (logs or []))
+
 PROCS = {}          # job_id -> Popen (لإيقاف المهام قيد التشغيل)
 
 def run_job(job_id, args):
@@ -467,9 +483,9 @@ def run_job(job_id, args):
                 dims = str(next((args[i + 1] for i, x in enumerate(args) if x == "--out-size"), "1080x1920"))
                 ew, eh = (int(x) for x in dims.lower().split("x", 1))
                 md = float(next((args[i + 1] for i, x in enumerate(args) if x == "--max-dur"), "0"))
-                source_had_audio = "audio=yes" in " ".join(job.get("log") or [])
+                audio_required = _quality_audio_required_from_logs(job.get("log"))
                 _qrep = quality_check(job["output"], ew, eh, md,
-                                      audio_required=source_had_audio)
+                                      audio_required=audio_required)
                 with _lock:
                     job["quality_report"] = _qrep
                     if not _qrep["ok"]:
@@ -480,9 +496,8 @@ def run_job(job_id, args):
             try:
                 with _lock:
                     job["has_thumb"] = Path(str(job["output"]).replace(".mp4", "_thumb.jpg")).exists()
-                    _lt = " ".join(job.get("log") or [])
-                    if "audio=" in _lt:
-                        job["has_audio"] = "audio=yes" in _lt
+                    job["has_audio"] = _quality_output_has_audio(
+                        job.get("quality_report"), job.get("log"))
                     job["size"] = Path(job["output"]).stat().st_size
             except Exception:
                 pass
@@ -513,6 +528,21 @@ def run_job(job_id, args):
     _persist()
     _trim_jobs()
 
+def _load_rights_manifest_for_source(source_key):
+    from reelkit import rights as RT
+
+    manifest = Path(str(CFG.get("rights_manifest") or "rights_manifest.json")).expanduser()
+    if not manifest.is_absolute():
+        manifest = ROOT / manifest
+    try:
+        record = RT.load_rights_manifest_entry(manifest, source_key)
+    except ValueError:
+        return None, "تعذّر قراءة manifest الحقوق"
+    if record is None:
+        return None, "لا يوجد سجل حقوق مطابق تماماً لمصدر الفيديو"
+    return record, ""
+
+
 def _auto_after(job):
     """عنوان تلقائي ثم نشر تلقائي (حسب الإعدادات أو خيارات المهمة)."""
     opts = job.get("options") or {}
@@ -536,9 +566,15 @@ def _auto_after(job):
             pass
     if not meta.get("title"):
         meta = TITLEMOD.from_caption(caption, brand=brand) or TITLEMOD.suggest(job["output"], brand=brand)
-    targets = ([ "youtube" ] if want_yt else []) + ([ "telegram" ] if want_tg else [])
+    targets = (["youtube"] if want_yt else []) + (["telegram"] if want_tg else [])
+    rights_record, manifest_error = _load_rights_manifest_for_source(job.get("input") or "")
     _do_publish(job, targets, meta.get("title", ""), meta.get("description", ""),
-                meta.get("tags", []), CFG.get("youtube_privacy", "private"))
+                meta.get("tags", []), CFG.get("youtube_privacy", "private"), rights=rights_record)
+    if manifest_error:
+        if isinstance(job.get("rights_review"), dict):
+            job["rights_review"]["manifest_error"] = manifest_error
+        job.setdefault("log", []).append("⛔ " + manifest_error)
+        _persist()
     job["stage"] = "نُشر تلقائياً ✅" if all(v.get("ok") for v in (job.get("publish") or {}).values()) else "تم (راجع النشر)"
 
 
@@ -620,7 +656,7 @@ def api_config():
 # المفاتيح المسموح حفظها (كان الشرط `k in CFG` يمنع حفظ أي خيار جديد مثل جدولة الذروة!)
 ALLOWED_CFG_KEYS = {
     "brand_name", "brand_url", "show_channel_name", "telegram_token", "telegram_chat", "telegram_channel",
-    "youtube_channel_id", "youtube_privacy", "device", "gemini_api_key", "gemini_model",
+    "youtube_channel_id", "youtube_privacy", "rights_manifest", "device", "gemini_api_key", "gemini_model",
     "auto_ai_title", "auto_youtube", "auto_telegram", "schedule_peak", "auto_translate",
     "max_dur", "accent", "tracker", "zoom", "no_ai",
     "logo_path", "logo_pos", "logo_scale", "logo_opacity", "logo_plate",
@@ -838,6 +874,11 @@ def api_automation_set(payload: dict):
         if not folder:
             raise HTTPException(400, "مسار مجلد المراقبة فارغ")
         CFG["automation_folder"] = folder
+    if "rights_manifest" in payload:
+        manifest = str(payload.get("rights_manifest") or "rights_manifest.json").strip()
+        if len(manifest) > 500:
+            raise HTTPException(400, "مسار manifest الحقوق أطول من المسموح")
+        CFG["rights_manifest"] = manifest or "rights_manifest.json"
     if "interval" in payload:
         try:
             CFG["automation_interval"] = max(30, min(86400, int(payload["interval"])))
@@ -1184,6 +1225,26 @@ def _voice_payload(values):
         raise HTTPException(400, str(exc)) from None
 
 
+def _brand_args(payload):
+    import math
+
+    values = {}
+    for key, default, low, high, label in (
+            ("brand_y", 0.13, 0.025, 0.35, "موضع شارة القناة"),
+            ("brand_scale", 1.0, 0.55, 1.2, "حجم شارة القناة")):
+        raw = payload.get(key, default)
+        if isinstance(raw, bool):
+            raise ValueError(f"{label} غير صالح")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"{label} غير صالح") from None
+        if not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"{label} يجب أن يكون بين {low} و{high}")
+        values[key] = value
+    return ["--brand-y", str(values["brand_y"]), "--brand-scale", str(values["brand_scale"])]
+
+
 def _make_args(payload, src, out):
     args = ["-i", src, "-o", str(out),
             "--subject", payload.get("subject", "action"),
@@ -1192,6 +1253,11 @@ def _make_args(payload, src, out):
             "--imgsz", str(payload.get("imgsz", 1280)),
             "--quality", payload.get("quality", "auto"),
             "--layout", payload.get("layout", "single")]
+    try:
+        args += _brand_args(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
     show_channel_name = payload.get("show_channel_name", CFG.get("show_channel_name", True))
     if not isinstance(show_channel_name, bool):
         raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
@@ -1298,6 +1364,10 @@ def _create(payload):
     if not isinstance(show_channel_name, bool):
         raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
     payload["show_channel_name"] = show_channel_name
+    try:
+        _brand_args(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     voice = _voice_payload(payload)
     payload.update(voice)
     if voice["commentary_script"]:
@@ -1675,9 +1745,28 @@ def api_suggest(jid: str, payload: dict | None = None):
     _persist()
     return s
 
-def _record_rights_review(job, rights, privacy, gate):
+def _record_rights_review(job, rights, gates, targets):
     rights = rights if isinstance(rights, dict) else {}
-    errors = (gate or {}).get("errors") or []
+    gates = gates if isinstance(gates, dict) else {}
+    targets = [target for target in targets if target in {"youtube", "telegram"}]
+    target_reviews = {}
+    errors = []
+    for target in targets:
+        gate = gates.get(target)
+        if not isinstance(gate, dict):
+            continue
+        gate_errors = [str(error)[:200] for error in (gate.get("errors") or [])[:20]]
+        errors.extend(gate_errors)
+        target_reviews[target] = {
+            "ok": gate.get("ok") is True,
+            "privacy": str(gate.get("privacy") or ("public" if target == "telegram" else "private"))[:20],
+            "upload_privacy": str(gate.get("upload_privacy") or ("public" if target == "telegram" else "private"))[:20],
+            "scheduled": gate.get("scheduled") is True,
+            "review_only": gate.get("review_only") is True,
+            "target_scope_confirmed": gate.get("target_scope_confirmed") is True,
+            "gate_errors": gate_errors,
+        }
+    primary = gates.get("youtube") or gates.get("telegram") or {}
     job["rights_review"] = {
         "basis": str(rights.get("rights_basis") or "unknown")[:40],
         "source_reference": str(rights.get("source_reference") or "")[:1000],
@@ -1685,11 +1774,17 @@ def _record_rights_review(job, rights, privacy, gate):
         "visual_rights_confirmed": rights.get("visual_rights_confirmed") is True,
         "audio_rights_confirmed": rights.get("audio_rights_confirmed") is True,
         "evidence_reviewed": rights.get("evidence_reviewed") is True,
+        "youtube_scope_confirmed": rights.get("youtube_scope_confirmed") is True,
+        "telegram_scope_confirmed": rights.get("telegram_scope_confirmed") is True,
         "rights_acknowledged": rights.get("rights_acknowledged") is True,
         "contains_synthetic_media": rights.get("contains_synthetic_media") is True,
-        "privacy": str(privacy or "private")[:20],
-        "form_complete": bool((gate or {}).get("ok")),
-        "gate_errors": [str(error)[:200] for error in errors[:20]],
+        "targets": targets,
+        "target_reviews": target_reviews,
+        "privacy": str(primary.get("privacy") or "private")[:20],
+        "upload_privacy": str(primary.get("upload_privacy") or primary.get("privacy") or "private")[:20],
+        "scheduled": primary.get("scheduled") is True,
+        "form_complete": bool(target_reviews) and all(item["ok"] for item in target_reviews.values()),
+        "gate_errors": errors[:20],
         "submitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     return job["rights_review"]
@@ -1729,55 +1824,67 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
 
 def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
     result = {}
-    rights = rights or {}
+    rights = rights if isinstance(rights, dict) else {}
     quality_failure = _quality_gate(job)
     if quality_failure:
         result.update({target: dict(quality_failure) for target in targets})
         job.setdefault("publish", {}).update(result)
         _persist()
         return result
-    if "youtube" in targets:
+    gates = {}
+    if "youtube" in targets or "telegram" in targets:
         from reelkit import rights as RT
-        gate = RT.validate_youtube_publish(rights, privacy=privacy)
-        _record_rights_review(job, rights, privacy, gate)
+        if "youtube" in targets:
+            gates["youtube"] = RT.validate_youtube_publish(
+                rights, privacy=privacy, scheduled=bool(publish_at))
+        if "telegram" in targets:
+            gates["telegram"] = RT.validate_public_distribution(rights)
+        review = _record_rights_review(job, rights, gates, targets)
         _persist()
-        if not gate["ok"]:
-            result["youtube"] = {"ok": False, "code": "rights_gate",
-                                  "error": " | ".join(gate["errors"]),
-                                  "details": gate}
-    # 🔧 تحقق من صيغة الجدولة **قبل** أي رفع — كان strptime يعمل بعد رفع يوتيوب
-    # فيُبلَّغ «فشل» رغم أن الفيديو صار على القناة فعلاً (v1.44).
-    if publish_at:
+    if publish_at and "youtube" in targets:
         try:
             datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ")
         except (TypeError, ValueError):
-            return {"youtube": {"ok": False, "error":
-                    f"صيغة الجدولة غير صالحة: {publish_at!r} — المطلوب ISO مثل 2026-10-04T19:00:00Z"}}
+            result["youtube"] = {"ok": False, "error":
+                    f"صيغة الجدولة غير صالحة: {publish_at!r} — المطلوب ISO مثل 2026-10-04T19:00:00Z"}
     if "telegram" in targets:
-        try:
-            bot = TelegramBot(CFG["telegram_token"], CFG["telegram_chat"])
-            r = bot.send_video(job["output"], caption=title + ("\n\n" + desc if desc else ""))
-            result["telegram"] = {"ok": True, "message_id": r.get("message_id")}
-        except Exception as e:
-            result["telegram"] = {"ok": False, "error": str(e)}
+        gate = gates.get("telegram") or {}
+        if not gate.get("ok"):
+            result["telegram"] = {"ok": False, "code": "rights_gate",
+                                  "error": " | ".join(gate.get("errors") or []), "details": gate}
+        else:
+            try:
+                bot = TelegramBot(CFG["telegram_token"], CFG["telegram_chat"])
+                r = bot.send_video(job["output"], caption=title + ("\n\n" + desc if desc else ""))
+                result["telegram"] = {"ok": True, "message_id": r.get("message_id")}
+            except Exception as e:
+                result["telegram"] = {"ok": False, "error": str(e)}
     if "youtube" in targets and "youtube" not in result:
-        try:
-            from reelkit.publish.youtube import YouTubeUploader
-            r = YouTubeUploader().upload(job["output"], title, desc, tags, privacy=privacy,
-                                         publish_at=publish_at,
-                                         expected_channel_id=CFG.get("youtube_channel_id") or None,
-                                         contains_synthetic_media=rights.get("contains_synthetic_media") is True)
-            item = {"ok": True, "id": r.get("id"), "url": f"https://youtu.be/{r.get('id')}"}
-            if publish_at:
-                item["scheduled_for"] = publish_at
-                item["scheduled_local"] = SCH.describe(
-                    datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc))
-            result["youtube"] = item
-        except Exception as e:
-            result["youtube"] = {"ok": False, "error": str(e)}
+        gate = gates.get("youtube") or {}
+        if not gate.get("ok"):
+            result["youtube"] = {"ok": False, "code": "rights_gate",
+                                  "error": " | ".join(gate.get("errors") or []), "details": gate}
+        else:
+            try:
+                from reelkit.publish.youtube import YouTubeUploader
+                r = YouTubeUploader().upload(job["output"], title, desc, tags, privacy=privacy,
+                                             publish_at=publish_at,
+                                             expected_channel_id=CFG.get("youtube_channel_id") or None,
+                                             contains_synthetic_media=rights.get("contains_synthetic_media") is True,
+                                             rights=rights)
+                item = {"ok": True, "id": r.get("id"), "url": f"https://youtu.be/{r.get('id')}"}
+                if publish_at:
+                    item["scheduled_for"] = publish_at
+                    item["scheduled_local"] = SCH.describe(
+                        datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc))
+                result["youtube"] = item
+            except Exception as e:
+                result["youtube"] = {"ok": False, "error": str(e)}
     job.setdefault("publish", {}).update(result)
     job.update(title=title, description=desc, tags=tags)
     _persist()
+    if "rights_review" in job:
+        result["rights_review"] = job["rights_review"]
     return result
 
 
@@ -1793,6 +1900,7 @@ def api_publish(jid: str, payload: dict):
     if not isinstance(rights, dict):
         raise HTTPException(400, "بيانات مراجعة الحقوق غير صالحة")
     boolean_fields = ("visual_rights_confirmed", "audio_rights_confirmed", "evidence_reviewed",
+                      "youtube_scope_confirmed", "telegram_scope_confirmed",
                       "rights_acknowledged", "contains_synthetic_media")
     if any(field in rights and not isinstance(rights[field], bool) for field in boolean_fields):
         raise HTTPException(400, "حقول التأكيد والإفصاح الاصطناعي يجب أن تكون قيماً منطقية")
@@ -1818,15 +1926,15 @@ def api_publish(jid: str, payload: dict):
         elif mode and mode not in ("now", "peak", "off"):
             publish_at = mode
             privacy = "private"
-        if "youtube" in targets:
+        if targets == ["youtube"]:
             from reelkit import rights as RT
-            gate = RT.validate_youtube_publish(rights, privacy=privacy)
+            gate = RT.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
             if not gate["ok"]:
-                _record_rights_review(job, rights, privacy, gate)
+                review = _record_rights_review(job, rights, {"youtube": gate}, targets)
                 _persist()
                 return {"youtube": {"ok": False, "code": "rights_gate",
-                                     "error": " | ".join(gate["errors"]),
-                                     "details": gate}}
+                                     "error": " | ".join(gate["errors"]), "details": gate},
+                        "rights_review": review}
         return _do_publish_once(job, targets,
                                 payload.get("title") or job.get("title") or "مقطع رياضي",
                                 payload.get("description", ""), payload.get("tags", []),
@@ -2022,7 +2130,12 @@ async def api_preview(payload: dict):
     except Exception as e:
         raise HTTPException(400, f"تعذّر جلب المقطع: {str(e)[:120]}")
     outp = OUT / "preview.mp4"
-    args = ["-i", local, "-o", str(outp), "--preview", "--quality", "fast"]
+    try:
+        brand_args = _brand_args(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    args = ["-i", local, "-o", str(outp), "--preview", "--quality", "fast", *brand_args]
+
     show_channel_name = payload.get("show_channel_name", CFG.get("show_channel_name", True))
     if not isinstance(show_channel_name, bool):
         raise HTTPException(400, "قيمة إظهار اسم القناة يجب أن تكون صحيحة أو خاطئة")
@@ -2839,6 +2952,13 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         <option value="off">بلا تقريب</option>
         <option value="1.15">1.15× ثابت</option></select></div>
     </div>
+    <div class="row voice-grid" style="margin-top:8px">
+      <div class="voice-range"><label for="brand_y">موضع شارة القناة <output id="brand_y_value">13.0% من الأعلى</output></label>
+        <input id="brand_y" type="range" min="3" max="35" value="13" step="0.5"></div>
+      <div class="voice-range"><label for="brand_scale">حجم شارة القناة <output id="brand_scale_value">100%</output></label>
+        <input id="brand_scale" type="range" min="55" max="120" value="100" step="5"></div>
+      <div class="voice-note">الافتراضي 13% لتقليل التداخل مع لوحة النتيجة؛ حرّك الشارة إذا لزم. علامات البث الأصلية تبقى كما هي. تغيير الشارة أو كتم صوت المباراة لا يمنح حق استخدام الفيديو ولا يضمن غياب المطالبات.</div>
+    </div>
     <div class="row">
       <div><label>البداية (mm:ss)</label><input id="start" placeholder="اتركه فاضي = من البداية"></div>
       <div><label>النهاية (mm:ss)</label><input id="end" placeholder="اتركه فاضي = للنهاية"></div>
@@ -3090,6 +3210,9 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <input id="autoChannel" placeholder="@OffsideOffside1">
     <label>مجلد المراقبة المحلي</label>
     <input id="autoFolder" value="watch" placeholder="watch أو C:\\Videos\\incoming">
+    <label>ملف مراجعة الحقوق لمصادر النشر التلقائي</label>
+    <input id="autoRightsManifest" value="rights_manifest.json" placeholder="rights_manifest.json أو مسار كامل">
+    <div class="voice-note">يجب أن يطابق كل سجل رابط المصدر حرفياً. عند غياب السجل أو نقص الحقوق لن يُرسل الفيديو إلى وجهة عامة.</div>
     <div class="row">
       <div><label>الفحص كل (ثانية)</label><input id="autoInterval" type="number" min="30" value="300"></div>
       <div><label>عدد الرسائل في كل دورة</label><input id="autoLimit" type="number" min="1" max="50" value="5"></div>
@@ -3473,6 +3596,7 @@ async function loadAutomation(){
     $("autoSource").value=r.source||"telegram";
     $("autoChannel").value=r.channel||CFG.telegram_channel||"";
     $("autoFolder").value=r.folder||"watch";
+    $("autoRightsManifest").value=r.rights_manifest||"rights_manifest.json";
     $("autoInterval").value=r.interval||300; $("autoLimit").value=r.limit||5;
     $("autoUpload").value=r.upload||"none";
     $("autoQuality").value=r.automation_quality||"auto";
@@ -3493,7 +3617,7 @@ async function loadAutomation(){
 }
 async function saveAutomation(enabled){
   const body={enabled,source:$("autoSource").value,folder:$("autoFolder").value.trim(),channel:$("autoChannel").value.trim(),interval:+$("autoInterval").value,
-    limit:+$("autoLimit").value,upload:$("autoUpload").value,quality:$("autoQuality").value,
+    rights_manifest:$("autoRightsManifest").value.trim(),limit:+$("autoLimit").value,upload:$("autoUpload").value,quality:$("autoQuality").value,
     layout:$("autoLayout").value,subject:$("autoSubject").value};
   const r=await fetch("/api/automation",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const j=await r.json(); if(!r.ok){toast(j.detail||"فشل حفظ الأتمتة","err");return;}
@@ -3579,6 +3703,7 @@ async function start(){
     no_retry:$("retry")?!$("retry").checked:false,
     ...voiceOpts(),
     show_channel_name:$("showChannelName")?$("showChannelName").checked:true,
+    brand_y:Number($("brand_y").value)/100,brand_scale:Number($("brand_scale").value)/100,
     keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};
   $("goBtn").disabled=true;$("goBtn").innerHTML='<span class="spin"></span> جاري الإرسال…';
   try{
@@ -3830,6 +3955,22 @@ function initVoiceControls(){
   $("commentary_script").addEventListener("input",()=>{if($("commentary_script").value.trim())$("commentary").checked=true;});
   updateVoiceControls(false);
 }
+function updateBrandControls(save=true){
+  const y=Number($("brand_y").value),scale=Number($("brand_scale").value);
+  $("brand_y_value").textContent=y.toFixed(1)+"% من الأعلى";
+  $("brand_scale_value").textContent=scale+"%";
+  if(save){try{localStorage.setItem("elhadath_badge_v2",JSON.stringify({brand_y:y,brand_scale:scale}));}catch(e){}}
+}
+function initBrandControls(){
+  try{
+    const saved=JSON.parse(localStorage.getItem("elhadath_badge_v2")||"{}");
+    if(Number.isFinite(Number(saved.brand_y))&&Number(saved.brand_y)>=3&&Number(saved.brand_y)<=35)$("brand_y").value=String(saved.brand_y);
+    if(Number.isFinite(Number(saved.brand_scale))&&Number(saved.brand_scale)>=55&&Number(saved.brand_scale)<=120)$("brand_scale").value=String(saved.brand_scale);
+  }catch(e){}
+  ["brand_y","brand_scale"].forEach(id=>$(id).addEventListener("input",()=>updateBrandControls()));
+  updateBrandControls(false);
+}
+
 function applyVoicePreset(name){
   const presets={
     broadcast:{commentary_style:"broadcast",commentary_energy:82,voice_engine:"auto",edge_voice:"ar-DZ-IsmaelNeural",gemini_voice:"Fenrir",voice_rate:10,voice_pitch:0,voice_gain:1.9,voice_duck:0.22,voice_mix:"auto"},
@@ -3869,6 +4010,7 @@ function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").val
   no_retry:$("retry")?!$("retry").checked:false,
   ...voiceOpts(),
   show_channel_name:$("showChannelName")?$("showChannelName").checked:true,
+  brand_y:Number($("brand_y").value)/100,brand_scale:Number($("brand_scale").value)/100,
   auto_youtube:$("autoyt").checked,auto_telegram:$("autotg").checked,
   keep_watermarks:!$("rmwl").checked,show_trail:$("trail").checked};}
 
@@ -3928,7 +4070,8 @@ async function preview(){
   try{
     const r=await fetch("/api/preview",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({input:src,caption:$("cap")?$("cap").value:"",
-        show_channel_name:$("showChannelName")?$("showChannelName").checked:true})});
+        show_channel_name:$("showChannelName")?$("showChannelName").checked:true,
+        brand_y:Number($("brand_y").value)/100,brand_scale:Number($("brand_scale").value)/100})});
     const j=await r.json();
     if(!r.ok)throw new Error(j.detail||"فشل");
     $("mbox").innerHTML=`<h3>🖼️ معاينة الهوية</h3>`+
@@ -4155,18 +4298,32 @@ function rightsReviewMarkup(r){
   if(!r)return "";
   const bases={own:"أملك حقوق الصورة والصوت",licensed:"لدي ترخيص",permission:"لدي إذن مكتوب",public_domain:"ملك عام / ترخيص يسمح بالاستخدام",unknown:"غير متأكد"};
   const privacy={private:"خاص",unlisted:"غير مدرج",public:"عام"};
+  const targetNames={youtube:"YouTube",telegram:"Telegram"};
   const yes=v=>v===true?"نعم":v===false?"لا":"غير مسجل";
   const state=r.form_complete===true?"اكتملت متطلبات النموذج":r.form_complete===false?"لم تكتمل متطلبات النموذج":"غير مسجلة";
   const errors=Array.isArray(r.gate_errors)?r.gate_errors:[];
+  const targetReviews=r.target_reviews&&typeof r.target_reviews==="object"?r.target_reviews:{};
+  const targets=Array.isArray(r.targets)?r.targets.filter(t=>targetNames[t]):[];
+  const targetRows=targets.map(target=>{
+    const check=targetReviews[target]||{};
+    const result=check.ok===true?"اجتازت البوابة":check.ok===false?"أوقفتها البوابة":"غير مسجلة";
+    const distribution=target==="telegram"?"إرسال عام":`خصوصية الرفع: ${esc(privacy[check.upload_privacy||check.privacy]||check.upload_privacy||check.privacy||"غير مسجلة")}${check.scheduled?` · النشر النهائي مجدول كـ${esc(privacy[check.privacy]||check.privacy||"عام")}`:""}`;
+    const scope=check.target_scope_confirmed===true?"نطاق الوجهة مؤكد":check.review_only?"مراجعة خاصة؛ تأكيد النطاق غير مطلوب":"نطاق الوجهة غير مؤكد";
+    const targetErrors=Array.isArray(check.gate_errors)?check.gate_errors:[];
+    return `<div><b>${targetNames[target]}:</b> ${result} · ${distribution} · ${scope}${targetErrors.length?`<br>المطلوب: ${targetErrors.map(esc).join(" · ")}`:""}</div>`;
+  }).join("");
+  const legacyPrivacy=targetRows?"":`<div style="margin-top:5px">خصوصية الرفع: <b>${esc(privacy[r.upload_privacy||r.privacy]||r.upload_privacy||r.privacy||"غير مسجل")}</b>${r.scheduled?` · النشر النهائي مجدول كـ${esc(privacy[r.privacy]||r.privacy||"عام")}`:""}</div>`;
   return `<div class="warn" style="margin:8px 0;border-color:#c59b45">
     <b>آخر سجل لمراجعة الحقوق</b>
-    <div style="margin-top:5px">حالة البوابة: <b>${state}</b> · الخصوصية: <b>${esc(privacy[r.privacy]||r.privacy||"غير مسجل")}</b></div>
+    <div style="margin-top:5px">حالة النموذج: <b>${state}</b></div>${targetRows||legacyPrivacy}
     <div>أساس الاستخدام: ${esc(bases[r.basis]||r.basis||"غير مسجل")}</div>
     <div>مصدر المحتوى: ${esc(r.source_reference||"—")}</div>
     <div>مرجع الترخيص/الإذن: ${esc(r.evidence_reference||"—")}</div>
     <div>مراجعة الصورة: ${yes(r.visual_rights_confirmed)} · مراجعة الصوت: ${yes(r.audio_rights_confirmed)} · مراجعة المرجع: ${yes(r.evidence_reviewed)}</div>
+    <div>نطاق YouTube: ${yes(r.youtube_scope_confirmed)} · نطاق Telegram: ${yes(r.telegram_scope_confirmed)}</div>
+    ${r.manifest_error?`<div>سجل الحقوق: ${esc(r.manifest_error)}</div>`:""}
     <div>إقرار التنبيه: ${yes(r.rights_acknowledged)} · إفصاح المحتوى الاصطناعي: ${yes(r.contains_synthetic_media)}</div>
-    ${errors.length?`<div>المطلوب: ${errors.map(esc).join(" · ")}</div>`:""}
+    ${errors.length&&!targetRows?`<div>المطلوب: ${errors.map(esc).join(" · ")}</div>`:""}
     <div style="font-size:11px;color:var(--mut)">هذا السجل يوثّق الإجابات المقدّمة فقط؛ لا يثبت الملكية أو الترخيص.</div>
     ${r.submitted_at?`<div style="font-size:11px;color:var(--mut)">وقت التسجيل: ${esc(r.submitted_at)}</div>`:""}
   </div>`;
@@ -4311,11 +4468,11 @@ function openJob(id){
         <div class="acts">
           <button class="btn sec sm" onclick="sug('${j.id}')">✨ اقترح عنوان</button>
           <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['telegram'],this)">📤 تيليجرام</button>
-          <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['youtube'],this)">▶️ مراجعة YouTube</button>
+          <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['youtube'],this)">▶️ رفع إلى YouTube</button>
         </div>
         <div id="rightsReviewPanel" data-job-id="${esc(j.id)}">${rightsReviewMarkup(j.rights_review)}</div>
         <div id="m_res" data-job-id="${esc(j.id)}">${youtubeStatusPanel(j.publish,j.id)}</div>
-        <div class="warn">⚠️ رفع يوتيوب عبر API يبقى <b>private</b> حتى يجتاز مشروعك تدقيق YouTube.</div>
+        <div class="warn">⚠️ سجل الحقوق يوثّق إجاباتك فقط؛ لا يثبت الترخيص ولا يمنع Content ID. الرفع الخاص لا يمنع المطالبة، فراجع YouTube Studio → Content → Restrictions قبل الإتاحة العامة.</div>
       </div></div>`;
   $("modal").classList.add("on");
 }
@@ -4342,27 +4499,37 @@ async function sug(id){
 }
 async function pub(id,targets,trigger=null){
   if(PUBLISHING_JOBS.has(id))return;
-  if(targets.includes("youtube")){
+  if(targets.includes("youtube")||targets.includes("telegram")){
     const job=JOBS.find(x=>x.id===id)||{};
     const saved=job.rights_review||{};
-    if(job.publish?.youtube?.id&&!confirm("هذه المهمة لديها فيديو YouTube مرفوع بالفعل. الرفع مرة أخرى سينشئ نسخة جديدة؛ هل تريد المتابعة؟"))return;
-    const privacy=saved.privacy||"private",basis=saved.basis||"unknown";
-    const statusPanel=youtubeStatusPanel(job.publish,id);
+    const isYoutube=targets.includes("youtube");
+    if(isYoutube&&job.publish?.youtube?.id&&!confirm("هذه المهمة لديها فيديو YouTube مرفوع بالفعل. الرفع مرة أخرى سينشئ نسخة جديدة؛ هل تريد المتابعة؟"))return;
+    const privacy=saved.upload_privacy||saved.privacy||"private",basis=saved.basis||"unknown";
+    const statusPanel=isYoutube?youtubeStatusPanel(job.publish,id):"";
+    const privacyControl=isYoutube?`<div><label>وضع الرفع</label><select id="pub_privacy">
+        <option value="private" ${privacy==="private"?"selected":""}>خاص — مراجعة أولية (موصى به)</option><option value="unlisted" ${privacy==="unlisted"?"selected":""}>غير مدرج — بعد مراجعة الحقوق</option><option value="public" ${privacy==="public"?"selected":""}>عام — بعد توثيق الحقوق</option></select></div>`:"";
+    const heading=isYoutube?"بوابة حقوق الصورة والصوت":"مراجعة الحقوق قبل الإرسال";
+    const note=isYoutube?"YouTube يفحص الصوت والصورة آلياً. القص أو الشعار أو الإسناد لا يمنح ترخيصاً ولا يضمن إزالة المطالبة.":"الإرسال إلى قناة عامة يتطلب مراجعة حقوق الصورة والصوت. الإسناد أو التعليق لا يمنح ترخيصاً.";
+    const actionLabel=isYoutube?"متابعة النشر بعد المراجعة":"متابعة الإرسال بعد المراجعة";
+    const youtubeScope=targets.includes("youtube")?`<label style="display:block"><input type="checkbox" id="rights_youtube_scope"> أكّدت أن أساس الحقوق يسمح بالنشر على YouTube</label>`:"";
+    const telegramScope=targets.includes("telegram")?`<label style="display:block"><input type="checkbox" id="rights_telegram_scope"> أكّدت أن أساس الحقوق يسمح بالنشر على Telegram</label>`:"";
+    const studioLink=isYoutube?` <a class="btn gray sm" href="https://studio.youtube.com" target="_blank" rel="noopener noreferrer">فتح YouTube Studio</a>`:"";
     $("m_res").innerHTML=`${statusPanel}<div class="warn" style="border-color:#c59b45;margin-top:8px">
-      <b>🛡️ بوابة حقوق الصورة والصوت</b>
-      <p style="margin:6px 0">YouTube يفحص الصوت والصورة آلياً. القص أو الشعار أو الإسناد لا يمنح ترخيصاً ولا يضمن إزالة المطالبة.</p>
-      <div class="mgrid" style="margin-top:8px"><div><label>وضع الرفع</label><select id="pub_privacy">
-        <option value="private" ${privacy==="private"?"selected":""}>خاص — مراجعة أولية (موصى به)</option><option value="unlisted" ${privacy==="unlisted"?"selected":""}>غير مدرج — بعد مراجعة الحقوق</option><option value="public" ${privacy==="public"?"selected":""}>عام — بعد توثيق الحقوق</option></select></div>
+      <b>🛡️ ${heading}</b>
+      <p style="margin:6px 0">${note}</p>
+      <p style="margin:6px 0">لا تطمس لوحة النتيجة أو الساعة أو أسماء الفرق أو علامات الناقل لتفادي المطالبة؛ الإخفاء لا يمنح حق إعادة النشر.</p>
+      <div class="mgrid" style="margin-top:8px">${privacyControl}
         <div><label>أساس استخدام المحتوى</label><select id="rights_basis">
-          <option value="unknown" ${basis==="unknown"?"selected":""}>غير متأكد / يحتاج مراجعة</option><option value="own" ${basis==="own"?"selected":""}>أملك حقوق الصورة والصوت</option><option value="licensed" ${basis==="licensed"?"selected":""}>لدي ترخيص يغطي YouTube</option><option value="permission" ${basis==="permission"?"selected":""}>لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain" ${basis==="public_domain"?"selected":""}>ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
+          <option value="unknown" ${basis==="unknown"?"selected":""}>غير متأكد / يحتاج مراجعة</option><option value="own" ${basis==="own"?"selected":""}>أملك حقوق الصورة والصوت</option><option value="licensed" ${basis==="licensed"?"selected":""}>لدي ترخيص يغطي وجهة النشر المختارة</option><option value="permission" ${basis==="permission"?"selected":""}>لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain" ${basis==="public_domain"?"selected":""}>ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
       <label>مصدر الصورة أو مرجعها</label><input id="rights_source" value="${esc(saved.source_reference||"")}" placeholder="رابط المصدر أو اسم الملف/المباراة">
-      <label>مرجع الترخيص أو الإذن (إن وجد)</label><input id="rights_evidence" value="${esc(saved.evidence_reference||"")}" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
+      <label>مرجع الترخيص أو الإذن أو الملكية (إن وجد)</label><input id="rights_evidence" value="${esc(saved.evidence_reference||"")}" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
       <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_visual"> راجعت حق استخدام المحتوى المرئي</label>
       <label style="display:block"><input type="checkbox" id="rights_audio"> راجعت حق استخدام الصوت والموسيقى</label>
       <label style="display:block"><input type="checkbox" id="rights_reviewed"> راجعت مستند/مرجع الحقوق قبل النشر</label>
+      ${youtubeScope}${telegramScope}
       <label style="display:block"><input type="checkbox" id="rights_synthetic" ${saved.contains_synthetic_media?"checked":""}> يحتوي الفيديو على تغيير واقعي أو توليد اصطناعي قد يضلل المشاهد</label>
       <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_ack"> قرأت التنبيه: هذا لا يثبت الملكية ولا يقرر fair use ولا يمنع Content ID</label>
-      <div class="acts" style="margin-top:10px"><button id="pubSubmitBtn" data-job-id="${esc(id)}" class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)},this)">متابعة الرفع بعد المراجعة</button> <a class="btn gray sm" href="https://studio.youtube.com" target="_blank" rel="noopener noreferrer">فتح YouTube Studio</a></div></div>`;
+      <div class="acts" style="margin-top:10px"><button id="pubSubmitBtn" data-job-id="${esc(id)}" class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)},this)">${actionLabel}</button>${studioLink}</div></div>`;
     return;
   }
   await submitPub(id,targets,trigger);
@@ -4372,7 +4539,7 @@ async function submitPub(id,targets,trigger=null){
   PUBLISHING_JOBS.add(id);
   const button=trigger||Array.from(document.querySelectorAll("#pubSubmitBtn")).find(node=>node.dataset.jobId===id),originalLabel=button?.textContent||"";
   if(button){button.disabled=true;button.textContent="جارٍ التنفيذ…";}
-  const rights={rights_basis:$("rights_basis")?.value||"unknown",source_reference:$("rights_source")?.value||"",evidence_reference:$("rights_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
+  const rights={rights_basis:$("rights_basis")?.value||"unknown",source_reference:$("rights_source")?.value||"",evidence_reference:$("rights_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,youtube_scope_confirmed:!!$("rights_youtube_scope")?.checked,telegram_scope_confirmed:!!$("rights_telegram_scope")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
   const body={targets,title:$("m_title")?.value||"",description:$("m_desc")?.value||"",
     tags:($("m_tags")?.value||"").split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
   if($("m_res"))$("m_res").innerHTML='<div class="warn"><span class="spin"></span> جارٍ النشر بعد فحص الحقوق…</div>';
@@ -4381,26 +4548,28 @@ async function submitPub(id,targets,trigger=null){
       headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const result=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(result.detail||`فشل الطلب (${response.status})`);
-    const rows=Object.entries(result).map(([target,out])=>out?.ok
+    const rows=Object.entries(result).filter(([key])=>key!=="rights_review").map(([target,out])=>out?.ok
       ? `<div class="warn" style="border-color:#1d5c3e;color:#9fe8c4">✅ ${esc(target)}: تم ${typeof out.url==="string"&&/^https:\/\/youtu\.be\/[A-Za-z0-9_-]{11}$/.test(out.url)?`— <a href="${esc(out.url)}" target="_blank" rel="noopener noreferrer">${esc(out.url)}</a>`:""}</div>`
       : `<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${esc(target)}: ${esc(out?.error||out?.code||"فشل")}</div>`).join("");
     const youtube=result.youtube;
     const freshUpload=!!(youtube?.ok&&/^[A-Za-z0-9_-]{11}$/.test(String(youtube.id||"")));
     if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
-    if(targets.includes("youtube")){
-      const details=result.youtube?.details||{};
-      const review={basis:rights.rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,
+    if(targets.includes("youtube")||targets.includes("telegram")){
+      const details=result.youtube?.details||result.telegram?.details||{};
+      const fallbackReview={basis:rights.rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,
         visual_rights_confirmed:rights.visual_rights_confirmed,audio_rights_confirmed:rights.audio_rights_confirmed,
         evidence_reviewed:rights.evidence_reviewed,rights_acknowledged:rights.rights_acknowledged,
-        contains_synthetic_media:rights.contains_synthetic_media,privacy:details.privacy||(youtube?.scheduled_for?"private":body.privacy),
-        form_complete:typeof details.ok==="boolean"?details.ok:result.youtube?.code!=="rights_gate",
+        contains_synthetic_media:rights.contains_synthetic_media,privacy:details.privacy||(youtube?.scheduled_for?"public":body.privacy),
+        upload_privacy:details.upload_privacy||body.privacy,scheduled:details.scheduled===true||!!youtube?.scheduled_for,
+        form_complete:typeof details.ok==="boolean"?details.ok:!((result.youtube?.code||result.telegram?.code)==="rights_gate"),
         gate_errors:Array.isArray(details.errors)?details.errors:[],submitted_at:new Date().toISOString()};
+      const review=result.rights_review&&typeof result.rights_review==="object"?result.rights_review:fallbackReview;
       const job=JOBS.find(x=>x.id===id);if(job)job.rights_review=review;
       const panel=Array.from(document.querySelectorAll("#rightsReviewPanel")).find(node=>node.dataset.jobId===id);
       if(panel)panel.innerHTML=rightsReviewMarkup(review);
     }
     if(freshUpload)scheduleYoutubeStatusChecks(id);
-    const succeeded=Object.values(result).some(item=>item?.ok);
+    const succeeded=Object.entries(result).some(([key,item])=>key!=="rights_review"&&item?.ok);
     toast(succeeded?"انتهت عملية النشر":"لم يكتمل النشر",succeeded?"ok":"err");
   }catch(e){
     if($("m_res"))$("m_res").innerHTML=`<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${esc(e.message||"تعذّر تنفيذ الطلب")}</div>`;
@@ -4627,7 +4796,8 @@ async function saveSet(){
 }
 
 loadCfg();poll();
-initVoiceControls();
+initVoiceControls();initBrandControls();
+
 initScoutReview();
 document.addEventListener("keydown",e=>{
   if(e.ctrlKey||e.metaKey||e.altKey)return;

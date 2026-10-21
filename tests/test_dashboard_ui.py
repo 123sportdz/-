@@ -15,6 +15,20 @@ def _scripts():
     return scripts
 
 
+def test_dashboard_audio_quality_uses_renderer_expectation_and_output_probe():
+    assert dashboard._quality_audio_required_from_logs(
+        ["audio=yes", "[quality] audio_required=no"]
+    ) is False
+    assert dashboard._quality_audio_required_from_logs(
+        ["audio=no", "[quality] audio_required=yes"]
+    ) is True
+    assert dashboard._quality_audio_required_from_logs(["audio=yes"]) is True
+    assert dashboard._quality_audio_required_from_logs(["audio=no"]) is False
+    assert dashboard._quality_output_has_audio({"audio": False}, ["audio=yes"]) is False
+    assert dashboard._quality_output_has_audio({"audio": True}, ["audio=no"]) is True
+    assert dashboard._quality_output_has_audio(None, ["audio=yes"]) is True
+
+
 def test_jobs_toolbar_has_sort_and_export_controls():
     html = dashboard.HTML
     assert 'id="srt"' in html
@@ -105,6 +119,27 @@ def test_voice_studio_exposes_energy_mix_and_preview_controls():
     assert "/api/voice/preview" in js
 
 
+def test_telegram_and_youtube_publish_open_the_same_rights_review():
+    js = "\n".join(_scripts())
+    assert 'if(targets.includes("youtube")||targets.includes("telegram"))' in js
+    assert "مراجعة الحقوق قبل الإرسال" in js
+    assert "rights_visual" in js and "rights_audio" in js
+    assert "rights_youtube_scope" in js and "rights_telegram_scope" in js
+    assert "scope_confirmed:!!$(\"rights_youtube_scope\")" in js
+    assert "scope_confirmed:!!$(\"rights_telegram_scope\")" in js
+    assert "لا تطمس لوحة النتيجة أو الساعة أو أسماء الفرق" in js
+    assert "هذا لا يثبت الملكية أو الترخيص" in js or "لا يمنح ترخيصاً" in js
+
+
+def test_automation_ui_exposes_the_exact_source_rights_manifest():
+    html = dashboard.HTML
+    js = "\n".join(_scripts())
+    assert 'id="autoRightsManifest"' in html
+    assert "rights_manifest:$(\"autoRightsManifest\").value.trim()" in js
+    assert '$("autoRightsManifest").value=r.rights_manifest||"rights_manifest.json"' in js
+    assert "r.manifest_error" in js
+
+
 def test_creative_studio_script_length_hint_matches_backend_and_parses():
     from pathlib import Path
     import subprocess
@@ -168,12 +203,15 @@ def test_identity_preview_forwards_the_per_clip_hide_choice(tmp_path, monkeypatc
     monkeypatch.setattr(dashboard.subprocess, "run", fake_run)
     result = asyncio.run(dashboard.api_preview({
         "input": "source.mp4", "show_channel_name": False,
+        "brand_y": 0.18, "brand_scale": 0.8,
     }))
 
     args = captured["command"]
     assert "--hide-channel-name" in args
     assert "--name" not in args
     assert "--url" in args and "example.com/@channel" in args
+    assert args[args.index("--brand-y") + 1] == "0.18"
+    assert args[args.index("--brand-scale") + 1] == "0.8"
     assert result["ok"] is True
 
 
@@ -184,3 +222,8 @@ def test_channel_name_controls_include_per_job_and_default_settings():
     assert 'id="set_show_channel_name"' in html
     assert "show_channel_name:$(\"showChannelName\")" in js
     assert "show_channel_name:$(\"set_show_channel_name\").checked" in js
+    assert html.count('id="brand_y"') == 1
+    assert html.count('id="brand_scale"') == 1
+    assert "function initBrandControls()" in js
+    assert "elhadath_badge_v2" in js
+    assert "brand_y:Number($(\"brand_y\").value)/100" in js

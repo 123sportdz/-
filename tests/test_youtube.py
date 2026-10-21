@@ -4,6 +4,27 @@ import pytest
 
 from reelkit.publish.youtube import YouTubeUploader
 
+RIGHTS_REVIEW = {
+    "rights_basis": "licensed",
+    "source_reference": "https://example.test/source",
+    "evidence_reference": "license-1",
+    "visual_rights_confirmed": True,
+    "audio_rights_confirmed": True,
+    "evidence_reviewed": True,
+    "youtube_scope_confirmed": True,
+    "telegram_scope_confirmed": True,
+    "rights_acknowledged": True,
+    "contains_synthetic_media": False,
+}
+UNKNOWN_PRIVATE_REVIEW = {
+    "rights_basis": "unknown",
+    "source_reference": "local-review-source",
+    "visual_rights_confirmed": True,
+    "audio_rights_confirmed": True,
+    "rights_acknowledged": True,
+}
+
+
 
 class FakeRequest:
     def __init__(self, response):
@@ -73,7 +94,7 @@ def test_upload_defaults_to_private_and_returns_video(tmp_path, monkeypatch):
     uploader = YouTubeUploader()
     monkeypatch.setattr(uploader, "_service", lambda: FakeYouTube(videos))
 
-    result = uploader.upload(output, "Goal highlight")
+    result = uploader.upload(output, "Goal highlight", rights=RIGHTS_REVIEW)
 
     assert result["id"] == "abcdefghijk"
     assert videos.insert_kwargs["body"]["status"]["privacyStatus"] == "private"
@@ -88,7 +109,8 @@ def test_upload_can_disclose_realistic_synthetic_media(tmp_path, monkeypatch):
     uploader = YouTubeUploader()
     monkeypatch.setattr(uploader, "_service", lambda: FakeYouTube(videos))
 
-    uploader.upload(output, "Synthetic analysis", contains_synthetic_media=True)
+    uploader.upload(output, "Synthetic analysis", contains_synthetic_media=True,
+                     rights=RIGHTS_REVIEW)
 
     assert videos.insert_kwargs["body"]["status"]["containsSyntheticMedia"] is True
 
@@ -103,7 +125,8 @@ def test_upload_stops_on_expected_channel_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(uploader, "channel_info", lambda: {"id": "UCwrong", "title": "Other"})
 
     with pytest.raises(RuntimeError, match="قناة مختلفة"):
-        uploader.upload(output, "Goal highlight", expected_channel_id="UCright")
+        uploader.upload(output, "Goal highlight", expected_channel_id="UCright",
+                         rights=RIGHTS_REVIEW)
 
     assert videos.insert_kwargs is None
 
@@ -114,6 +137,27 @@ def test_upload_validates_file_before_authentication(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError):
         uploader.upload(tmp_path / "missing.mp4", "Title")
+
+
+def test_upload_requires_rights_review_before_authentication(tmp_path, monkeypatch):
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"video")
+    uploader = YouTubeUploader()
+    monkeypatch.setattr(uploader, "_service", lambda: pytest.fail("must not authenticate"))
+
+    with pytest.raises(ValueError, match="بوابة الحقوق"):
+        uploader.upload(output, "Title")
+
+
+def test_scheduled_upload_validates_final_public_rights_before_authentication(tmp_path, monkeypatch):
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"video")
+    uploader = YouTubeUploader()
+    monkeypatch.setattr(uploader, "_service", lambda: pytest.fail("must not authenticate"))
+
+    with pytest.raises(ValueError, match="بوابة الحقوق"):
+        uploader.upload(output, "Title", privacy="private", publish_at="2026-10-20T12:00:00Z",
+                        rights=UNKNOWN_PRIVATE_REVIEW)
 
 
 def test_video_status_reports_processing_and_region_restrictions(monkeypatch):
@@ -155,7 +199,8 @@ def test_upload_stops_when_channel_cannot_be_verified(tmp_path, monkeypatch):
     monkeypatch.setattr(uploader, "channel_info", lambda: (_ for _ in ()).throw(RuntimeError("readonly missing")))
 
     with pytest.raises(RuntimeError, match="readonly missing"):
-        uploader.upload(output, "Goal highlight", expected_channel_id="UCright")
+        uploader.upload(output, "Goal highlight", expected_channel_id="UCright",
+                         rights=RIGHTS_REVIEW)
 
     assert videos.insert_kwargs is None
 
