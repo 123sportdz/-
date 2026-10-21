@@ -5,6 +5,7 @@ __pycache__/
 .cache/
 outputs/
 audit_log/
+audit_log.jsonl
 incoming/
 watch/
 state.json
