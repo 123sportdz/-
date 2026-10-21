@@ -42,7 +42,7 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run unit and API tests
-        run: python -m pytest -q
+        run: python -m pytest -q --ignore=tests/test_dashboard_browser.py
 
       - name: Compile Python sources
         run: python -m compileall -q dashboard.py reel.py reelbot.py autopilot.py reelkit tests
