@@ -557,3 +557,39 @@ def test_voice_mix_modes_build_the_expected_filtergraph(tmp_path, monkeypatch):
     assert "[0:a]" not in graphs["voice_only"]
     assert str(source) not in commands["voice_only"]
     assert "volume=2.0" in graphs["voice_only"]
+
+def test_ai_commentary_falls_back_to_next_model_on_http_error(monkeypatch):
+    import urllib.error
+    payload = {"candidates": [{"content": {"parts": [{"text": json.dumps({"commentary": "هدف رائع"})}]}}]}
+    monkeypatch.setattr(ai, "_key", lambda _key=None: "test-key")
+    monkeypatch.setattr(ai, "pick_model", lambda *_args, **_kwargs: "test-model")
+
+    def fake_http(url, body, **_kwargs):
+        if "test-model:generateContent" in url:
+            raise urllib.error.HTTPError(url, 503, "busy", {}, io.BytesIO(b""))
+        return payload
+
+    monkeypatch.setattr(ai, "_http", fake_http)
+    monkeypatch.setattr(ai.time, "sleep", lambda _s: None)
+    result = ai.commentary(caption="هدف")
+
+    assert result["commentary"] == "هدف رائع"
+    assert result["model"] != "test-model"
+
+def test_ai_commentary_tries_three_models_before_failing(monkeypatch):
+    import urllib.error
+    tried = []
+    monkeypatch.setattr(ai, "_key", lambda _key=None: "test-key")
+    monkeypatch.setattr(ai, "pick_model", lambda *_args, **_kwargs: "gemini-9.9-flash")
+
+    def fake_http(url, _body=None, **_kwargs):
+        tried.append(url.split("/models/")[1].split(":")[0])
+        raise urllib.error.HTTPError(url, 503, "busy", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(ai, "_http", fake_http)
+    monkeypatch.setattr(ai.time, "sleep", lambda _s: None)
+    with pytest.raises(RuntimeError, match="فشل توليد التعليق"):
+        ai.commentary(caption="هدف")
+
+    assert len(tried) == 3
+    assert len(set(tried)) == 3
