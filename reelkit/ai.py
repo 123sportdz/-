@@ -277,12 +277,12 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
     body = {"contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0.35, "maxOutputTokens": min(720, words * 8 + 48),
                                  "responseMimeType": "application/json"}}
-    models = [mdl] + [candidate for candidate in DEFAULT_MODELS if candidate != mdl][:1]
+    models = [mdl] + [candidate for candidate in DEFAULT_MODELS if candidate != mdl][:2]
     last_error = ""
     for candidate_model in models:
         try:
             response = _http(f"{API}/models/{candidate_model}:generateContent", body,
-                             key=key, timeout=timeout, retries=2)
+                             key=key, timeout=timeout, retries=3)
             candidates = response.get("candidates") if isinstance(response, dict) else None
             if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
                 raise ValueError("استجابة بلا مرشحين")
