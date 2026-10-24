@@ -341,23 +341,29 @@ def _kill_proc(p):
 def _load():
     if JOBS_FILE.exists():
         try:
-            JOBS.update(json.loads(JOBS_FILE.read_text(encoding="utf-8")))
+            saved = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                JOBS.update({key: value for key, value in saved.items()
+                             if isinstance(key, str) and isinstance(value, dict)})
         except Exception:
             pass
-    # 🔧 أي مهمة كانت "قيد المعالجة" لحظة إغلاق اللوحة تبقى عالقة للأبد — نعلّمها متوقّفة
-    stuck = 0
-    for j in JOBS.values():
-        if j.get("status") == "running":
-            j["status"] = "failed"
-            j["stage"] = "توقّفت (أُغلق البرنامج)"
-            j["log"] = (j.get("log") or [])[-80:] + [
-                "⚠️ توقّفت المعالجة لأن اللوحة أُغلقت — اضغط 🔁 إعادة للمتابعة"]
-            stuck += 1
-    if stuck:
-        try:
-            JOBS_FILE.write_text(json.dumps(JOBS, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+    recovered = 0
+    for job in JOBS.values():
+        status = job.get("status")
+        if status not in ("running", "queued"):
+            continue
+        was_queued = status == "queued"
+        job["status"] = "failed"
+        job["stage"] = ("توقّفت قبل البدء (أُعيد تشغيل اللوحة)" if was_queued
+                        else "توقّفت أثناء المعالجة (أُعيد تشغيل اللوحة)")
+        logs = job.get("log")
+        if not isinstance(logs, list):
+            logs = []
+        job["log"] = logs[-80:] + [
+            "⚠️ لم تُستأنف المهمة تلقائياً بعد إعادة التشغيل؛ تحقّق من الملف ثم اضغط إعادة."]
+        recovered += 1
+    if recovered:
+        _persist()
 
 _load()
 
@@ -1498,6 +1504,13 @@ def _create(payload):
         raise HTTPException(400, str(exc)) from None
     voice = _voice_payload(payload)
     payload.update(voice)
+    if "commentary" in payload and not isinstance(payload["commentary"], bool):
+        raise HTTPException(400, "خيار المعلّق الذكي يجب أن يكون قيمة منطقية")
+    if "transformative" in payload and not isinstance(payload["transformative"], bool):
+        raise HTTPException(400, "خيار التعليق التحليلي يجب أن يكون قيمة منطقية")
+    commentary_requested = payload.get("commentary") is True or payload.get("transformative") is True
+    if commentary_requested and not voice["commentary_script"] and not AI._key(CFG.get("gemini_api_key")):
+        raise HTTPException(422, "المعلّق الذكي يحتاج مفتاح Gemini. أضفه في إعدادات اللوحة أو أدخل نصاً يدوياً.")
     if voice["commentary_script"]:
         payload["commentary"] = True
     if scout_id:

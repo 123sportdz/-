@@ -96,18 +96,46 @@ def test_invalid_priority_value_rejected():
     assert "normal" in response.json()["detail"]
 
 
-def test_job_record_keeps_priority(tmp_path, monkeypatch):
+def test_job_record_keeps_priority_without_touching_runtime_state(tmp_path, monkeypatch):
     src = tmp_path / "in.mp4"
     src.write_bytes(b"fake")
+    monkeypatch.setattr(dashboard, "JOBS", {})
+    monkeypatch.setattr(dashboard, "OUT", tmp_path)
+    monkeypatch.setattr(dashboard, "_persist", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dashboard, "_probe_meta", lambda path: {})
     monkeypatch.setattr(dashboard, "_download_to_local",
                         lambda source, caption: (str(src), caption))
-    captured = {}
-
-    def fake_run_job(jid, args):
-        captured["jid"] = jid
-
-    monkeypatch.setattr(dashboard, "run_job", fake_run_job)
+    monkeypatch.setattr(dashboard.threading, "Thread", lambda **kwargs: type(
+        "IdleThread", (), {"start": lambda self: None})())
     monkeypatch.setattr(dashboard, "JOB_SEM", dashboard._PriorityGate(4))
     payload = {"input": str(src), "priority": "high"}
     jid = dashboard._create(dict(payload))
     assert dashboard.JOBS[jid]["priority"] == "high"
+    assert dashboard.JOBS[jid]["status"] == "queued"
+
+
+def test_load_recovers_queued_and_running_jobs(tmp_path, monkeypatch):
+    import json
+
+    state_file = tmp_path / "jobs.json"
+    state_file.write_text(json.dumps({
+        "queued-id": {"id": "queued-id", "status": "queued", "log": []},
+        "running-id": {"id": "running-id", "status": "running", "log": "stale"},
+        "done-id": {"id": "done-id", "status": "done", "log": []},
+        "malformed-job": ["not", "a", "job"],
+    }), encoding="utf-8")
+    monkeypatch.setattr(dashboard, "JOBS", {})
+    monkeypatch.setattr(dashboard, "JOBS_FILE", state_file)
+    monkeypatch.setattr(dashboard, "_persist", lambda *args, **kwargs: state_file.write_text(
+        json.dumps(dashboard.JOBS), encoding="utf-8"))
+
+    dashboard._load()
+
+    assert dashboard.JOBS["queued-id"]["status"] == "failed"
+    assert dashboard.JOBS["running-id"]["status"] == "failed"
+    assert isinstance(dashboard.JOBS["running-id"]["log"], list)
+    assert dashboard.JOBS["done-id"]["status"] == "done"
+    assert "malformed-job" not in dashboard.JOBS
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved["queued-id"]["status"] == "failed"
+    assert "إعادة" in dashboard.JOBS["queued-id"]["log"][-1]

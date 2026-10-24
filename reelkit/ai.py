@@ -14,19 +14,19 @@ DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "g
 API = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def _key(api_key=None):
-    k = api_key or os.environ.get("GEMINI_API_KEY")
-    if k:
-        return k
-    try:                                   # من config.json
-        import json as _j
+def _config():
+    try:
         from pathlib import Path
-        p = Path(__file__).resolve().parent.parent / "config.json"
-        if p.exists():
-            return (_j.loads(p.read_text(encoding="utf-8")) or {}).get("gemini_api_key")
-    except Exception:
-        pass
-    return None
+        path = Path(os.environ.get("REEL_CONFIG") or (Path(__file__).resolve().parent.parent / "config.json"))
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _key(api_key=None):
+    key = api_key or os.environ.get("GEMINI_API_KEY") or _config().get("gemini_api_key")
+    return key.strip() if isinstance(key, str) and key.strip() else None
 
 
 def _http(url, payload=None, key=None, timeout=90, retries=4):
@@ -266,6 +266,9 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
     if duration_seconds is not None and not math.isfinite(duration_seconds):
         duration_seconds = None
     duration_text = f"{duration_seconds:.1f}" if duration_seconds and duration_seconds > 0 else "غير محددة"
+    if model is None:
+        model = _config().get("gemini_model")
+    model = model.strip() if isinstance(model, str) and model.strip() else None
     mdl = pick_model(key, prefer=model)
     parts = [{"text": COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
                                                title=title or "—", duration=duration_text,

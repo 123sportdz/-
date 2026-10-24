@@ -12,6 +12,14 @@ from fastapi.testclient import TestClient
 import dashboard
 from reelkit import ai, render, voice
 
+def test_ai_key_reads_reel_config_profile(tmp_path, monkeypatch):
+    config = tmp_path / "profile.json"
+    config.write_text(json.dumps({"gemini_api_key": "profile-test-key"}), encoding="utf-8")
+    monkeypatch.setenv("REEL_CONFIG", str(config))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    assert ai._key() == "profile-test-key"
+
 
 def test_voice_defaults_and_ranges():
     defaults = voice.normalize_controls()
@@ -366,6 +374,44 @@ def test_ai_commentary_uses_three_grounding_frames_and_duration_cap(monkeypatch,
     assert result["requested_word_limit"] == 22
     assert result["duration_limited"] is True
     assert result["word_count"] == 12
+
+
+def test_ai_commentary_uses_configured_model(monkeypatch):
+    payload = {"candidates": [{"content": {"parts": [{"text": json.dumps({"commentary": "هجمة منظمة نحو المرمى."})}]}}]}
+    selected = {}
+    monkeypatch.setattr(ai, "_key", lambda _key=None: "test-key")
+    monkeypatch.setattr(ai, "_config", lambda: {"gemini_model": " gemini-test-flash "})
+    monkeypatch.setattr(ai, "pick_model", lambda _key=None, prefer=None: selected.setdefault("model", prefer))
+    monkeypatch.setattr(ai, "_http", lambda *_args, **_kwargs: payload)
+
+    result = ai.commentary(caption="هجمة", words=8)
+
+    assert selected["model"] == "gemini-test-flash"
+    assert result["model"] == "gemini-test-flash"
+
+
+def test_transformative_dashboard_job_requires_commentary_key_before_download(monkeypatch):
+    monkeypatch.setattr(dashboard.AI, "_key", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(dashboard, "_download_to_local",
+                        lambda *_args, **_kwargs: pytest.fail("download must not start"))
+
+    with pytest.raises(Exception) as exc:
+        dashboard._create({"input": "https://example.test/source.mp4", "transformative": True})
+
+    assert getattr(exc.value, "status_code", None) == 422
+    assert "Gemini" in str(exc.value)
+
+
+@pytest.mark.parametrize("flag", ["--commentary", "--commentary-text-only", "--transformative"])
+def test_cli_fails_fast_when_gemini_commentary_has_no_key(monkeypatch, capsys, flag):
+    import reel
+
+    monkeypatch.setattr(reel.AI, "_key", lambda *_args, **_kwargs: None)
+    with pytest.raises(SystemExit) as exc:
+        reel.main(["-i", "missing.mp4", "-o", "unused.mp4", flag])
+
+    assert exc.value.code == 2
+    assert "مفتاح Gemini" in capsys.readouterr().err
 
 
 def test_dashboard_passes_voice_controls_and_manual_script():

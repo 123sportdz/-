@@ -21,13 +21,14 @@ from reelkit import ai as AI, voice as VO
 
 
 def _load_cfg():
-    """يقرأ config.json حتى تُطبَّق إعدادات اللوحة (الشعار، الألوان…) على سطر الأوامر أيضاً."""
+    """يقرأ ملف إعدادات اللوحة المحدد أو config.json الافتراضي."""
     import json
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    p = os.environ.get("REEL_CONFIG") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
     try:
         with open(p, encoding="utf-8") as fh:
-            return json.load(fh) or {}
-    except Exception:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
         return {}
 
 
@@ -368,6 +369,9 @@ def main(argv=None):
         ap.error(str(exc))
     if a.commentary_script:
         a.commentary = True
+    if (a.commentary or a.commentary_text_only or a.transformative) and not a.commentary_script \
+            and not AI._key(CFG.get("gemini_api_key")):
+        ap.error("المعلّق الذكي يحتاج مفتاح Gemini في ملف الإعدادات المحدد أو متغير GEMINI_API_KEY؛ أو أدخل نصاً يدوياً")
 
     def log(*m):
         if not a.quiet:
