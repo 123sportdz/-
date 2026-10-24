@@ -1,0 +1,8 @@
+{
+  "name": "elhadath-reels",
+  "description": "لوحة تحكم ومصنع الريلز العمودية الرياضية - معالجة مقاطع كرة القدم، التتبع الذكي، التعليق الصوتي، إدارة الحقوق والنشر",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -31,6 +31,9 @@ venv/
 htmlcov/
 build/
 dist/
+node_modules/
+web/node_modules/
+web/dist/
 *.egg-info/
 rights_manifest.json
 rights_review.json
