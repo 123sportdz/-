@@ -328,7 +328,8 @@ class ControlBot:
         path = os.path.join(C.outputs_dir(), os.path.basename(r.get("url") or ""))
         if os.path.exists(path):
             try:
-                self.tg.send_video(chat_id, path, caption="🎬 معاينة سريعة")
+                self.tg.send_video(chat_id, path, caption="🎬 معاينة سريعة",
+                                   private_preview=C.is_private_chat_id(chat_id))
                 return
             except TgError as e:
                 self._reply(chat_id, f"⚠️ تعذّر الإرسال: {esc(e)}")
@@ -578,7 +579,8 @@ class ControlBot:
             return False
         if os.path.getsize(path) > 49e6:
             try:
-                self.tg.send_document(chat_id, path, caption=caption or "✅ ريل جاهز")
+                self.tg.send_document(chat_id, path, caption=caption or "✅ ريل جاهز",
+                                      private_preview=C.is_private_chat_id(chat_id))
                 return True
             except TgError as e:
                 if not quiet:
@@ -586,7 +588,8 @@ class ControlBot:
                 return False
         try:
             self.tg.send_video(chat_id, path, caption=caption or "✅ ريل جاهز",
-                               keyboard=kb_job(jid, "done"))
+                               keyboard=kb_job(jid, "done"),
+                               private_preview=C.is_private_chat_id(chat_id))
             return True
         except TgError as e:
             if not quiet:

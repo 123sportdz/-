@@ -125,6 +125,13 @@ def allowed(chat_id, allowlist):
     return False
 
 
+def is_private_chat_id(chat_id):
+    try:
+        return int(str(chat_id).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 URL_RE = re.compile(r"https?://[^\s]+|(?:t|telegram)\.me/[^\s]+|@[A-Za-z0-9_]{4,}", re.I)
 
 
@@ -314,6 +321,17 @@ class TgError(RuntimeError):
     pass
 
 
+def _validate_telegram_media_send(chat_id, rights, expected_source, private_preview):
+    if private_preview:
+        if not is_private_chat_id(chat_id):
+            raise TgError("Private Telegram previews are allowed only in a positive numeric user chat")
+        return
+    from . import rights as RT
+    gate = RT.validate_public_distribution(rights, expected_source=expected_source)
+    if not gate["ok"]:
+        raise TgError("Telegram rights gate blocked: " + " | ".join(gate["errors"]))
+
+
 class Tg:
     """عميل Bot API خام عبر urllib — **بلا مكتبات إضافية** (مثل باقي المشروع)."""
 
@@ -399,7 +417,9 @@ class Tg:
         except TgError:
             return None
 
-    def send_video(self, chat_id, path, caption="", keyboard=None, thumb=None):
+    def send_video(self, chat_id, path, caption="", keyboard=None, thumb=None,
+                   rights=None, expected_source=None, private_preview=False):
+        _validate_telegram_media_send(chat_id, rights, expected_source, private_preview)
         size_mb = os.path.getsize(path) / 1e6
         if size_mb > 49:
             raise TgError(f"الفيديو {size_mb:.0f}MB أكبر من حد البوت (50MB) — "
@@ -411,7 +431,9 @@ class Tg:
         return self.call("sendVideo", fields, files={"video": (os.path.basename(path), path)},
                          timeout=600)
 
-    def send_document(self, chat_id, path, caption=""):
+    def send_document(self, chat_id, path, caption="", rights=None,
+                      expected_source=None, private_preview=False):
+        _validate_telegram_media_send(chat_id, rights, expected_source, private_preview)
         fields = {"chat_id": chat_id, "caption": clip_text(caption, 1000)}
         return self.call("sendDocument", fields,
                          files={"document": (os.path.basename(path), path)}, timeout=600)

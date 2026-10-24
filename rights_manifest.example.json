@@ -2,15 +2,40 @@
   "items": {
     "https://t.me/your_channel/123": {
       "rights_basis": "unknown",
+      "visual_rights_basis": "unknown",
+      "audio_rights_basis": "unknown",
       "source_reference": "https://t.me/your_channel/123",
       "evidence_reference": "",
+      "visual_evidence_reference": "",
+      "audio_evidence_reference": "",
       "visual_rights_confirmed": false,
       "audio_rights_confirmed": false,
       "evidence_reviewed": false,
       "youtube_scope_confirmed": false,
       "telegram_scope_confirmed": false,
       "rights_acknowledged": false,
-      "contains_synthetic_media": false
+      "contains_synthetic_media": false,
+      "assets": [
+        {
+          "asset_id": "main-clip",
+          "source_reference": "https://t.me/your_channel/123",
+          "media_type": "video",
+          "rights_holder": "اسم صاحب الحق أو الجهة المرخِّصة",
+          "permission_type": "licensed",
+          "platforms_allowed": [
+            "youtube",
+            "telegram"
+          ],
+          "valid_from": "",
+          "expires_at": "",
+          "evidence_reference": "رقم الترخيص أو رابط الإذن",
+          "evidence_path": "license-letter.pdf",
+          "evidence_sha256": "",
+          "review_status": "pending_review",
+          "reviewed_by": "",
+          "reviewed_at": ""
+        }
+      ]
     }
   }
 }

@@ -129,6 +129,12 @@ def test_telegram_and_youtube_publish_open_the_same_rights_review():
     assert "scope_confirmed:!!$(\"rights_telegram_scope\")" in js
     assert "لا تطمس لوحة النتيجة أو الساعة أو أسماء الفرق" in js
     assert "هذا لا يثبت الملكية أو الترخيص" in js or "لا يمنح ترخيصاً" in js
+    assert 'id="rights_visual_basis"' in js
+    assert 'id="rights_audio_basis"' in js
+    assert 'id="rights_visual_evidence"' in js
+    assert 'id="rights_audio_evidence"' in js
+    assert "visual_rights_basis:visualRightsBasis" in js
+    assert "audio_rights_basis:audioRightsBasis" in js
 
 
 def test_automation_ui_exposes_the_exact_source_rights_manifest():

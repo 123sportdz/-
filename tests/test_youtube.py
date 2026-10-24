@@ -1,4 +1,5 @@
 from types import ModuleType
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -155,8 +156,13 @@ def test_scheduled_upload_validates_final_public_rights_before_authentication(tm
     uploader = YouTubeUploader()
     monkeypatch.setattr(uploader, "_service", lambda: pytest.fail("must not authenticate"))
 
-    with pytest.raises(ValueError, match="بوابة الحقوق"):
+    with pytest.raises(ValueError, match="موعد الجدولة في الماضي"):
         uploader.upload(output, "Title", privacy="private", publish_at="2026-10-20T12:00:00Z",
+                        rights=UNKNOWN_PRIVATE_REVIEW)
+
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with pytest.raises(ValueError, match="بوابة الحقوق"):
+        uploader.upload(output, "Title", privacy="private", publish_at=future,
                         rights=UNKNOWN_PRIVATE_REVIEW)
 
 

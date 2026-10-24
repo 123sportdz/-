@@ -237,7 +237,8 @@ def process(post, a, state):
 
     if a.upload in ("telegram", "both") and CFG.get("telegram_token") and CFG.get("telegram_chat"):
         try:
-            TelegramBot(CFG["telegram_token"], CFG["telegram_chat"]).send_video(str(out), caption=title)
+            TelegramBot(CFG["telegram_token"], CFG["telegram_chat"]).send_video(
+                str(out), caption=title, rights=rights_record, expected_source=key)
             print("  ✓ نُشر على تيليجرام")
         except Exception as e:
             print(f"  ✗ تيليجرام: {e}")

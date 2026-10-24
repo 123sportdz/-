@@ -280,6 +280,15 @@ class YouTubeUploader:
         validate_upload_limits(title, description)   # فشل سريع قبل أي بوابة أو مصادقة
         if privacy not in {"private", "unlisted", "public"}:
             raise ValueError("الخصوصية يجب أن تكون private أو unlisted أو public")
+        if publish_at:
+            from datetime import datetime, timedelta, timezone
+            try:
+                when = datetime.strptime(str(publish_at), "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc)
+            except (TypeError, ValueError) as e:
+                raise ValueError("صيغة موعد الجدولة غير صالحة — المطلوب ISO مثل 2026-10-04T19:00:00Z") from e
+            if when <= datetime.now(timezone.utc) - timedelta(minutes=5):
+                raise ValueError("موعد الجدولة في الماضي — اختر وقتاً مستقبلياً بصيغة UTC (ينتهي بـ Z)")
         from reelkit import rights as RIGHTS
         gate = RIGHTS.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
         if not gate["ok"]:
@@ -292,15 +301,6 @@ class YouTubeUploader:
         tags = [str(tag).strip() for tag in (tags or ()) if str(tag).strip()]
         if sum(len(tag) for tag in tags) > 480:
             raise ValueError("مجموع أحرف الوسوم يتجاوز حد YouTube (500 حرف) — قلّل عدد الوسوم أو أطوالها")
-        if publish_at:
-            from datetime import datetime, timedelta, timezone
-            try:
-                when = datetime.strptime(str(publish_at), "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)
-            except (TypeError, ValueError) as e:
-                raise ValueError("صيغة موعد الجدولة غير صالحة — المطلوب ISO مثل 2026-10-04T19:00:00Z") from e
-            if when <= datetime.now(timezone.utc) - timedelta(minutes=5):
-                raise ValueError("موعد الجدولة في الماضي — اختر وقتاً مستقبلياً بصيغة UTC (ينتهي بـ Z)")
         yt = self._service()
         from googleapiclient.http import MediaFileUpload   # بعد _service حتى تظهر رسالته الواضحة لو المكتبة ناقصة
         if expected_channel_id:

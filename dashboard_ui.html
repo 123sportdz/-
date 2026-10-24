@@ -1598,7 +1598,7 @@ async function copyLog(id){
 
 function rightsReviewMarkup(r){
   if(!r)return "";
-  const bases={own:"أملك حقوق الصورة والصوت",licensed:"لدي ترخيص",permission:"لدي إذن مكتوب",public_domain:"ملك عام / ترخيص يسمح بالاستخدام",unknown:"غير متأكد"};
+  const bases={own:"أملك حقوق هذا العنصر",licensed:"لدي ترخيص",permission:"لدي إذن مكتوب",public_domain:"ملك عام / ترخيص يسمح بالاستخدام",unknown:"غير متأكد",mixed:"أساس مختلف للصورة والصوت"};
   const privacy={private:"خاص",unlisted:"غير مدرج",public:"عام"};
   const targetNames={youtube:"YouTube",telegram:"Telegram"};
   const yes=v=>v===true?"نعم":v===false?"لا":"غير مسجل";
@@ -1618,9 +1618,9 @@ function rightsReviewMarkup(r){
   return `<div class="warn" style="margin:8px 0;border-color:#c59b45">
     <b>آخر سجل لمراجعة الحقوق</b>
     <div style="margin-top:5px">حالة النموذج: <b>${state}</b></div>${targetRows||legacyPrivacy}
-    <div>أساس الاستخدام: ${esc(bases[r.basis]||r.basis||"غير مسجل")}</div>
+    <div>أساس الصورة: ${esc(bases[r.visual_rights_basis]||r.visual_rights_basis||bases[r.basis]||r.basis||"غير مسجل")} · المرجع: ${esc(r.visual_evidence_reference||r.evidence_reference||"—")}</div>
+    <div>أساس الصوت: ${esc(bases[r.audio_rights_basis]||r.audio_rights_basis||bases[r.basis]||r.basis||"غير مسجل")} · المرجع: ${esc(r.audio_evidence_reference||r.evidence_reference||"—")}</div>
     <div>مصدر المحتوى: ${esc(r.source_reference||"—")}</div>
-    <div>مرجع الترخيص/الإذن: ${esc(r.evidence_reference||"—")}</div>
     <div>مراجعة الصورة: ${yes(r.visual_rights_confirmed)} · مراجعة الصوت: ${yes(r.audio_rights_confirmed)} · مراجعة المرجع: ${yes(r.evidence_reviewed)}</div>
     <div>نطاق YouTube: ${yes(r.youtube_scope_confirmed)} · نطاق Telegram: ${yes(r.telegram_scope_confirmed)}</div>
     ${r.manifest_error?`<div>سجل الحقوق: ${esc(r.manifest_error)}</div>`:""}
@@ -1806,7 +1806,10 @@ async function pub(id,targets,trigger=null){
     const saved=job.rights_review||{};
     const isYoutube=targets.includes("youtube");
     if(isYoutube&&job.publish?.youtube?.id&&!confirm("هذه المهمة لديها فيديو YouTube مرفوع بالفعل. الرفع مرة أخرى سينشئ نسخة جديدة؛ هل تريد المتابعة؟"))return;
-    const privacy=saved.upload_privacy||saved.privacy||"private",basis=saved.basis||"unknown";
+    const privacy=saved.upload_privacy||saved.privacy||"private";
+    const visualBasis=saved.visual_rights_basis||saved.basis||"unknown";
+    const audioBasis=saved.audio_rights_basis||saved.basis||"unknown";
+    const basisOptions=selected=>`<option value="unknown" ${selected==="unknown"?"selected":""}>غير متأكد / يحتاج مراجعة</option><option value="own" ${selected==="own"?"selected":""}>أملك حقوق هذا العنصر</option><option value="licensed" ${selected==="licensed"?"selected":""}>لدي ترخيص يغطي وجهة النشر</option><option value="permission" ${selected==="permission"?"selected":""}>لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain" ${selected==="public_domain"?"selected":""}>ملك عام / ترخيص يسمح بالاستخدام</option>`;
     const statusPanel=isYoutube?youtubeStatusPanel(job.publish,id):"";
     const privacyControl=isYoutube?`<div><label>وضع الرفع</label><select id="pub_privacy">
         <option value="private" ${privacy==="private"?"selected":""}>خاص — مراجعة أولية (موصى به)</option><option value="unlisted" ${privacy==="unlisted"?"selected":""}>غير مدرج — بعد مراجعة الحقوق</option><option value="public" ${privacy==="public"?"selected":""}>عام — بعد توثيق الحقوق</option></select></div>`:"";
@@ -1821,16 +1824,17 @@ async function pub(id,targets,trigger=null){
       <p style="margin:6px 0">${note}</p>
       <p style="margin:6px 0">لا تطمس لوحة النتيجة أو الساعة أو أسماء الفرق أو علامات الناقل لتفادي المطالبة؛ الإخفاء لا يمنح حق إعادة النشر.</p>
       <div class="mgrid" style="margin-top:8px">${privacyControl}
-        <div><label>أساس استخدام المحتوى</label><select id="rights_basis">
-          <option value="unknown" ${basis==="unknown"?"selected":""}>غير متأكد / يحتاج مراجعة</option><option value="own" ${basis==="own"?"selected":""}>أملك حقوق الصورة والصوت</option><option value="licensed" ${basis==="licensed"?"selected":""}>لدي ترخيص يغطي وجهة النشر المختارة</option><option value="permission" ${basis==="permission"?"selected":""}>لدي إذن مكتوب من صاحب الحقوق</option><option value="public_domain" ${basis==="public_domain"?"selected":""}>ملك عام / ترخيص يسمح بالاستخدام</option></select></div></div>
-      <label>مصدر الصورة أو مرجعها</label><input id="rights_source" value="${esc(saved.source_reference||"")}" placeholder="رابط المصدر أو اسم الملف/المباراة">
-      <label>مرجع الترخيص أو الإذن أو الملكية (إن وجد)</label><input id="rights_evidence" value="${esc(saved.evidence_reference||"")}" placeholder="رابط، رقم عقد، أو مسار مستند محفوظ محلياً">
+        <div><label>أساس حقوق الصورة</label><select id="rights_visual_basis">${basisOptions(visualBasis)}</select></div>
+        <div><label>أساس حقوق الصوت والموسيقى</label><select id="rights_audio_basis">${basisOptions(audioBasis)}</select></div></div>
+      <label>مصدر المحتوى المرئي</label><input id="rights_source" value="${esc(saved.source_reference||"")}" placeholder="رابط المصدر أو اسم الملف/المباراة">
+      <label>دليل حق الصورة</label><input id="rights_visual_evidence" value="${esc(saved.visual_evidence_reference||saved.evidence_reference||"")}" placeholder="رابط الترخيص، رقم العقد، أو مسار الإثبات">
+      <label>دليل حق الصوت أو الموسيقى</label><input id="rights_audio_evidence" value="${esc(saved.audio_evidence_reference||saved.evidence_reference||"")}" placeholder="رابط الترخيص، رقم العقد، أو مسار الإثبات">
       <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_visual"> راجعت حق استخدام المحتوى المرئي</label>
       <label style="display:block"><input type="checkbox" id="rights_audio"> راجعت حق استخدام الصوت والموسيقى</label>
-      <label style="display:block"><input type="checkbox" id="rights_reviewed"> راجعت مستند/مرجع الحقوق قبل النشر</label>
+      <label style="display:block"><input type="checkbox" id="rights_reviewed"> راجعت أدلة حقوق الصورة والصوت قبل النشر</label>
       ${youtubeScope}${telegramScope}
       <label style="display:block"><input type="checkbox" id="rights_synthetic" ${saved.contains_synthetic_media?"checked":""}> يحتوي الفيديو على تغيير واقعي أو توليد اصطناعي قد يضلل المشاهد</label>
-      <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_ack"> قرأت التنبيه: هذا لا يثبت الملكية ولا يقرر fair use ولا يمنع Content ID</label>
+      <label style="display:block;margin-top:8px"><input type="checkbox" id="rights_ack"> قرأت التنبيه: هذا لا يثبت الملكية ولا يقرر fair use ولا يمنع Content ID</label>      <label>سجل الأصول JSON — مطلوب للنشر العام أو غير المدرج (كل أصل: المصدر، صاحب الحق، نوع الإذن، المنصات، الدليل في مجلد rights_evidence)</label><textarea id="rights_assets" rows="4" placeholder="[{&quot;asset_id&quot;:&quot;clip&quot;,&quot;source_reference&quot;:&quot;...&quot;,&quot;media_type&quot;:&quot;video&quot;,&quot;rights_holder&quot;:&quot;...&quot;,&quot;permission_type&quot;:&quot;own&quot;,&quot;platforms_allowed&quot;:[&quot;youtube&quot;],&quot;review_status&quot;:&quot;reviewed&quot;,&quot;reviewed_by&quot;:&quot;...&quot;,&quot;evidence_reference&quot;:&quot;...&quot;,&quot;evidence_path&quot;:&quot;clip.mp4&quot;}]">${esc(saved.assets_json||"")}</textarea>
       <div class="acts" style="margin-top:10px"><button id="pubSubmitBtn" data-job-id="${esc(id)}" class="btn sm" onclick="submitPub('${id}',${JSON.stringify(targets)},this)">${actionLabel}</button>${studioLink}</div></div>`;
     return;
   }
@@ -1841,7 +1845,13 @@ async function submitPub(id,targets,trigger=null){
   PUBLISHING_JOBS.add(id);
   const button=trigger||Array.from(document.querySelectorAll("#pubSubmitBtn")).find(node=>node.dataset.jobId===id),originalLabel=button?.textContent||"";
   if(button){button.disabled=true;button.textContent="جارٍ التنفيذ…";}
-  const rights={rights_basis:$("rights_basis")?.value||"unknown",source_reference:$("rights_source")?.value||"",evidence_reference:$("rights_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,youtube_scope_confirmed:!!$("rights_youtube_scope")?.checked,telegram_scope_confirmed:!!$("rights_telegram_scope")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
+  const visualRightsBasis=$("rights_visual_basis")?.value||"unknown",audioRightsBasis=$("rights_audio_basis")?.value||"unknown";
+  const rights={rights_basis:visualRightsBasis===audioRightsBasis?visualRightsBasis:"unknown",visual_rights_basis:visualRightsBasis,audio_rights_basis:audioRightsBasis,source_reference:$("rights_source")?.value||"",visual_evidence_reference:$("rights_visual_evidence")?.value||"",audio_evidence_reference:$("rights_audio_evidence")?.value||"",visual_rights_confirmed:!!$("rights_visual")?.checked,audio_rights_confirmed:!!$("rights_audio")?.checked,evidence_reviewed:!!$("rights_reviewed")?.checked,youtube_scope_confirmed:!!$("rights_youtube_scope")?.checked,telegram_scope_confirmed:!!$("rights_telegram_scope")?.checked,contains_synthetic_media:!!$("rights_synthetic")?.checked,rights_acknowledged:!!$("rights_ack")?.checked};
+  let assetsList=null;
+  try{const rawAssets=($("rights_assets")?.value||"").trim();assetsList=rawAssets?JSON.parse(rawAssets):null;}
+  catch(e){if($("m_res"))$("m_res").innerHTML='<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">\u274c \u0633\u062c\u0644 \u0627\u0644\u0623\u0635\u0648\u0644 JSON \u063a\u064a\u0631 \u0635\u0627\u0644\u062d</div>';
+    if(button){button.disabled=false;button.textContent=originalLabel;}PUBLISHING_JOBS.delete(id);return;}
+  if(Array.isArray(assetsList))rights.assets=assetsList;
   const body={targets,title:$("m_title")?.value||"",description:$("m_desc")?.value||"",
     tags:($("m_tags")?.value||"").split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
   if($("m_res"))$("m_res").innerHTML='<div class="warn"><span class="spin"></span> جارٍ النشر بعد فحص الحقوق…</div>';
@@ -1858,7 +1868,7 @@ async function submitPub(id,targets,trigger=null){
     if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
     if(targets.includes("youtube")||targets.includes("telegram")){
       const details=result.youtube?.details||result.telegram?.details||{};
-      const fallbackReview={basis:rights.rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,
+      const fallbackReview={basis:rights.visual_rights_basis===rights.audio_rights_basis?rights.visual_rights_basis:"mixed",visual_rights_basis:rights.visual_rights_basis,audio_rights_basis:rights.audio_rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,visual_evidence_reference:rights.visual_evidence_reference,audio_evidence_reference:rights.audio_evidence_reference,
         visual_rights_confirmed:rights.visual_rights_confirmed,audio_rights_confirmed:rights.audio_rights_confirmed,
         evidence_reviewed:rights.evidence_reviewed,rights_acknowledged:rights.rights_acknowledged,
         contains_synthetic_media:rights.contains_synthetic_media,privacy:details.privacy||(youtube?.scheduled_for?"public":body.privacy),

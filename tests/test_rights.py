@@ -41,7 +41,51 @@ def test_youtube_rights_gate_rejects_unverified_public_publish():
     assert any("أساس استخدام" in item for item in result["errors"])
 
 
-def test_youtube_rights_gate_accepts_reviewed_license():
+def _asset(tmp_path, asset_id="clip", **overrides):
+    root = tmp_path / "evidence"
+    root.mkdir(exist_ok=True)
+    (root / f"{asset_id}.bin").write_bytes(b"evidence")
+    record = {
+        "asset_id": asset_id,
+        "source_reference": f"{asset_id}-source",
+        "media_type": "video",
+        "rights_holder": "صاحب الحق",
+        "permission_type": "own",
+        "platforms_allowed": ["youtube", "telegram"],
+        "review_status": "reviewed",
+        "reviewed_by": "operator",
+        "evidence_reference": f"{asset_id}-ref",
+        "evidence_path": f"{asset_id}.bin",
+    }
+    record.update(overrides)
+    return record
+
+
+def _asset_pair(tmp_path):
+    return [_asset(tmp_path), _asset(tmp_path, "music", media_type="music",
+                                     permission_type="licensed")]
+
+
+def test_public_publish_requires_structured_asset_records(tmp_path):
+    payload = {
+        "rights_basis": "licensed",
+        "source_reference": "https://example.test/source",
+        "evidence_reference": "license-2026-01.pdf",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "youtube_scope_confirmed": True,
+        "rights_acknowledged": True,
+    }
+
+    result = rights.validate_youtube_publish(payload, privacy="public")
+
+    assert result["ok"] is False
+    assert result["asset_status"] == "unverified"
+    assert "structured_asset_records_missing" in result["asset_errors"]
+
+
+def test_youtube_rights_gate_accepts_reviewed_license(tmp_path):
     result = rights.validate_youtube_publish({
         "rights_basis": "licensed",
         "source_reference": "https://example.test/source",
@@ -51,8 +95,112 @@ def test_youtube_rights_gate_accepts_reviewed_license():
         "evidence_reviewed": True,
         "youtube_scope_confirmed": True,
         "rights_acknowledged": True,
-    }, privacy="unlisted")
+        "assets": _asset_pair(tmp_path),
+    }, privacy="unlisted", evidence_root=tmp_path / "evidence")
     assert result["ok"] is True
+
+
+def test_visual_and_audio_rights_can_use_separate_bases_and_evidence(tmp_path):
+    record = {
+        "rights_basis": "unknown",
+        "visual_rights_basis": "own",
+        "audio_rights_basis": "licensed",
+        "source_reference": "camera-original.mp4",
+        "visual_evidence_reference": "",
+        "audio_evidence_reference": "music-license-2026.pdf",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "youtube_scope_confirmed": True,
+        "rights_acknowledged": True,
+        "assets": _asset_pair(tmp_path),
+    }
+
+    result = rights.validate_youtube_publish(record, privacy="public",
+                                             evidence_root=tmp_path / "evidence")
+
+    assert result["ok"] is True
+    assert result["visual_basis"] == rights.RIGHTS_BASES["own"]
+    assert result["audio_basis"] == rights.RIGHTS_BASES["licensed"]
+    assert result["visual_evidence_reference"] == ""
+    assert result["audio_evidence_reference"] == "music-license-2026.pdf"
+
+    record["audio_evidence_reference"] = ""
+    result = rights.validate_youtube_publish(record, privacy="public",
+                                             evidence_root=tmp_path / "evidence")
+    assert result["ok"] is False
+    assert any("الصوت/الموسيقى" in error and "مرجع الترخيص" in error for error in result["errors"])
+
+
+def test_component_evidence_uses_legacy_value_only_when_field_is_absent(tmp_path):
+    record = {
+        "rights_basis": "licensed",
+        "evidence_reference": "legacy-license.pdf",
+        "visual_rights_basis": "own",
+        "audio_rights_basis": "licensed",
+        "audio_evidence_reference": "",
+        "source_reference": "camera-original.mp4",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "youtube_scope_confirmed": True,
+        "rights_acknowledged": True,
+        "assets": _asset_pair(tmp_path),
+    }
+
+    result = rights.validate_youtube_publish(record, privacy="public",
+                                             evidence_root=tmp_path / "evidence")
+
+    assert result["ok"] is False
+    assert result["audio_evidence_reference"] == ""
+    assert any("الصوت/الموسيقى" in error and "مرجع الترخيص" in error for error in result["errors"])
+
+    record.pop("audio_evidence_reference")
+    result = rights.validate_youtube_publish(record, privacy="public",
+                                             evidence_root=tmp_path / "evidence")
+    assert result["ok"] is True
+    assert result["audio_evidence_reference"] == "legacy-license.pdf"
+
+
+def test_rights_gate_rejects_non_text_and_overlong_component_evidence():
+    record = {
+        "visual_rights_basis": "own",
+        "audio_rights_basis": "licensed",
+        "audio_evidence_reference": ["music-license.pdf"],
+        "source_reference": "camera-original.mp4",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "youtube_scope_confirmed": True,
+        "rights_acknowledged": True,
+    }
+
+    result = rights.validate_youtube_publish(record, privacy="public")
+    assert result["ok"] is False
+    assert any("مرجع دليل الصوت/الموسيقى يجب أن يكون نصاً" in error for error in result["errors"])
+
+    record["audio_evidence_reference"] = "x" * 1001
+    result = rights.validate_youtube_publish(record, privacy="public")
+    assert result["ok"] is False
+    assert any("يتجاوز الحد المسموح" in error for error in result["errors"])
+
+
+def test_publication_blocks_if_either_component_rights_are_unknown():
+    record = {
+        "visual_rights_basis": "own",
+        "audio_rights_basis": "unknown",
+        "source_reference": "camera-original.mp4",
+        "visual_rights_confirmed": True,
+        "audio_rights_confirmed": True,
+        "evidence_reviewed": True,
+        "telegram_scope_confirmed": True,
+        "rights_acknowledged": True,
+    }
+
+    result = rights.validate_public_distribution(record)
+
+    assert result["ok"] is False
+    assert any("الصوت/الموسيقى" in error and "أساس استخدام" in error for error in result["errors"])
 
 
 def test_scheduled_upload_is_checked_as_public_even_if_initially_private():
@@ -73,7 +221,7 @@ def test_scheduled_upload_is_checked_as_public_even_if_initially_private():
     assert any("أساس استخدام" in error for error in result["errors"])
 
 
-def test_public_domain_upload_needs_a_source_license_reference():
+def test_public_domain_upload_needs_a_source_license_reference(tmp_path):
     payload = {
         "rights_basis": "public_domain",
         "source_reference": "https://example.com/asset",
@@ -89,7 +237,9 @@ def test_public_domain_upload_needs_a_source_license_reference():
     assert result["ok"] is False
     assert any("مصدر الملك العام" in error for error in result["errors"])
     payload["evidence_reference"] = "https://example.com/license"
-    assert rights.validate_youtube_publish(payload, privacy="public")["ok"] is True
+    payload["assets"] = _asset_pair(tmp_path)
+    assert rights.validate_youtube_publish(
+        payload, privacy="public", evidence_root=tmp_path / "evidence")["ok"] is True
 
 
 def test_public_distribution_rejects_unknown_rights():
@@ -105,7 +255,7 @@ def test_public_distribution_rejects_unknown_rights():
     assert result["privacy"] == "public"
 
 
-def test_public_distribution_requires_telegram_scope_separately():
+def test_public_distribution_requires_telegram_scope_separately(tmp_path):
     record = {
         "rights_basis": "licensed",
         "source_reference": "source-1",
@@ -115,17 +265,19 @@ def test_public_distribution_requires_telegram_scope_separately():
         "evidence_reviewed": True,
         "youtube_scope_confirmed": True,
         "rights_acknowledged": True,
+        "assets": _asset_pair(tmp_path),
     }
 
-    result = rights.validate_public_distribution(record)
+    result = rights.validate_public_distribution(record, evidence_root=tmp_path / "evidence")
     assert result["ok"] is False
     assert "أكّد أن أساس الحقوق يسمح بالنشر على Telegram" in result["errors"]
 
     record["telegram_scope_confirmed"] = True
-    assert rights.validate_public_distribution(record)["ok"] is True
+    assert rights.validate_public_distribution(
+        record, evidence_root=tmp_path / "evidence")["ok"] is True
 
 
-def test_youtube_publication_requires_youtube_specific_scope():
+def test_youtube_publication_requires_youtube_specific_scope(tmp_path):
     record = {
         "rights_basis": "licensed",
         "source_reference": "source-1",
@@ -134,14 +286,17 @@ def test_youtube_publication_requires_youtube_specific_scope():
         "audio_rights_confirmed": True,
         "evidence_reviewed": True,
         "rights_acknowledged": True,
+        "assets": _asset_pair(tmp_path),
     }
 
-    result = rights.validate_youtube_publish(record, privacy="public")
+    result = rights.validate_youtube_publish(record, privacy="public",
+                                             evidence_root=tmp_path / "evidence")
     assert result["ok"] is False
     assert "أكّد أن أساس الحقوق يسمح بالنشر على YouTube" in result["errors"]
 
     record["youtube_scope_confirmed"] = True
-    assert rights.validate_youtube_publish(record, privacy="public")["ok"] is True
+    assert rights.validate_youtube_publish(
+        record, privacy="public", evidence_root=tmp_path / "evidence")["ok"] is True
 
 
 def test_rights_manifest_matches_exact_source_and_never_uses_a_default(tmp_path):
@@ -210,6 +365,10 @@ def test_rights_templates_parse_and_fail_closed():
     assert rights.load_rights_manifest_entry(root / "rights_manifest.example.json", source) == entry
     assert rights.validate_youtube_publish(record, privacy="private")["ok"] is False
     assert rights.validate_public_distribution(entry)["ok"] is False
+    assert record["visual_rights_basis"] == "unknown"
+    assert record["audio_rights_basis"] == "unknown"
+    assert entry["visual_evidence_reference"] == ""
+    assert entry["audio_evidence_reference"] == ""
 
 
 def test_rights_example_templates_are_valid_and_fail_closed():

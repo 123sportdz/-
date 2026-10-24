@@ -111,7 +111,8 @@ python autopilot.py --channel @OffsideOffside1 --interval 300 --upload none
 
 ### حقوق النشر في Autopilot
 
-قبل تفعيل `--upload telegram` أو `--upload youtube`، انسخ `rights_manifest.example.json` إلى `rights_manifest.json` واملأ سجلاً صادقاً لكل مصدر. المفتاح داخل `items` يجب أن يطابق رابط المصدر الكامل حرفياً؛ لا يوجد سجل عام بديل. يمكن تحديد الملف في `config.json` أو من حقل manifest في تبويب الأتمتة أو تمريره بـ`--rights-manifest`. عند غياب السجل أو نقصه يُحفظ الريل للمراجعة ولا يُرسل.
+قبل تفعيل `--upload telegram` أو `--upload youtube`، انسخ `rights_manifest.example.json` إلى `rights_manifest.json` واملأ سجلاً صادقاً لكل مصدر. المفتاح داخل `items` يجب أن يطابق رابط المصدر الكامل حرفياً؛ لا يوجد سجل عام بديل. حدّد أساس حق الصورة وأساس حق الصوت/الموسيقى كلٌّ على حدة (`visual_rights_basis` و`audio_rights_basis`) واربط كل عنصر بدليله (`visual_evidence_reference` و`audio_evidence_reference`). يجب أن يغطي كل ترخيص الوجهة المختارة. يمكن تحديد الملف في `config.json` أو من حقل manifest في تبويب الأتمتة أو تمريره بـ`--rights-manifest`. عند غياب السجل أو نقصه يُحفظ الريل للمراجعة ولا يُرسل. الحقول القديمة `rights_basis` و`evidence_reference` تبقى مدعومة للتوافق مع السجلات الحالية.
+- النشر العام/غير المدرج/المجدول يتطلب فوق ذلك سجل أصول منظماً (`assets`): لكل أصل المصدر ونوع المادة وصاحب الحق ونوع الإذن ونطاقه الزمني والمنصات المسموحة، مع دليل فعلي داخل `rights_evidence/` (أو `REEL_RIGHTS_EVIDENCE_DIR`) وتُحسب بصمة SHA-256 للدليل. حالات الأصل: `unverified`, `pending_review`, `allowed_within_declared_scope`, `expired`, `rejected`, `out_of_scope`, `not_yet_valid`. النموذج كله تسجيل وإقرارات؛ لا يثبت الملكية ولا يقرر الاستخدام العادل ولا يمنع Content ID.
 
 ```bash
 cp rights_manifest.example.json rights_manifest.json

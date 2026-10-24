@@ -1935,12 +1935,26 @@ def _record_rights_review(job, rights, gates, targets):
             "review_only": gate.get("review_only") is True,
             "target_scope_confirmed": gate.get("target_scope_confirmed") is True,
             "gate_errors": gate_errors,
+            "asset_status": str(gate.get("asset_status") or "")[:40],
+            "asset_errors": [str(item)[:200] for item in (gate.get("asset_errors") or [])[:20]],
         }
     primary = gates.get("youtube") or gates.get("telegram") or {}
+    visual_basis = rights.get("visual_rights_basis") if "visual_rights_basis" in rights else rights.get("rights_basis")
+    audio_basis = rights.get("audio_rights_basis") if "audio_rights_basis" in rights else rights.get("rights_basis")
+    visual_evidence = (rights.get("visual_evidence_reference")
+                       if "visual_evidence_reference" in rights else rights.get("evidence_reference"))
+    audio_evidence = (rights.get("audio_evidence_reference")
+                      if "audio_evidence_reference" in rights else rights.get("evidence_reference"))
+    visual_basis = str(visual_basis or "unknown")[:40]
+    audio_basis = str(audio_basis or "unknown")[:40]
     job["rights_review"] = {
-        "basis": str(rights.get("rights_basis") or "unknown")[:40],
+        "basis": visual_basis if visual_basis == audio_basis else "mixed",
+        "visual_rights_basis": visual_basis,
+        "audio_rights_basis": audio_basis,
         "source_reference": str(rights.get("source_reference") or "")[:1000],
         "evidence_reference": str(rights.get("evidence_reference") or "")[:1000],
+        "visual_evidence_reference": str(visual_evidence or "")[:1000],
+        "audio_evidence_reference": str(audio_evidence or "")[:1000],
         "visual_rights_confirmed": rights.get("visual_rights_confirmed") is True,
         "audio_rights_confirmed": rights.get("audio_rights_confirmed") is True,
         "evidence_reviewed": rights.get("evidence_reviewed") is True,
@@ -2037,7 +2051,8 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
         else:
             try:
                 bot = TelegramBot(CFG["telegram_token"], CFG["telegram_chat"])
-                r = bot.send_video(job["output"], caption=title + ("\n\n" + desc if desc else ""))
+                r = bot.send_video(job["output"], caption=title + ("\n\n" + desc if desc else ""),
+                                   rights=rights)
                 result["telegram"] = {"ok": True, "message_id": r.get("message_id")}
             except Exception as e:
                 result["telegram"] = {"ok": False, "error": friendly_error(e)}
@@ -2098,6 +2113,11 @@ def api_publish(jid: str, payload: dict):
                       "rights_acknowledged", "contains_synthetic_media")
     if any(field in rights and not isinstance(rights[field], bool) for field in boolean_fields):
         raise HTTPException(400, "حقول التأكيد والإفصاح الاصطناعي يجب أن تكون قيماً منطقية")
+    text_limits = {"visual_rights_basis": 40, "audio_rights_basis": 40,
+                   "visual_evidence_reference": 1000, "audio_evidence_reference": 1000}
+    if any(field in rights and (not isinstance(rights[field], str) or len(rights[field]) > limit)
+           for field, limit in text_limits.items()):
+        raise HTTPException(400, "أسس الحقوق ومراجع الصورة والصوت يجب أن تكون نصوصاً ضمن الحد المسموح")
     with _lock:
         job = JOBS.get(jid)
         if not job:
@@ -2181,8 +2201,11 @@ def _job_report_markdown(job):
         lines.append("")
         lines.append("## نموذج الحقوق")
         lines.append(f"- النموذج مكتمل: {'نعم' if r.get('form_complete') else 'لا'}")
-        lines.append(f"- أساس الاستخدام: {r.get('rights_basis', '')}")
+        lines.append(f"- أساس حقوق الصورة: {r.get('visual_rights_basis', r.get('basis', ''))}")
+        lines.append(f"- أساس حقوق الصوت: {r.get('audio_rights_basis', r.get('basis', ''))}")
         lines.append(f"- مرجع المصدر: {r.get('source_reference', '')}")
+        lines.append(f"- دليل الصورة: {r.get('visual_evidence_reference', r.get('evidence_reference', ''))}")
+        lines.append(f"- دليل الصوت: {r.get('audio_evidence_reference', r.get('evidence_reference', ''))}")
         if r.get("submitted_at"):
             lines.append(f"- آخر إرسال: {r['submitted_at']}")
         if r.get("manifest_error"):

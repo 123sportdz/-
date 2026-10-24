@@ -17,6 +17,28 @@ def client(monkeypatch):
     return TestClient(dashboard.app)
 
 
+def _public_evidence(tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    root.mkdir(exist_ok=True)
+    (root / "clip.bin").write_bytes(b"video")
+    (root / "music.bin").write_bytes(b"audio")
+    monkeypatch.setenv("REEL_RIGHTS_EVIDENCE_DIR", str(root))
+
+
+def _public_assets():
+    common = {"review_status": "reviewed", "reviewed_by": "operator"}
+    return [
+        {"asset_id": "clip", "source_reference": "https://example.com/source",
+         "media_type": "video", "rights_holder": "صاحب الحق", "permission_type": "own",
+         "platforms_allowed": ["youtube", "telegram"], "evidence_reference": "clip-ref",
+         "evidence_path": "clip.bin", **common},
+        {"asset_id": "music", "source_reference": "library-track-1",
+         "media_type": "music", "rights_holder": "مكتبة مرخّصة", "permission_type": "licensed",
+         "platforms_allowed": ["youtube", "telegram"], "evidence_reference": "music-ref",
+         "evidence_path": "music.bin", **common},
+    ]
+
+
 def valid_rights():
     return {
         "rights_basis": "licensed",
@@ -77,8 +99,10 @@ def test_publish_api_blocks_output_that_failed_quality_gate(client, monkeypatch)
     assert "publish" not in job
 
 
-def test_publish_api_records_review_before_upload(client, monkeypatch):
+def test_publish_api_records_review_before_upload(client, monkeypatch, tmp_path):
+    _public_evidence(tmp_path, monkeypatch)
     job = {"id": "job-2", "status": "done", "output": "reel.mp4"}
+    rights_payload = {**valid_rights(), "assets": _public_assets()}
     dashboard.JOBS[job["id"]] = job
     calls = []
 
@@ -91,13 +115,13 @@ def test_publish_api_records_review_before_upload(client, monkeypatch):
 
     response = client.post(
         "/api/jobs/job-2/publish",
-        json={"targets": ["youtube"], "privacy": "public", "rights": valid_rights()},
+        json={"targets": ["youtube"], "privacy": "public", "rights": rights_payload},
     )
 
     assert response.status_code == 200
     assert response.json()["youtube"]["id"] == VIDEO_ID
     assert calls and calls[0]["contains_synthetic_media"] is False
-    assert calls[0]["rights"] == valid_rights()
+    assert calls[0]["rights"] == rights_payload
     assert job["rights_review"]["form_complete"] is True
     assert job["rights_review"]["basis"] == "licensed"
     assert job["rights_review"]["targets"] == ["youtube"]
@@ -105,6 +129,67 @@ def test_publish_api_records_review_before_upload(client, monkeypatch):
     assert job["rights_review"]["source_reference"] == "https://example.com/source"
     assert job["publish"]["youtube"]["id"] == VIDEO_ID
     assert "job-2" not in dashboard.PUBLISHING
+
+
+def test_publish_api_records_separate_visual_and_audio_rights(client, monkeypatch, tmp_path):
+    _public_evidence(tmp_path, monkeypatch)
+    job = {"id": "job-split-rights", "status": "done", "output": "reel.mp4"}
+    dashboard.JOBS[job["id"]] = job
+    calls = []
+
+    class FakeUploader:
+        def upload(self, *args, **kwargs):
+            calls.append(kwargs)
+            return {"id": VIDEO_ID}
+
+    monkeypatch.setattr(youtube_module, "YouTubeUploader", FakeUploader)
+    rights = valid_rights()
+    rights.update(
+        rights_basis="unknown",
+        visual_rights_basis="own",
+        audio_rights_basis="licensed",
+        evidence_reference="",
+        visual_evidence_reference="camera-release.pdf",
+        audio_evidence_reference="music-license.pdf",
+        assets=_public_assets(),
+    )
+
+    response = client.post(
+        f"/api/jobs/{job['id']}/publish",
+        json={"targets": ["youtube"], "privacy": "public", "rights": rights},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["youtube"]["ok"] is True
+    review = response.json()["rights_review"]
+    assert review["basis"] == "mixed"
+    assert review["visual_rights_basis"] == "own"
+    assert review["audio_rights_basis"] == "licensed"
+    assert review["visual_evidence_reference"] == "camera-release.pdf"
+    assert review["audio_evidence_reference"] == "music-license.pdf"
+    assert calls[0]["rights"]["visual_rights_basis"] == "own"
+    assert calls[0]["rights"]["audio_rights_basis"] == "licensed"
+
+
+def test_publish_api_rejects_malformed_component_rights_fields(client):
+    cases = (
+        ("visual_rights_basis", 123),
+        ("audio_evidence_reference", 123),
+        ("visual_evidence_reference", "x" * 1001),
+    )
+    for index, (field, value) in enumerate(cases):
+        jid = f"job-component-rights-{index}"
+        dashboard.JOBS[jid] = {"id": jid, "status": "done", "output": "reel.mp4"}
+        rights = valid_rights()
+        rights[field] = value
+
+        response = client.post(
+            f"/api/jobs/{jid}/publish",
+            json={"targets": ["youtube"], "privacy": "public", "rights": rights},
+        )
+
+        assert response.status_code == 400
+        assert "rights_review" not in dashboard.JOBS[jid]
 
 
 def test_scheduled_unknown_rights_are_blocked_before_upload(client, monkeypatch):
@@ -133,7 +218,8 @@ def test_scheduled_unknown_rights_are_blocked_before_upload(client, monkeypatch)
     assert job["rights_review"]["form_complete"] is False
 
 
-def test_scheduled_licensed_upload_keeps_private_upload_and_passes_release_time(client, monkeypatch):
+def test_scheduled_licensed_upload_keeps_private_upload_and_passes_release_time(client, monkeypatch, tmp_path):
+    _public_evidence(tmp_path, monkeypatch)
     job = {"id": "job-scheduled-licensed", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job
     scheduled_for = "2026-10-21T12:00:00Z"
@@ -150,7 +236,8 @@ def test_scheduled_licensed_upload_keeps_private_upload_and_passes_release_time(
 
     response = client.post(
         f"/api/jobs/{job['id']}/publish",
-        json={"targets": ["youtube"], "schedule": "peak", "rights": valid_rights()},
+        json={"targets": ["youtube"], "schedule": "peak",
+              "rights": {**valid_rights(), "assets": _public_assets()}},
     )
 
     assert response.status_code == 200
@@ -188,7 +275,8 @@ def test_telegram_distribution_blocks_unknown_rights_before_sending(client, monk
     assert job["rights_review"]["form_complete"] is False
 
 
-def test_telegram_distribution_accepts_reviewed_rights(client, monkeypatch):
+def test_telegram_distribution_accepts_reviewed_rights(client, monkeypatch, tmp_path):
+    _public_evidence(tmp_path, monkeypatch)
     job = {"id": "tg-rights-accepted", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job
     calls = []
@@ -206,7 +294,7 @@ def test_telegram_distribution_accepts_reviewed_rights(client, monkeypatch):
 
     response = client.post(
         f"/api/jobs/{job['id']}/publish",
-        json={"targets": ["telegram"], "rights": valid_rights()},
+        json={"targets": ["telegram"], "rights": {**valid_rights(), "assets": _public_assets()}},
     )
 
     assert response.status_code == 200
@@ -246,7 +334,8 @@ def test_telegram_publish_blocks_unknown_visual_rights(client, monkeypatch):
     assert job["rights_review"]["target_reviews"]["telegram"]["ok"] is False
 
 
-def test_telegram_publish_accepts_reviewed_license(client, monkeypatch):
+def test_telegram_publish_accepts_reviewed_license(client, monkeypatch, tmp_path):
+    _public_evidence(tmp_path, monkeypatch)
     job = {"id": "tg-licensed", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job
 
@@ -261,7 +350,7 @@ def test_telegram_publish_accepts_reviewed_license(client, monkeypatch):
 
     response = client.post(
         "/api/jobs/tg-licensed/publish",
-        json={"targets": ["telegram"], "rights": valid_rights()},
+        json={"targets": ["telegram"], "rights": {**valid_rights(), "assets": _public_assets()}},
     )
 
     assert response.status_code == 200

@@ -101,10 +101,23 @@ class TelegramBot:
         self.token = token
         self.chat_id = chat_id
 
-    def send_video(self, path, caption="", chat_id=None, supports_streaming=True):
+    def send_video(self, path, caption="", chat_id=None, supports_streaming=True,
+                   rights=None, expected_source=None, private_preview=False):
         chat_id = chat_id or self.chat_id
         if not chat_id:
             raise ValueError("chat_id is required")
+        if private_preview:
+            try:
+                is_private_chat = int(str(chat_id)) > 0
+            except (TypeError, ValueError):
+                is_private_chat = False
+            if not is_private_chat:
+                raise ValueError("private_preview requires a positive numeric Telegram user chat")
+        else:
+            from reelkit import rights as RT
+            gate = RT.validate_public_distribution(rights, expected_source=expected_source)
+            if not gate["ok"]:
+                raise RuntimeError("Telegram rights gate blocked: " + " | ".join(gate["errors"]))
         caption = (caption or "")[:1024]      # حد Bot API للكابشن 1024 حرف — الزيادة ترجع 400
         # حد Bot API الرسمي 50MB (سيرفر محلي يرفعه لـ2GB عبر TELEGRAM_MAX_MB)
         try:
