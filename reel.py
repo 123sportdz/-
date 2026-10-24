@@ -285,6 +285,8 @@ def main(argv=None):
     ap.add_argument("--gemini-voice", choices=VO.GEMINI_VOICES, default="Fenrir")
     ap.add_argument("--voice-rate", type=int, default=10, help="سرعة Edge كنسبة مئوية (-20 إلى +50؛ 0 = طبيعي)")
     ap.add_argument("--voice-pitch", type=int, default=0, help="طبقة Edge بالهرتز (-12 إلى +12)")
+    ap.add_argument("--commentary-pitch", type=int, default=0,
+                    help="طبقة التعليق المُولّد بعد TTS بنصف نغمة (-4 إلى +4؛ لا يغيّر صوت المصدر)")
     ap.add_argument("--voice-gain", type=float, default=1.9, help="مكسب صوت المعلّق أثناء المكس (0.5 إلى 3)")
     ap.add_argument("--voice-duck", type=float, default=0.22, help="مستوى صوت الملعب تحت التعليق (0 = كتم، 1 = كامل)")
     ap.add_argument("--voice-mix", choices=["auto", "fixed", "original", "voice_only"], default="auto",
@@ -361,6 +363,7 @@ def main(argv=None):
             "gemini_voice": a.gemini_voice,
             "voice_rate": a.voice_rate,
             "voice_pitch": a.voice_pitch,
+            "commentary_pitch": a.commentary_pitch,
             "voice_mix": a.voice_mix,
             "voice_gain": a.voice_gain,
             "voice_duck": a.voice_duck,
@@ -682,7 +685,7 @@ def main(argv=None):
             log(f"      {len(det)} raw detections")
         # 🔁 شفاء ذاتي (مسار كلاسيكي فقط): لو الكشف ضعيف نعيد بجودة أعلى.
         # مسار pro يستخدم الشفاء بالتغطية بعد التتبّع (أدق — v1.44).
-        use_pro = a.tracker in ("auto", "pro") and a.subject == "ball"
+        use_pro = TK.uses_pro_tracker(a.tracker, a.subject)
         if not a.no_retry and q in ("fast", "balanced") and not use_pro:
             dps = len(det) / max(1.0, info["duration"])
             if 0.2 <= dps < 3.0:      # كشف ضعيف لكن موجود (صفر = مقطع أصلاً بلا كرة)
@@ -1106,6 +1109,13 @@ def main(argv=None):
                         log(f"      ⚠️ {reason}؛ أوقفت الصوت كي لا يُقطع عند نهاية الفيديو، وبقي النص للمراجعة")
                 except Exception as e:
                     log(f"      ⚠️ تعذّر توليد الصوت ({type(e).__name__}: {str(e)[:90]}) — سيظهر التعليق كتابةً")
+
+        if voice_wav and a.commentary_pitch:
+            try:
+                voice_wav = VO.shift_commentary_pitch(voice_wav, a.commentary_pitch)
+                log(f"      🎚️ طبقة التعليق المُولّد: {a.commentary_pitch:+d} نصف نغمة؛ الصوت الأصلي للمباراة لم يتغير")
+            except Exception:
+                raise RuntimeError("تعذّر تعديل طبقة التعليق المُولّد؛ أوقفنا المخرج بدل تجاهل الإعداد") from None
 
         # ---------- 🔤 كابشن كلمة-بكلمة (متزامن مع التعليق) ----------
         cap_cues = None

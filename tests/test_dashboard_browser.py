@@ -93,3 +93,23 @@ def test_injected_job_appears_in_jobs_list(dash_url):
     finally:
         with dashboard._lock:
             dashboard.JOBS.pop(jid, None)
+
+
+def test_voice_studio_fits_mobile_and_expands_manual_script(dash_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.goto(dash_url, wait_until="networkidle", timeout=30000)
+        panel = page.locator("#voicePanel")
+        assert panel.is_visible()
+        script = page.locator("#commentary_script")
+        script.fill("هجمة منظمة تصل إلى المرمى، واللاعب يسدد بقوة. " * 10)
+        dimensions = script.evaluate("el => ({height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width})")
+        panel_bounds = panel.bounding_box()
+        assert dimensions["height"] > 100
+        assert panel_bounds["x"] >= 0
+        assert panel_bounds["x"] + panel_bounds["width"] <= 390
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()

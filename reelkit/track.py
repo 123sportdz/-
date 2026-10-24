@@ -132,6 +132,12 @@ def interp_series(ball, tf, max_gap=0.5):
                 out[i] = xs[j-1]*(1-w) + xs[j]*w
     return out
 
+def uses_pro_tracker(tracker, subject):
+    """Use ball tracking for ball- and action-focused framing, with action fallback."""
+    return str(tracker or "").strip().lower() in {"auto", "pro"} and \
+        str(subject or "").strip().lower() in {"ball", "action"}
+
+
 def blend_with_action(bx, ax, ball_weight=0.75):
     """final crop target: ball-led, action-centred fallback where the ball is lost."""
     target = bx.copy()

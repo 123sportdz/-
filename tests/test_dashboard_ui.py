@@ -116,6 +116,11 @@ def test_voice_studio_exposes_energy_mix_and_preview_controls():
     assert "function previewVoice()" in js
     assert '"commentary_words"' in js
     assert "elhadath_voice_v1" in js
+    assert 'id="commentary_pitch"' in html
+    assert "function resizeCommentaryScript()" in js
+    assert "Math.min(field.scrollHeight,maxHeight)" in js
+    assert "minmax(0,1fr)" in html
+    assert "صوت البث الأصلي لا يتغير" in html
     assert "/api/voice/preview" in js
 
 

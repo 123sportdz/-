@@ -1,12 +1,14 @@
 import base64
 import io
 import json
+import shutil
 import subprocess
 import wave
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
 from fastapi.testclient import TestClient
 
 import dashboard
@@ -31,6 +33,9 @@ def test_voice_defaults_and_ranges():
     assert voice.normalize_controls({"commentary_words": 8})["commentary_words"] == 8
     assert voice.normalize_controls({"commentary_words": 80})["commentary_words"] == 80
     assert defaults["voice_mix"] == "auto"
+    assert defaults["commentary_pitch"] == 0
+    assert voice.normalize_controls({"commentary_pitch": 4})["commentary_pitch"] == 4
+    assert voice.normalize_controls({"commentary_pitch": -4})["commentary_pitch"] == -4
     assert voice.normalize_controls({"voice_rate": -20, "voice_pitch": 12})["voice_rate"] == -20
     with pytest.raises(ValueError):
         voice.normalize_controls([])
@@ -52,6 +57,12 @@ def test_voice_defaults_and_ranges():
         voice.normalize_controls({"voice_mix": "not-a-mode"})
 
 
+@pytest.mark.parametrize("value", [-5, 5, True, 1.5, "loud"])
+def test_commentary_pitch_rejects_out_of_range_or_noninteger(value):
+    with pytest.raises(ValueError):
+        voice.normalize_controls({"commentary_pitch": value})
+
+
 def test_voice_script_normalization_and_limit():
     assert voice.normalize_script("  هدف\tرائع!\n  ") == "هدف رائع!"
     with pytest.raises(ValueError):
@@ -69,6 +80,67 @@ def test_edge_rate_pitch_format_and_limits():
         voice.edge_rate(101)
     with pytest.raises(ValueError):
         voice.edge_pitch(21)
+
+
+def test_commentary_pitch_shift_changes_tone_without_changing_duration(tmp_path):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe غير متاح")
+    source = tmp_path / "tone.wav"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+        "sine=frequency=440:sample_rate=48000:duration=2", "-c:a", "pcm_s16le", str(source),
+    ], check=True, timeout=30)
+    source_bytes = source.read_bytes()
+    shifted = voice.shift_commentary_pitch(str(source), 2)
+    try:
+        with wave.open(shifted, "rb") as audio:
+            rate = audio.getframerate()
+            frames = audio.getnframes()
+            channels = audio.getnchannels()
+            samples = np.frombuffer(audio.readframes(frames), dtype="<i2")
+        assert abs(frames / rate - 2.0) < 0.12
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1)
+        window = samples[int(0.4 * rate):int(1.4 * rate)].astype(float)
+        spectrum = np.abs(np.fft.rfft(window * np.hanning(len(window))))
+        frequencies = np.fft.rfftfreq(len(window), 1 / rate)
+        measured = frequencies[1:][np.argmax(spectrum[1:])]
+        assert abs(measured - 440 * (2 ** (2 / 12))) < 3
+        assert source.read_bytes() == source_bytes
+    finally:
+        Path(shifted).unlink(missing_ok=True)
+
+
+def test_commentary_pitch_filters_include_time_preserving_fallback():
+    rubberband, fallback = voice.commentary_pitch_filters(2)
+    assert rubberband.startswith("rubberband=pitch=")
+    assert "tempo=1.0" in rubberband
+    assert "atempo=" in fallback and "asetrate=" in fallback
+    assert voice.commentary_pitch_filters(0) == ()
+
+
+def test_commentary_pitch_uses_standard_filter_when_rubberband_is_unavailable(tmp_path, monkeypatch):
+    source = tmp_path / "tts.wav"
+    source.write_bytes(b"original-audio")
+    calls = []
+    monkeypatch.setattr(voice, "audio_seconds", lambda _path: 2.0)
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if any("rubberband=" in str(part) for part in command):
+            return SimpleNamespace(returncode=1, stderr="filter not found")
+        Path(command[-1]).write_bytes(b"shifted-audio" * 20)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    output = Path(voice.shift_commentary_pitch(str(source), 2))
+    try:
+        assert len(calls) == 2
+        assert any("rubberband=" in str(part) for part in calls[0])
+        assert any("asetrate=" in str(part) for part in calls[1])
+        assert source.read_bytes() == b"original-audio"
+    finally:
+        output.unlink(missing_ok=True)
 
 
 def test_audio_seconds_uses_ffprobe_and_rejects_invalid_durations(tmp_path, monkeypatch):
@@ -427,6 +499,7 @@ def test_dashboard_passes_voice_controls_and_manual_script():
         "gemini_voice": "Charon",
         "voice_rate": 14,
         "voice_pitch": -2,
+        "commentary_pitch": 2,
         "voice_gain": 2.2,
         "voice_duck": 0.18,
         "voice_mix": "fixed",
@@ -445,6 +518,7 @@ def test_dashboard_passes_voice_controls_and_manual_script():
     assert value("--gemini-voice") == "Charon"
     assert value("--voice-rate") == "14"
     assert value("--voice-pitch") == "-2"
+    assert value("--commentary-pitch") == "2"
     assert value("--voice-gain") == "2.2"
     assert value("--voice-duck") == "0.18"
     assert value("--voice-mix") == "fixed"
@@ -474,21 +548,31 @@ def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch):
         Path(out_path).write_bytes(b"audio" * 100)
         return {"path": out_path, "engine": "edge", "seconds": 1.0}
 
+    def fake_pitch(path, semitones):
+        output = Path(path).with_name("pitched-" + Path(path).name + ".wav")
+        output.write_bytes(b"pitched-audio" * 100)
+        captured["pitch_path"] = str(output)
+        captured["commentary_pitch"] = semitones
+        return str(output)
+
     monkeypatch.setattr(dashboard.VOICE, "say", fake_say)
+    monkeypatch.setattr(dashboard.VOICE, "shift_commentary_pitch", fake_pitch)
     client = TestClient(dashboard.app)
     response = client.post("/api/voice/preview", json={
         "text": "جملة معاينة", "voice_engine": "edge", "edge_voice": "ar-DZ-IsmaelNeural",
-        "commentary_energy": 93,
+        "commentary_energy": 93, "commentary_pitch": 2,
     })
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.headers["content-type"].startswith("audio/wav")
     assert response.headers["x-voice-engine"] == "edge"
-    assert response.content == b"audio" * 100
+    assert response.content == b"pitched-audio" * 100
     assert captured["text"] == "جملة معاينة"
     assert captured["rate"] == 10
     assert captured["energy"] == 93
+    assert captured["commentary_pitch"] == 2
     assert not Path(captured["path"]).exists()
+    assert not Path(captured["pitch_path"]).exists()
 
 
 def test_voice_preview_api_rejects_invalid_controls_without_synthesis(monkeypatch):

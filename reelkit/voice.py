@@ -58,7 +58,7 @@ COMMENTARY_STYLES = {
 DEFAULTS = {
     "voice_engine": "auto", "commentary_style": "broadcast",
     "edge_voice": EDGE_DEFAULT, "gemini_voice": "Fenrir",
-    "voice_rate": 10, "voice_pitch": 0, "commentary_energy": 70,
+    "voice_rate": 10, "voice_pitch": 0, "commentary_pitch": 0, "commentary_energy": 70,
     "commentary_words": 22, "voice_gain": 1.9, "voice_duck": 0.22, "voice_mix": "auto",
 }
 STYLE = COMMENTARY_STYLES["broadcast"]["tts"]
@@ -102,6 +102,8 @@ def normalize_controls(values=None):
         raise ValueError("نمط مزج الصوت غير معروف")
     rate = _bounded_int(values.get("voice_rate", DEFAULTS["voice_rate"]), "سرعة الصوت", -20, 50)
     pitch = _bounded_int(values.get("voice_pitch", DEFAULTS["voice_pitch"]), "طبقة الصوت", -12, 12)
+    commentary_pitch = _bounded_int(values.get("commentary_pitch", DEFAULTS["commentary_pitch"]),
+                                    "طبقة التعليق المُولّد", -4, 4)
     try:
         gain_raw = values.get("voice_gain", DEFAULTS["voice_gain"])
         duck_raw = values.get("voice_duck", DEFAULTS["voice_duck"])
@@ -117,9 +119,59 @@ def normalize_controls(values=None):
     return {
         "voice_engine": engine, "commentary_style": style,
         "edge_voice": edge_voice, "gemini_voice": gemini_voice,
-        "voice_rate": rate, "voice_pitch": pitch, "commentary_energy": energy,
-        "commentary_words": words, "voice_mix": mix, "voice_gain": gain, "voice_duck": duck,
+        "voice_rate": rate, "voice_pitch": pitch, "commentary_pitch": commentary_pitch,
+        "commentary_energy": energy, "commentary_words": words, "voice_mix": mix,
+        "voice_gain": gain, "voice_duck": duck,
     }
+
+
+def commentary_pitch_filters(semitones):
+    semitones = _bounded_int(semitones, "طبقة التعليق المُولّد", -4, 4)
+    if semitones == 0:
+        return ()
+    ratio = 2.0 ** (semitones / 12.0)
+    target_rate = int(round(48000 * ratio))
+    tempo = 48000.0 / target_rate
+    return (
+        f"rubberband=pitch={ratio:.8f}:tempo=1.0",
+        f"aresample=48000,asetrate={target_rate},atempo={tempo:.8f},aresample=48000",
+    )
+
+
+def shift_commentary_pitch(path, semitones, timeout=120):
+    """غيّر طبقة صوت TTS فقط مع حفظ المدة؛ لا يلمس مسار صوت الفيديو الأصلي."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    semitones = _bounded_int(semitones, "طبقة التعليق المُولّد", -4, 4)
+    source = Path(path)
+    if semitones == 0:
+        return str(source)
+    if not source.is_file():
+        raise ValueError("ملف التعليق المُولّد غير موجود")
+    source_duration = audio_seconds(str(source))
+    if source_duration <= 0:
+        raise RuntimeError("تعذّر قياس مدة التعليق المُولّد")
+    fd, output = tempfile.mkstemp(prefix="commentary-pitch-", suffix=".wav", dir=str(source.parent))
+    os.close(fd)
+    try:
+        for audio_filter in commentary_pitch_filters(semitones):
+            Path(output).unlink(missing_ok=True)
+            result = subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:a:0", "-vn",
+                 "-af", audio_filter, "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", output],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            if result.returncode != 0 or not Path(output).is_file() or Path(output).stat().st_size < 100:
+                continue
+            output_duration = audio_seconds(output)
+            if output_duration > 0 and abs(output_duration - source_duration) <= max(0.15, source_duration * 0.025):
+                return output
+        raise RuntimeError("تعذّر تعديل طبقة التعليق المُولّد")
+    except Exception:
+        Path(output).unlink(missing_ok=True)
+        raise
 
 
 def normalize_script(text):

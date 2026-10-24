@@ -130,7 +130,10 @@ def process(post, a, state):
     if a.start: cmd += ["--start", a.start]
     if a.end: cmd += ["--end", a.end]
     if a.keep_watermarks: cmd += ["--keep-watermarks"]
-    if a.commentary: cmd += ["--commentary", "--commentary-words", str(getattr(a, "commentary_words", 22))]
+    if a.commentary:
+        cmd += ["--commentary", "--commentary-words", str(getattr(a, "commentary_words", 22))]
+        if getattr(a, "commentary_pitch", 0):
+            cmd += ["--commentary-pitch", str(a.commentary_pitch)]
     if a.voice: cmd += ["--voice", a.voice]
     if post.get("text"): cmd += ["--caption", post["text"][:400]]
     if (a.device or CFG.get("device")): cmd += ["--device", str(a.device or CFG.get("device"))]
@@ -274,6 +277,8 @@ def main():
     ap.add_argument("--commentary", action="store_true", help="🎙️ تعليق عربي مولّد")
     ap.add_argument("--commentary-words", type=int, default=22,
                     help="الحد الأعلى لكلمات التعليق المولّد (8–80، افتراضي 22)")
+    ap.add_argument("--commentary-pitch", type=int, choices=range(-4, 5), default=0,
+                    help="طبقة التعليق المُولّد بنصف نغمة (-4 إلى +4؛ لا يغير صوت المصدر)")
     ap.add_argument("--layout", default="single", choices=["single","split"])
     ap.add_argument("--voice", default="")
     ap.add_argument("--device", default=None, help="cpu | 0 (أول كرت) | cuda:0")
@@ -288,7 +293,8 @@ def main():
                     help="🕓 جدولة النشر لأقرب ذروة مشاهدة بدل النشر الفوري (publishAt)")
     a = ap.parse_args()
     try:
-        VOICE.normalize_controls({"commentary_words": a.commentary_words})
+        VOICE.normalize_controls({"commentary_words": a.commentary_words,
+                                  "commentary_pitch": a.commentary_pitch})
     except ValueError as exc:
         ap.error(str(exc))
     from reelkit.publish.telegram import parse_telegram_ref

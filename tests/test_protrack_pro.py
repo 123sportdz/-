@@ -2,6 +2,23 @@ import numpy as np
 import pytest
 
 from reelkit import protrack as PT
+from reelkit import track as TK
+
+
+@pytest.mark.parametrize(
+    ("tracker", "subject", "expected"),
+    [("auto", "action", True), ("pro", "action", True),
+     ("auto", "ball", True), ("classic", "action", False),
+     ("auto", "player", False)],
+)
+def test_default_action_mode_uses_pro_ball_tracker_with_action_fallback(tracker, subject, expected):
+    assert TK.uses_pro_tracker(tracker, subject) is expected
+
+
+def test_action_framing_falls_back_to_players_when_ball_track_is_missing():
+    ball = np.full(5, np.nan)
+    players = np.array([110.0, 125.0, 140.0, 155.0, 170.0])
+    assert np.array_equal(TK.blend_with_action(ball, players), players)
 
 
 def _speed_track(fps=60.0, n=240, speed=900.0):

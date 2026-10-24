@@ -1,10 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { storage } from './storage';
 
-declare const process: {
-  env?: Record<string, string | undefined>;
-};
-
 export const SCRIPT_WORD_LIMITS: Record<string, number> = {
   short: 22,
   medium: 40,
@@ -93,7 +89,7 @@ export const geminiService = {
     jobTitle?: string;
   }): Promise<{ text: string; title: string }> {
     const settings = storage.getSettings();
-    const apiKey = settings.gemini_api_key || (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
+    const apiKey = String(settings.gemini_api_key || '').trim();
     const model = settings.gemini_model || 'gemini-2.5-flash';
 
     const wordCap = params.mode === 'script' ? SCRIPT_WORD_LIMITS[params.length] || 22 : undefined;

@@ -1466,7 +1466,9 @@ def _make_args(payload, src, out):
                  "--commentary-words", str(voice["commentary_words"]),
                  "--voice-engine", voice["voice_engine"], "--edge-voice", voice["edge_voice"],
                  "--gemini-voice", voice["gemini_voice"], "--voice-rate", str(voice["voice_rate"]),
-                 "--voice-pitch", str(voice["voice_pitch"]), "--voice-gain", str(voice["voice_gain"]),
+                 "--voice-pitch", str(voice["voice_pitch"]),
+                 "--commentary-pitch", str(voice["commentary_pitch"]),
+                 "--voice-gain", str(voice["voice_gain"]),
                  "--voice-duck", str(voice["voice_duck"]), "--voice-mix", voice["voice_mix"]]
         if voice["commentary_script"]:
             args += ["--commentary-script", voice["commentary_script"]]
@@ -2425,6 +2427,7 @@ def api_voice_preview(payload: dict):
         raise HTTPException(503, "معاينة Gemini تحتاج مفتاحاً محفوظاً في إعدادات المشروع")
     fd, temp_path = tempfile.mkstemp(prefix="voice-preview-", suffix=".audio", dir=str(OUT))
     os.close(fd)
+    pitch_path = None
     try:
         result = VOICE.say(
             text, temp_path, engine=voice["voice_engine"], style=voice["commentary_style"],
@@ -2435,11 +2438,14 @@ def api_voice_preview(payload: dict):
         audio_path = Path(result.get("path") or temp_path)
         if audio_path.resolve() != Path(temp_path).resolve():
             raise HTTPException(502, "تعذر تأمين ملف معاينة الصوت")
+        if voice["commentary_pitch"]:
+            pitch_path = Path(VOICE.shift_commentary_pitch(str(audio_path), voice["commentary_pitch"]))
+            audio_path = pitch_path
         content = audio_path.read_bytes()
         if len(content) < 100:
             raise HTTPException(502, "ملف معاينة الصوت غير صالح")
         engine = result.get("engine")
-        media_type = "audio/mpeg" if engine == "edge" else "audio/wav"
+        media_type = "audio/wav" if voice["commentary_pitch"] or engine != "edge" else "audio/mpeg"
         return Response(content, media_type=media_type, headers={
             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
             "X-Voice-Engine": str(engine or "unknown"),
@@ -2451,6 +2457,8 @@ def api_voice_preview(payload: dict):
         raise HTTPException(502, "تعذرت معاينة الصوت؛ تحقق من المحرك والاتصال") from None
     finally:
         Path(temp_path).unlink(missing_ok=True)
+        if pitch_path is not None:
+            pitch_path.unlink(missing_ok=True)
 
 
 @app.post("/api/preview")

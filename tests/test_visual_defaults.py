@@ -196,6 +196,10 @@ def test_autopilot_validates_and_forwards_commentary_word_limit():
     process_source = ast.get_source_segment(path.read_text(encoding="utf-8"), process)
     assert '"--commentary-words"' in process_source
     assert 'getattr(a, "commentary_words", 22)' in process_source
+    assert 'getattr(a, "commentary_pitch", 0)' in process_source
+    assert '"--commentary-pitch"' in process_source
+    assert '"commentary_pitch": a.commentary_pitch' in ast.get_source_segment(
+        path.read_text(encoding="utf-8"), _function(path, "main"))
     main = _function(path, "main")
     main_source = ast.get_source_segment(path.read_text(encoding="utf-8"), main)
     assert "VOICE.normalize_controls" in main_source
