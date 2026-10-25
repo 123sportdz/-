@@ -67,6 +67,7 @@ def load_cfg(persist=False):
            "telegram_channel": "", "youtube_channel_id": "", "youtube_privacy": "private",
            "rights_manifest": "rights_manifest.json",
            "device": "", "gemini_api_key": "", "gemini_model": "",
+           "external_text_consent": False, "gemini_frame_consent": False,
            "auto_ai_title": True, "auto_youtube": False, "auto_telegram": False,
            "schedule_peak": False, "auto_translate": True, "max_dur": 58,
            "accent": "auto", "tracker": "auto", "zoom": "auto",
@@ -686,8 +687,12 @@ def _auto_after(job):
                 ocr = TITLEMOD.read_scoreboard(job["output"])[0][:300]
             except Exception:
                 pass
-            meta = AI.ai_meta(job["output"], caption=caption, ocr=ocr, brand=brand,
-                              api_key=CFG.get("gemini_api_key"), model=CFG.get("gemini_model") or None)
+            meta = AI.ai_meta(
+                job["output"], caption=caption, ocr=ocr, brand=brand,
+                api_key=CFG.get("gemini_api_key"), model=CFG.get("gemini_model") or None,
+                consent_text=CFG.get("external_text_consent") is True,
+                consent_frames=CFG.get("gemini_frame_consent") is True,
+            )
         except Exception:
             pass
     if not meta.get("title"):
@@ -807,7 +812,7 @@ def api_config():
 ALLOWED_CFG_KEYS = {
     "brand_name", "brand_url", "show_channel_name", "telegram_token", "telegram_chat", "telegram_channel",
     "youtube_channel_id", "youtube_privacy", "rights_manifest", "device", "gemini_api_key", "gemini_model",
-    "auto_ai_title", "auto_youtube", "auto_telegram", "schedule_peak", "auto_translate",
+    "external_text_consent", "gemini_frame_consent", "auto_ai_title", "auto_youtube", "auto_telegram", "schedule_peak", "auto_translate",
     "max_dur", "accent", "tracker", "zoom", "no_ai",
     "logo_path", "logo_pos", "logo_scale", "logo_opacity", "logo_plate",
     "logo_radius", "logo_margin", "logo_enabled",
@@ -850,7 +855,17 @@ def _coerce_cfg_num(key, v):
 
 @app.post("/api/settings")
 def api_settings_set(payload: dict):
-    for k, v in (payload or {}).items():
+    payload = payload or {}
+    consent_keys = {"external_text_consent", "gemini_frame_consent"}
+    for key in consent_keys & payload.keys():
+        if not isinstance(payload[key], bool):
+            raise HTTPException(400, "موافقة Gemini يجب أن تكون قيمة منطقية صريحة")
+    if consent_keys & payload.keys():
+        text_consent = payload.get("external_text_consent", CFG.get("external_text_consent") is True)
+        frame_consent = payload.get("gemini_frame_consent", CFG.get("gemini_frame_consent") is True)
+        if frame_consent and not text_consent:
+            raise HTTPException(400, "موافقة إرسال الصور تتطلب موافقة منفصلة على إرسال النص أولاً")
+    for k, v in payload.items():
         if k not in ALLOWED_CFG_KEYS or v is None or "•" in str(v):
             continue
         if str(k).startswith("tg_") and str(v).strip() == "":
@@ -858,6 +873,9 @@ def api_settings_set(payload: dict):
         if k == "show_channel_name":
             if not isinstance(v, bool):
                 raise HTTPException(400, "خيار إظهار اسم القناة يجب أن يكون صحيحاً")
+            CFG[k] = v
+            continue
+        if k in {"external_text_consent", "gemini_frame_consent"}:
             CFG[k] = v
             continue
         if k in _CFG_NUM:
@@ -873,7 +891,9 @@ def api_settings_set(payload: dict):
 
 
 def _raise_writer_http_error(exc):
-    if isinstance(exc, WRITER.WriterInputError):
+    if isinstance(exc, WRITER.WriterConsentError):
+        status = 428
+    elif isinstance(exc, WRITER.WriterInputError):
         status = 400
     elif isinstance(exc, WRITER.WriterConfigurationError):
         status = 409
@@ -958,9 +978,12 @@ def api_creative_generate(payload: dict):
             except (TypeError, ValueError):
                 duration = 0
             payload["clip_duration"] = f"{max(0, duration):.1f} ثانية" if duration else ""
-        return WRITER.generate(payload, api_key=CFG.get("gemini_api_key"),
-                               model=CFG.get("gemini_model") or None,
-                               video_path=video_path, output_dir=OUT if video_path else None)
+        return WRITER.generate(
+            payload, api_key=CFG.get("gemini_api_key"), model=CFG.get("gemini_model") or None,
+            video_path=video_path, output_dir=OUT if video_path else None,
+            consent_text=payload.get("consent_text") is True,
+            consent_frames=payload.get("consent_frames", False),
+        )
     except WRITER.WriterError as exc:
         _raise_writer_http_error(exc)
 
@@ -1534,8 +1557,16 @@ def _create(payload):
         raise HTTPException(400, "خيار المعلّق الذكي يجب أن يكون قيمة منطقية")
     if "transformative" in payload and not isinstance(payload["transformative"], bool):
         raise HTTPException(400, "خيار التعليق التحليلي يجب أن يكون قيمة منطقية")
-    commentary_requested = payload.get("commentary") is True or payload.get("transformative") is True
-    if commentary_requested and not voice["commentary_script"] and not AI._key(CFG.get("gemini_api_key")):
+    if "commentary_text_only" in payload and not isinstance(payload["commentary_text_only"], bool):
+        raise HTTPException(400, "خيار النص فقط يجب أن يكون قيمة منطقية")
+    manual_script = bool(voice["commentary_script"])
+    commentary_requested = (payload.get("commentary") is True
+                            or payload.get("transformative") is True or manual_script)
+    needs_ai_text = commentary_requested and not manual_script
+    needs_tts = commentary_requested and not payload.get("commentary_text_only", False)
+    if (needs_ai_text or needs_tts) and CFG.get("external_text_consent") is not True:
+        raise HTTPException(428, "تتطلب معالجة التعليق موافقة إرسال النص إلى الخدمة الصوتية/الذكاء الاصطناعي. فعّلها من إعدادات Gemini أو اختر معالجة نصية يدوية فقط.")
+    if needs_ai_text and not AI._key(CFG.get("gemini_api_key")):
         raise HTTPException(422, "المعلّق الذكي يحتاج مفتاح Gemini. أضفه في إعدادات اللوحة أو أدخل نصاً يدوياً.")
     if voice["commentary_script"]:
         payload["commentary"] = True
@@ -1901,7 +1932,8 @@ def api_suggest(jid: str, payload: dict | None = None):
         raise HTTPException(404, "job not found")
     brand = CFG.get("brand_name") or "الحدث"
     caption = (payload or {}).get("caption") or job.get("caption") or ""
-    use_ai = payload.get("ai", True) and CFG.get("gemini_api_key") and CFG.get("auto_ai_title", True)
+    use_ai = (payload.get("ai", True) and CFG.get("gemini_api_key")
+              and CFG.get("auto_ai_title", True) and CFG.get("external_text_consent") is True)
     if use_ai:
         try:
             ocr = ""
@@ -1909,9 +1941,13 @@ def api_suggest(jid: str, payload: dict | None = None):
                 ocr = TITLEMOD.read_scoreboard(job.get("output") or job.get("input"))[0][:300]
             except Exception:
                 pass
-            s = AI.ai_meta(job.get("output") or job.get("input"), caption=caption, ocr=ocr,
-                           brand=brand, api_key=CFG.get("gemini_api_key"),
-                           model=CFG.get("gemini_model") or None)
+            s = AI.ai_meta(
+                job.get("output") or job.get("input"), caption=caption, ocr=ocr,
+                brand=brand, api_key=CFG.get("gemini_api_key"),
+                model=CFG.get("gemini_model") or None,
+                consent_text=CFG.get("external_text_consent") is True,
+                consent_frames=CFG.get("gemini_frame_consent") is True,
+            )
         except Exception as e:
             s = TITLEMOD.from_caption(caption, brand=brand) or TITLEMOD.suggest(job.get("input"), brand=brand)
             s["ai_error"] = str(e)[:150]
@@ -1922,12 +1958,13 @@ def api_suggest(jid: str, payload: dict | None = None):
             if c["title"] and c["title"] != "مقطع من المباراة":
                 s.update({k: c[k] for k in ("title", "description", "tags")})
     # 🌍 ترجمة العنوان/الوصف (EN/FR) للوصول الأوسع
-    if CFG.get("gemini_api_key") and (payload or {}).get("translate",
-                                                       CFG.get("auto_translate", True)):
+    if (CFG.get("gemini_api_key") and CFG.get("external_text_consent") is True
+            and (payload or {}).get("translate", CFG.get("auto_translate", True))):
         try:
             tr = AI.translate_meta(s.get("title", ""), s.get("description", ""),
                                    api_key=CFG.get("gemini_api_key"),
-                                   model=CFG.get("gemini_model") or None)
+                                   model=CFG.get("gemini_model") or None,
+                                   consent_text=True)
             if tr:
                 block = AI.multilang_block(tr)
                 if block:
@@ -2506,6 +2543,8 @@ def api_voice_preview(payload: dict):
     text = voice["commentary_script"] or VOICE.normalize_script(payload.get("text"))
     if not text:
         raise HTTPException(400, "اكتب جملة قصيرة لمعاينة الصوت")
+    if payload.get("consent_text") is not True:
+        raise HTTPException(428, "وافق صراحةً على إرسال نص المعاينة إلى محرّك الصوت الخارجي أولاً")
     if voice["voice_engine"] == "gemini" and not VOICE._key():
         raise HTTPException(503, "معاينة Gemini تحتاج مفتاحاً محفوظاً في إعدادات المشروع")
     fd, temp_path = tempfile.mkstemp(prefix="voice-preview-", suffix=".audio", dir=str(OUT))
@@ -2517,6 +2556,7 @@ def api_voice_preview(payload: dict):
             rate=voice["voice_rate"], pitch=voice["voice_pitch"],
             energy=voice["commentary_energy"],
             edge_voice=voice["edge_voice"], gemini_voice=voice["gemini_voice"],
+            consent_text=True,
         )
         audio_path = Path(result.get("path") or temp_path)
         if audio_path.resolve() != Path(temp_path).resolve():

@@ -361,7 +361,9 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
         </div>
         <label for="commentary_script">نص المعلّق (اختياري — يتجاوز كتابة الذكاء الاصطناعي)</label>
         <textarea id="commentary_script" rows="4" maxlength="500" placeholder="اتركه فارغاً ليكتب Gemini التعليق من اللقطة…" aria-describedby="commentaryScriptHelp"></textarea>
-        <div class="voice-note" id="commentaryScriptHelp">يحدد المؤشر الحد الأعلى لتعليق AI (8–80 كلمة، 22 افتراضياً)؛ النص اليدوي يتجاوز هذا الحد ويتمدّد تلقائياً حتى يظهر كاملاً. الحماسة والأسلوب يوجّهان الكتابة وصوت Gemini؛ سرعة وطبقة Edge تخصان Edge، وطبقة التعليق المُولّد تعمل مع المحركين. صوت البث الأصلي لا يتغير. المعاينة ترسل النص فقط، ولا ترسل الفيديو.</div>
+        <div class="voice-note" id="commentaryScriptHelp">يحدد المؤشر الحد الأعلى لتعليق AI (8–80 كلمة، 22 افتراضياً)؛ النص اليدوي يتجاوز هذا الحد ويتمدّد تلقائياً حتى يظهر كاملاً. الحماسة والأسلوب يوجّهان الكتابة وصوت Gemini؛ سرعة وطبقة Edge تخصان Edge، وطبقة التعليق المُولّد تعمل مع المحركين. صوت البث الأصلي لا يتغير. المعاينة لا ترسل الفيديو.</div>
+        <label><input type="checkbox" id="voicePreviewConsent"> أوافق لهذه المعاينة فقط على إرسال النص إلى خدمة الصوت السحابية (Gemini أو Edge)</label>
+        <div class="voice-note">يرسل نص المعاينة فقط إلى المحرك المختار، ولا يرسل الفيديو. لا يحدد التطبيق مدة احتفاظ الخدمة الخارجية بالنص ولا يضمنها.</div>
         <div class="voice-actions"><button class="btn cyan sm" id="voicePreviewBtn" type="button" onclick="previewVoice()">🎧 اسمع معاينة الصوت</button></div>
         <audio id="voicePreviewAudio" controls preload="none" style="display:none;width:100%;margin-top:10px"></audio>
         <div id="voicePreviewStatus" class="voice-note" role="status" aria-live="polite"></div>
@@ -645,6 +647,13 @@ video{width:100%;border-radius:12px;background:#000;border:1px solid var(--bd)}
     <div class="row">
       <div><label>مفتاح Gemini API</label><input id="set_gem" placeholder="AQ.… من aistudio.google.com"></div>
       <div><label>الموديل (اتركه فاضي = تلقائي)</label><input id="set_gemmodel" placeholder="gemini-3.5-flash"></div>
+    </div>
+    <div class="warn" role="note" style="margin-top:8px">
+      🔒 عند الموافقة على النص، قد تُرسل إلى Google Gemini أو Microsoft Edge TTS البيانات النصية اللازمة للعملية، مثل الكابشن ونتيجة OCR والعنوان والوصف ونص التعليق. لا يُرسل الفيديو كاملاً. وموافقة الصور منفصلة: ترسل حتى 3 صور ثابتة مصغّرة إلى Gemini فقط. لا يحدد البرنامج مدة احتفاظ الخدمة الخارجية بالبيانات ولا يضمنها؛ راجع شروطها الحالية. من دون الموافقة المناسبة لا يرسل التطبيق البيانات إلى تلك الخدمات.
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="set_external_text_consent"> أوافق على إرسال النصوص اللازمة إلى Gemini أو Edge TTS عند التوليد</label>
+      <label><input type="checkbox" id="set_gem_frame_consent" disabled> أوافق بشكل منفصل على إرسال حتى 3 صور ثابتة مصغّرة من الفيديو</label>
     </div>
     <div class="row">
       <label><input type="checkbox" id="set_ai"> ✨ عنوان تلقائي بالذكاء الاصطناعي</label>
@@ -1303,9 +1312,10 @@ function applyVoicePreset(name){
 }
 async function previewVoice(){
   const button=$("voicePreviewBtn"),status=$("voicePreviewStatus"),old=button.textContent;
-  button.disabled=true;button.textContent="جارٍ صنع معاينة قصيرة…";status.textContent="يُرسل النص فقط إلى محرّك الصوت المختار.";
+  if(!$("voicePreviewConsent").checked){status.textContent="حدّد الموافقة لهذه المعاينة قبل إرسال النص إلى خدمة الصوت.";return}
+  button.disabled=true;button.textContent="جارٍ صنع معاينة قصيرة…";status.textContent="سيُرسل النص فقط إلى خدمة الصوت السحابية؛ لا يُرسل الفيديو.";
   try{
-    const payload={...voiceOpts(),text:$("commentary_script").value.trim()||"الكرة تصل إلى المرمى… يا لها من تسديدة رائعة!"};
+    const payload={...voiceOpts(),text:$("commentary_script").value.trim()||"الكرة تصل إلى المرمى… يا لها من تسديدة رائعة!",consent_text:true};
     const response=await fetch("/api/voice/preview",{method:"POST",headers:{"Content-Type":"application/json","Accept":"audio/*, application/json"},body:JSON.stringify(payload)});
     if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||"تعذّرت معاينة الصوت");}
     const blob=await response.blob();
@@ -1315,7 +1325,7 @@ async function previewVoice(){
     status.textContent="المعاينة جاهزة عبر "+(response.headers.get("X-Voice-Engine")||"المحرّك المختار")+". يمكنك الاستماع ثم تعديل الإعدادات.";
     audio.play().catch(()=>{});
   }catch(error){status.textContent=String(error.message||error);toast("تعذّرت معاينة الصوت","err");}
-  finally{button.disabled=false;button.textContent=old;}
+  finally{$("voicePreviewConsent").checked=false;button.disabled=false;button.textContent=old;}
 }
 
 function chanOpts(){return{subject:$("subject").value,out_size:$("out_size").value,
@@ -1919,6 +1929,14 @@ async function loadSet(){
   $("set_tok").value=s.telegram_token||"";$("set_chat").value=s.telegram_chat||"";
   $("set_dev").value=s.device||"";$("set_priv").value=s.youtube_privacy||"private";
   $("set_gem").value=s.gemini_api_key||"";$("set_gemmodel").value=s.gemini_model||"";
+  $("set_external_text_consent").checked=s.external_text_consent===true;
+  $("set_gem_frame_consent").checked=s.gemini_frame_consent===true;
+  $("set_gem_frame_consent").disabled=!$("set_external_text_consent").checked;
+  $("set_external_text_consent").onchange=()=>{
+    const frameConsent=$("set_gem_frame_consent");
+    frameConsent.disabled=!$("set_external_text_consent").checked;
+    if(frameConsent.disabled)frameConsent.checked=false;
+  };
   $("set_ai").checked=s.auto_ai_title!==false;
   const c=await (await fetch("/api/config")).json();
   $("secStat").innerHTML = c.youtube
@@ -2111,6 +2129,8 @@ async function saveSet(){
     telegram_token:$("set_tok").value,telegram_chat:$("set_chat").value,
     device:$("set_dev").value,youtube_privacy:$("set_priv").value,
     gemini_api_key:$("set_gem").value,gemini_model:$("set_gemmodel").value,
+    external_text_consent:$("set_external_text_consent").checked,
+    gemini_frame_consent:$("set_gem_frame_consent").checked,
     auto_ai_title:$("set_ai").checked,auto_youtube:$("set_autoyt").checked,
     auto_telegram:$("set_autotg").checked,
     schedule_peak:$("set_peak")?$("set_peak").checked:false,

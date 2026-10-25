@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -238,3 +239,51 @@ def test_channel_name_controls_include_per_job_and_default_settings():
     assert "function initBrandControls()" in js
     assert "elhadath_badge_v2" in js
     assert "brand_y:Number($(\"brand_y\").value)/100" in js
+
+
+def test_gemini_consent_controls_are_explicit_and_separate():
+    html = dashboard.HTML
+    assert 'id="set_external_text_consent"' in html
+    assert 'id="set_gem_frame_consent"' in html
+    assert 'id="voicePreviewConsent"' in html
+    assert "external_text_consent:$(\"set_external_text_consent\").checked" in html
+    assert "gemini_frame_consent:$(\"set_gem_frame_consent\").checked" in html
+    studio = Path(dashboard.__file__).with_name("creative_studio.html").read_text(encoding="utf-8")
+    assert 'id="consentText"' in studio and 'id="consentFrames"' in studio
+    assert "consent_text:true" in studio
+    assert "consent_frames:$(\"consentFrames\").checked" in studio
+    assert "لا يحدد التطبيق مدة الاحتفاظ لدى المزوّد ولا يضمنها" in studio
+
+
+def test_gemini_frame_consent_requires_separate_text_consent(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(dashboard, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(dashboard, "CFG", {
+        "external_text_consent": False,
+        "gemini_frame_consent": False,
+    })
+
+    with pytest.raises(dashboard.HTTPException) as error:
+        dashboard.api_settings_set({"gemini_frame_consent": True})
+    assert error.value.status_code == 400
+    assert dashboard.CFG["gemini_frame_consent"] is False
+
+    with pytest.raises(dashboard.HTTPException) as error:
+        dashboard.api_settings_set({"external_text_consent": "yes"})
+    assert error.value.status_code == 400
+
+    result = dashboard.api_settings_set({
+        "external_text_consent": True,
+        "gemini_frame_consent": True,
+    })
+    assert result["saved"] is True
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["external_text_consent"] is True
+    assert saved["gemini_frame_consent"] is True
+    dashboard.api_settings_set({
+        "external_text_consent": False,
+        "gemini_frame_consent": False,
+    })
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["external_text_consent"] is False
+    assert saved["gemini_frame_consent"] is False

@@ -166,11 +166,18 @@ def test_say_routes_edge_voice_style_rate_and_pitch(monkeypatch):
 
     result = voice.say(
         "هدف رائع", "preview.audio", engine="edge", style="algerian",
-        edge_voice="ar-DZ-AminaNeural", rate=16, pitch=-3,
+        edge_voice="ar-DZ-AminaNeural", rate=16, pitch=-3, consent_text=True,
     )
 
     assert result == {"path": "preview.audio", "engine": "edge", "seconds": 1.4}
-    assert calls == {"voice": "ar-DZ-AminaNeural", "rate": "+16%", "pitch": "-3Hz"}
+    assert calls == {"voice": "ar-DZ-AminaNeural", "rate": "+16%", "pitch": "-3Hz", "consent_text": True}
+
+
+def test_voice_synthesis_requires_text_consent_before_provider_access(monkeypatch):
+    monkeypatch.setattr(voice, "tts_gemini", lambda *_args, **_kwargs: pytest.fail("Gemini must not be called"))
+    monkeypatch.setattr(voice, "tts_edge", lambda *_args, **_kwargs: pytest.fail("Edge must not be called"))
+    with pytest.raises(voice.VoiceConsentRequired):
+        voice.say("تعليق تجريبي", "preview.wav", engine="auto")
 
 
 def test_auto_voice_falls_back_to_edge_when_gemini_fails(monkeypatch):
@@ -189,11 +196,11 @@ def test_auto_voice_falls_back_to_edge_when_gemini_fails(monkeypatch):
     monkeypatch.setattr(voice, "audio_seconds", lambda _path: 1.0)
 
     result = voice.say("هدف رائع", "fallback.mp3", engine="auto", energy=92,
-                       edge_voice="ar-DZ-IsmaelNeural", rate=10, pitch=1)
+                       edge_voice="ar-DZ-IsmaelNeural", rate=10, pitch=1, consent_text=True)
 
     assert result["engine"] == "edge"
     assert calls[0] == "gemini"
-    assert calls[1] == ("edge", {"voice": "ar-DZ-IsmaelNeural", "rate": "+10%", "pitch": "+1Hz"})
+    assert calls[1] == ("edge", {"voice": "ar-DZ-IsmaelNeural", "rate": "+10%", "pitch": "+1Hz", "consent_text": True})
 
 
 def test_auto_engine_falls_back_from_gemini_to_edge(monkeypatch):
@@ -211,11 +218,12 @@ def test_auto_engine_falls_back_from_gemini_to_edge(monkeypatch):
     monkeypatch.setattr(voice, "tts_edge", fake_edge)
     monkeypatch.setattr(voice, "audio_seconds", lambda _path: 1.0)
 
-    result = voice.say("هدف", "fallback.audio", engine="auto", rate=12, energy=80)
+    result = voice.say("هدف", "fallback.audio", engine="auto", rate=12, energy=80,
+                       consent_text=True)
 
     assert result["engine"] == "edge"
     assert calls[0] == "gemini"
-    assert calls[1] == ("edge", {"voice": voice.EDGE_DEFAULT, "rate": "+12%", "pitch": "+0Hz"})
+    assert calls[1] == ("edge", {"voice": voice.EDGE_DEFAULT, "rate": "+12%", "pitch": "+0Hz", "consent_text": True})
 
 
 @pytest.mark.parametrize("model", ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"))
@@ -253,7 +261,7 @@ def test_gemini_tts_uses_verbatim_text_and_current_style_metadata(monkeypatch, t
     spoken_text = "اقرأ الجملة كما هي"
 
     result = voice.tts_gemini(spoken_text, str(output), model=model,
-                              voice="Kore", style="cinematic", energy=88)
+                              voice="Kore", style="cinematic", energy=88, consent_text=True)
 
     request_body = json.loads(calls["request"].data)
     part = request_body["contents"][0]["parts"][0]
@@ -280,7 +288,7 @@ def test_gemini_tts_stops_after_network_failure_for_fast_auto_fallback(monkeypat
     monkeypatch.setattr(voice.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(RuntimeError, match="Gemini TTS فشل") as error:
-        voice.tts_gemini("تعليق تجريبي", str(tmp_path / "voice.wav"))
+        voice.tts_gemini("تعليق تجريبي", str(tmp_path / "voice.wav"), consent_text=True)
 
     assert len(attempts) == 2
     assert "test-key" not in str(error.value)
@@ -314,7 +322,7 @@ def test_legacy_gemini_tts_wraps_pcm_and_uses_legacy_voice_config(monkeypatch, t
     spoken_text = "تعليق تجريبي"
 
     result = voice.tts_gemini(spoken_text, str(output), model="gemini-3.1-flash-tts-preview",
-                              voice="Fenrir", style="broadcast", energy=70)
+                              voice="Fenrir", style="broadcast", energy=70, consent_text=True)
 
     request_body = json.loads(calls["request"].data)
     part = request_body["contents"][0]["parts"][0]
@@ -340,7 +348,7 @@ def test_ai_commentary_uses_selected_style_in_prompt(monkeypatch):
         return payload
 
     monkeypatch.setattr(ai, "_http", fake_http)
-    result = ai.commentary(caption="هدف", style="algerian", energy=15)
+    result = ai.commentary(caption="هدف", style="algerian", energy=15, consent_text=True)
 
     prompt = captured["body"]["contents"][0]["parts"][0]["text"]
     assert result["commentary"] == "هدف رائع"
@@ -360,7 +368,7 @@ def test_ai_commentary_enforces_requested_word_limit(monkeypatch):
         return payload
 
     monkeypatch.setattr(ai, "_http", fake_http)
-    result = ai.commentary(caption="هدف", words=12)
+    result = ai.commentary(caption="هدف", words=12, consent_text=True)
     prompt = captured["body"]["contents"][0]["parts"][0]["text"]
     assert "بحد أقصى 12 كلمة" in prompt
     assert captured["body"]["generationConfig"]["maxOutputTokens"] == 144
@@ -430,13 +438,14 @@ def test_ai_commentary_uses_three_grounding_frames_and_duration_cap(monkeypatch,
 
     monkeypatch.setattr(ai, "_frames", fake_frames)
     monkeypatch.setattr(ai, "_http", fake_http)
-    result = ai.commentary(video=str(video), caption="هدف", words=22, duration=8)
+    result = ai.commentary(video=str(video), caption="هدف", words=22, duration=8,
+                            consent_text=True, consent_frames=True)
 
     parts = captured["body"]["contents"][0]["parts"]
     prompt = parts[0]["text"]
     assert captured["times"] == (0.15, 0.5, 0.85)
     assert len(parts) == 4
-    assert "ثلاث لقطات ثابتة مرتبة زمنياً" in prompt
+    assert "أُرسلت 3 صور ثابتة مصغّرة" in prompt
     assert "8.0 ثانية" in prompt
     assert "بحد أقصى 12 كلمة" in prompt
     assert "لا تستنتج أسماء اللاعبين أو الفرق" in prompt
@@ -455,7 +464,7 @@ def test_ai_commentary_uses_configured_model(monkeypatch):
     monkeypatch.setattr(ai, "pick_model", lambda _key=None, prefer=None: selected.setdefault("model", prefer))
     monkeypatch.setattr(ai, "_http", lambda *_args, **_kwargs: payload)
 
-    result = ai.commentary(caption="هجمة", words=8)
+    result = ai.commentary(caption="هجمة", words=8, consent_text=True)
 
     assert selected["model"] == "gemini-test-flash"
     assert result["model"] == "gemini-test-flash"
@@ -463,6 +472,7 @@ def test_ai_commentary_uses_configured_model(monkeypatch):
 
 def test_transformative_dashboard_job_requires_commentary_key_before_download(monkeypatch):
     monkeypatch.setattr(dashboard.AI, "_key", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(dashboard.CFG, "external_text_consent", True)
     monkeypatch.setattr(dashboard, "_download_to_local",
                         lambda *_args, **_kwargs: pytest.fail("download must not start"))
 
@@ -478,6 +488,7 @@ def test_cli_fails_fast_when_gemini_commentary_has_no_key(monkeypatch, capsys, f
     import reel
 
     monkeypatch.setattr(reel.AI, "_key", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(reel.CFG, "external_text_consent", True)
     with pytest.raises(SystemExit) as exc:
         reel.main(["-i", "missing.mp4", "-o", "unused.mp4", flag])
 
@@ -539,6 +550,14 @@ def test_dashboard_rejects_invalid_brand_position_and_scale():
         assert error.value.status_code == 400
 
 
+def test_voice_preview_requires_per_request_consent(monkeypatch, dashboard_client):
+    monkeypatch.setattr(dashboard.VOICE, "say", lambda *_args, **_kwargs: pytest.fail("must not send without consent"))
+    response = dashboard_client.post("/api/voice/preview", json={
+        "text": "معاينة", "voice_engine": "edge",
+    })
+    assert response.status_code == 428
+
+
 def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch, dashboard_client):
     captured = {}
 
@@ -558,7 +577,7 @@ def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch, dashboard_
     monkeypatch.setattr(dashboard.VOICE, "shift_commentary_pitch", fake_pitch)
     response = dashboard_client.post("/api/voice/preview", json={
         "text": "جملة معاينة", "voice_engine": "edge", "edge_voice": "ar-DZ-IsmaelNeural",
-        "commentary_energy": 93, "commentary_pitch": 2,
+        "commentary_energy": 93, "commentary_pitch": 2, "consent_text": True,
     })
 
     assert response.status_code == 200
@@ -571,6 +590,7 @@ def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch, dashboard_
     assert captured["commentary_pitch"] == 2
     assert not Path(captured["path"]).exists()
     assert not Path(captured["pitch_path"]).exists()
+
 
 
 def test_voice_preview_api_rejects_invalid_controls_without_synthesis(monkeypatch, dashboard_client):
@@ -593,7 +613,7 @@ def test_gemini_voice_preview_requires_saved_key(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard.VOICE, "_key", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(dashboard.VOICE, "say", lambda *_args, **_kwargs: pytest.fail("must not synthesize"))
     response = dashboard_client.post("/api/voice/preview", json={
-        "text": "معاينة", "voice_engine": "gemini",
+        "text": "معاينة", "voice_engine": "gemini", "consent_text": True,
     })
     assert response.status_code == 503
 
@@ -699,7 +719,7 @@ def test_ai_commentary_falls_back_to_next_model_on_http_error(monkeypatch):
 
     monkeypatch.setattr(ai, "_http", fake_http)
     monkeypatch.setattr(ai.time, "sleep", lambda _s: None)
-    result = ai.commentary(caption="هدف")
+    result = ai.commentary(caption="هدف", consent_text=True)
 
     assert result["commentary"] == "هدف رائع"
     assert result["model"] != "test-model"
@@ -717,7 +737,7 @@ def test_ai_commentary_tries_three_models_before_failing(monkeypatch):
     monkeypatch.setattr(ai, "_http", fake_http)
     monkeypatch.setattr(ai.time, "sleep", lambda _s: None)
     with pytest.raises(RuntimeError, match="فشل توليد التعليق"):
-        ai.commentary(caption="هدف")
+        ai.commentary(caption="هدف", consent_text=True)
 
     assert len(tried) == 3
     assert len(set(tried)) == 3

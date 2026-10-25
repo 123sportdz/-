@@ -13,6 +13,9 @@ DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "g
                   "gemini-2.5-flash", "gemini-flash-latest"]
 API = "https://generativelanguage.googleapis.com/v1beta"
 
+class ExternalDataConsentRequired(RuntimeError):
+    pass
+
 
 def _config():
     try:
@@ -127,7 +130,7 @@ PROMPT = """أنت محرر رياضي محترف في قناة «{brand}» ال
 عندك مقطع هدف كرة قدم. معلومات متوفرة:
 - كابشن المصدر: {caption}
 - نص مقروء من لوحة النتيجة (OCR): {ocr}
-- الصور المرفقة: لقطات من المقطع (شاهد لوحة النتيجة، الألوان، الفريقين، اللاعبين).
+- المواد المرئية: {visual_note}
 
 اكتب محتوى عربي احترافي واحترافي جداً:
 1) العنوان: جذاب، دقيق، يبدأ بحدث قوي، يذكر الفريقين والمناسبة إن أمكن، أقل من 90 حرفاً، بدون علامات مبالغة رخيصة وبدون إيموجي في العنوان.
@@ -144,17 +147,27 @@ PROMPT = """أنت محرر رياضي محترف في قناة «{brand}» ال
 
 
 def gemini_title(video=None, caption="", ocr="", brand="الجزائر الجديدة TV",
-                 api_key=None, model=None, extra="", timeout=120):
-    """يولّد عنوان/وصف/تاجات بالذكاء الاصطناعي من (صور المقطع + الكابشن + OCR)."""
+                 api_key=None, model=None, extra="", timeout=120,
+                 consent_text=False, consent_frames=False):
+    """Generate metadata; callers must separately consent to text and frame transfer."""
+    if consent_text is not True:
+        raise ExternalDataConsentRequired("يلزم تأكيد إرسال النص إلى Gemini قبل التوليد.")
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini — حطه في config.json باسم gemini_api_key")
     mdl = pick_model(key, prefer=model)
-    parts = [{"text": PROMPT.format(brand=brand, caption=caption or "—", ocr=ocr or "—")
-              + (("\n\nملاحظات إضافية: " + extra) if extra else "")}]
-    if video and os.path.exists(video):
-        for b64 in _frames(video):
-            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+    image_frames = []
+    if consent_frames is True and video and os.path.exists(video):
+        image_frames = _frames(video)
+    visual_note = (f"أُرسلت {len(image_frames)} صور ثابتة مصغّرة من الفيديو"
+                   if image_frames else "لم تُرسل صور؛ اعتمد على النص فقط ولا تفترض مشاهد غير موصوفة")
+    prompt = PROMPT.format(brand=brand, caption=caption or "—", ocr=ocr or "—",
+                           visual_note=visual_note)
+    if extra:
+        prompt += "\n\nملاحظات إضافية: " + extra
+    parts = [{"text": prompt}]
+    parts.extend({"inline_data": {"mime_type": "image/jpeg", "data": frame}}
+                 for frame in image_frames)
     body = {"contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0.95, "topP": 0.95, "maxOutputTokens": 2048,
                                  "responseMimeType": "application/json"}}
@@ -181,7 +194,7 @@ COMMENTARY_PROMPT = """أنت معلّق رياضي عربي محترف. اكت�
 - كابشن المصدر: {caption}
 - OCR لوحة النتيجة: {ocr}
 - العنوان: {title}
-- الصور: ثلاث لقطات ثابتة مرتبة زمنياً من المقطع.
+- المواد المرئية: {visual_note}
 
 قواعد:
 - أسلوب الإلقاء المطلوب: {style}
@@ -243,8 +256,11 @@ def commentary_word_budget(max_words=22, duration=None, words_per_second=1.8, bu
 
 
 def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None,
-               timeout=90, style="broadcast", energy=70, words=22, duration=None):
-    """يكتب تعليقاً واقعياً ومناسباً لمدة المقطع ضمن سقف الكلمات المحدد."""
+               timeout=90, style="broadcast", energy=70, words=22, duration=None,
+               consent_text=False, consent_frames=False):
+    """Write commentary only after explicit text consent; frames require separate consent."""
+    if consent_text is not True:
+        raise ExternalDataConsentRequired("يلزم تأكيد إرسال النص إلى Gemini قبل توليد التعليق.")
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
@@ -270,13 +286,18 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
         model = _config().get("gemini_model")
     model = model.strip() if isinstance(model, str) and model.strip() else None
     mdl = pick_model(key, prefer=model)
-    parts = [{"text": COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
-                                               title=title or "—", duration=duration_text,
-                                               style=COMMENTARY_STYLES[style]["text"],
-                                               energy=energy, words=words)}]
-    if video and os.path.exists(video):
-        for b64 in _frames(video, times=(0.15, 0.5, 0.85)):
-            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+    image_frames = []
+    if consent_frames is True and video and os.path.exists(video):
+        image_frames = _frames(video, times=(0.15, 0.5, 0.85))
+    visual_note = (f"أُرسلت {len(image_frames)} صور ثابتة مصغّرة من الفيديو"
+                   if image_frames else "لم تُرسل صور؛ اعتمد على النص فقط ولا تستنتج تسلسلاً مرئياً")
+    prompt = COMMENTARY_PROMPT.format(caption=caption or "—", ocr=ocr or "—",
+                                     title=title or "—", duration=duration_text,
+                                     style=COMMENTARY_STYLES[style]["text"],
+                                     energy=energy, words=words, visual_note=visual_note)
+    parts = [{"text": prompt}]
+    parts.extend({"inline_data": {"mime_type": "image/jpeg", "data": frame}}
+                 for frame in image_frames)
     body = {"contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0.35, "maxOutputTokens": min(720, words * 8 + 48),
                                  "responseMimeType": "application/json"}}
@@ -316,12 +337,14 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
     raise RuntimeError(f"فشل توليد التعليق ({last_error or 'لا يوجد نموذج متاح'})")
 
 
-def ai_meta(video, caption="", ocr="", brand="", api_key=None, model=None):
+def ai_meta(video, caption="", ocr="", brand="", api_key=None, model=None,
+            consent_text=False, consent_frames=False):
     """يحاول Gemini، ولو فشل يرجع لمحلّل الكابشن العادي (بلا توقف)."""
     from . import title as T
     err = None
     try:
-        j = gemini_title(video, caption=caption, ocr=ocr, brand=brand, api_key=api_key, model=model)
+        j = gemini_title(video, caption=caption, ocr=ocr, brand=brand, api_key=api_key, model=model,
+                          consent_text=consent_text, consent_frames=consent_frames)
         if (j.get("title") or "").strip():
             j.setdefault("description", "")
             j.setdefault("tags", [])
@@ -368,8 +391,11 @@ TRANS_PROMPT = """أنت مسؤول نشر رياضي. ترجم هذا العن�
   "fr_tags": ["mots","clés","français","max 6"]}}"""
 
 
-def translate_meta(title, desc="", api_key=None, model=None, timeout=90):
-    """🌍 ترجمة العنوان/الوصف لـEN/FR (لا تفشل المسار: ترجّع {} عند أي خطأ)."""
+def translate_meta(title, desc="", api_key=None, model=None, timeout=90,
+                   consent_text=False):
+    """Translate operator-provided metadata only after explicit text consent."""
+    if consent_text is not True:
+        return {}
     key = _key(api_key)
     if not key or not (title or "").strip():
         return {}

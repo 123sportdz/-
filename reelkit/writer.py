@@ -80,6 +80,9 @@ class WriterInputError(WriterError):
 class WriterConfigurationError(WriterError):
     pass
 
+class WriterConsentError(WriterError):
+    pass
+
 
 class WriterProviderError(WriterError):
     pass
@@ -146,20 +149,26 @@ def build_prompt(payload, visual_reference=False):
     return {"mode": mode, "topic": topic, "prompt": prompt, "max_tokens": max_tokens, "platform": platform, "word_limit": word_limit}
 
 
-def generate(payload, api_key=None, model=None, video_path=None, output_dir=None):
+def generate(payload, api_key=None, model=None, video_path=None, output_dir=None,
+             consent_text=False, consent_frames=False):
     if not isinstance(payload, dict):
         raise WriterInputError("بيانات الطلب غير صالحة.")
-    request = build_prompt(payload, visual_reference=video_path is not None)
+    if consent_text is not True:
+        raise WriterConsentError("وافق على إرسال نص الطلب إلى Gemini قبل التوليد.")
+    if not isinstance(consent_frames, bool):
+        raise WriterInputError("اختيار إرسال الصور غير صالح.")
     path = None
     if video_path is not None:
         if output_dir is None:
             raise WriterInputError("مجلد مخرجات المشروع مطلوب للتحقق من الريل.")
         path = resolve_job_video({"status": "done", "output": str(video_path)}, output_dir)
+    include_frames = path is not None and consent_frames is True
+    request = build_prompt(payload, visual_reference=include_frames)
     key = AI._key(api_key)
     if not key:
         raise WriterConfigurationError("أضف مفتاح Gemini في إعدادات المشروع قبل التوليد.")
     image_frames = []
-    if path is not None:
+    if include_frames:
         image_frames = AI._frames(str(path), times=(0.18, 0.48, 0.78), width=900)
         if not image_frames:
             raise WriterProviderError("تعذّر استخراج صور من الريل. تحقّق من الملف وFFmpeg ثم أعد المحاولة.")

@@ -176,8 +176,12 @@ def process(post, a, state):
             ocr = TITLEMOD.read_scoreboard(str(out))[0][:300]
         except Exception:
             pass
-        s = AI.ai_meta(str(out), caption=cap, ocr=ocr, brand=brand,
-                       api_key=CFG.get("gemini_api_key"), model=CFG.get("gemini_model")) or {}
+        s = AI.ai_meta(
+            str(out), caption=cap, ocr=ocr, brand=brand,
+            api_key=CFG.get("gemini_api_key"), model=CFG.get("gemini_model"),
+            consent_text=CFG.get("external_text_consent") is True,
+            consent_frames=CFG.get("gemini_frame_consent") is True,
+        ) or {}
         title = s.get("title") or (TITLEMOD.from_caption(cap, brand=brand) or {}).get("title") \
                 or f"ريل جديد #{tag}"   # ai_meta قد يرجع {} — لا تقتل الدورة بـ KeyError
         print(f"  ✎ العنوان ({s.get('source')}): {title}", flush=True)

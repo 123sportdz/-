@@ -372,8 +372,11 @@ def main(argv=None):
         ap.error(str(exc))
     if a.commentary_script:
         a.commentary = True
-    if (a.commentary or a.commentary_text_only or a.transformative) and not a.commentary_script \
-            and not AI._key(CFG.get("gemini_api_key")):
+    needs_ai_text = (a.commentary or a.commentary_text_only or a.transformative) and not a.commentary_script
+    needs_voice = (a.commentary or a.transformative) and not a.commentary_text_only
+    if (needs_ai_text or needs_voice) and CFG.get("external_text_consent") is not True:
+        ap.error("يتطلب التعليق موافقة صريحة على إرسال النص إلى الخدمة الخارجية؛ فعّلها في إعدادات لوحة التحكم أو استخدم نصاً يدوياً بلا صوت مولّد")
+    if needs_ai_text and not AI._key(CFG.get("gemini_api_key")):
         ap.error("المعلّق الذكي يحتاج مفتاح Gemini في ملف الإعدادات المحدد أو متغير GEMINI_API_KEY؛ أو أدخل نصاً يدوياً")
 
     def log(*m):
@@ -1034,10 +1037,14 @@ def main(argv=None):
                         ocr_txt = T.read_scoreboard(readable)[0][:200]
                     except Exception:
                         pass
-                    c = AI.commentary(readable, caption=a.caption, ocr=ocr_txt,
-                                      title=a.title, api_key=None, model=None,
-                                      style=a.commentary_style, energy=a.commentary_energy,
-                                      words=a.commentary_words, duration=info.get("duration"))
+                    c = AI.commentary(
+                        readable, caption=a.caption, ocr=ocr_txt, title=a.title,
+                        api_key=None, model=None, style=a.commentary_style,
+                        energy=a.commentary_energy, words=a.commentary_words,
+                        duration=info.get("duration"),
+                        consent_text=CFG.get("external_text_consent") is True,
+                        consent_frames=CFG.get("gemini_frame_consent") is True,
+                    )
                     commentary_text = c.get("commentary", "")
                     if c.get("duration_limited"):
                         log(f"      ⏱️ قُصّر سقف التعليق إلى {c['word_limit']} كلمة ليلائم مدة المقطع")
@@ -1052,7 +1059,8 @@ def main(argv=None):
                                voice=(a.voice or None), style=a.commentary_style,
                                rate=a.voice_rate, pitch=a.voice_pitch,
                                edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
-                               energy=a.commentary_energy)
+                               energy=a.commentary_energy,
+                               consent_text=CFG.get("external_text_consent") is True)
                     voice_wav = r["path"]; voice_engine = r["engine"]
                     available_seconds = max(0.0, float(info["duration"]) - RD.VOICE_DELAY_MS / 1000.0 - 0.25)
                     edge_rate_used = a.voice_rate
@@ -1070,7 +1078,8 @@ def main(argv=None):
                                             voice=(a.voice or None), style=a.commentary_style,
                                             rate=faster_rate, pitch=a.voice_pitch,
                                             edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
-                                            energy=a.commentary_energy)
+                                            energy=a.commentary_energy,
+                                            consent_text=CFG.get("external_text_consent") is True)
                             except Exception as exc:
                                 log(f"      ⚠️ تعذّر تسريع الإلقاء ({type(exc).__name__})")
                             else:
@@ -1093,7 +1102,8 @@ def main(argv=None):
                                             voice=(a.voice or None), style=a.commentary_style,
                                             rate=edge_rate_used, pitch=a.voice_pitch,
                                             edge_voice=a.edge_voice, gemini_voice=a.gemini_voice,
-                                            energy=a.commentary_energy)
+                                            energy=a.commentary_energy,
+                                            consent_text=CFG.get("external_text_consent") is True)
                             except Exception as exc:
                                 log(f"      ⚠️ تعذّر ملاءمة طول الصوت ({type(exc).__name__})")
                                 break

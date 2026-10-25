@@ -28,6 +28,10 @@ EDGE_VOICES = {
 }
 EDGE_DEFAULT = "ar-DZ-IsmaelNeural"
 EDGE_ALT = "ar-MA-JamalNeural"
+
+
+class VoiceConsentRequired(RuntimeError):
+    pass
 COMMENTARY_STYLES = {
     "broadcast": {
         "label": "معلّق رياضي حماسي",
@@ -267,7 +271,9 @@ def _write_gemini_audio(encoded, out_wav, mime_type=""):
 
 
 def tts_gemini(text, out_wav, api_key=None, model=None, voice="Fenrir", timeout=60,
-               style="broadcast", energy=70):
+               style="broadcast", energy=70, consent_text=False):
+    if consent_text is not True:
+        raise VoiceConsentRequired("يلزم إذن صريح قبل إرسال نص التعليق إلى Gemini.")
     key = _key(api_key)
     if not key:
         raise RuntimeError("ما فيه مفتاح Gemini")
@@ -326,8 +332,11 @@ def tts_gemini(text, out_wav, api_key=None, model=None, voice="Fenrir", timeout=
     raise RuntimeError(f"Gemini TTS فشل — {last or 'لا يوجد نموذج متاح'}")
 
 
-def tts_edge(text, out_wav, voice=EDGE_DEFAULT, rate="+10%", pitch="+0Hz", timeout=180):
-    """مجاني بلا مفاتيح (Microsoft Edge). يحتاج إنترنت."""
+def tts_edge(text, out_wav, voice=EDGE_DEFAULT, rate="+10%", pitch="+0Hz", timeout=180,
+             consent_text=False):
+    """Microsoft Edge cloud TTS; text consent is required before transfer."""
+    if consent_text is not True:
+        raise VoiceConsentRequired("يلزم إذن صريح قبل إرسال نص التعليق إلى Edge TTS.")
     try:
         import edge_tts, asyncio
     except ImportError as e:
@@ -349,12 +358,14 @@ def tts_edge(text, out_wav, voice=EDGE_DEFAULT, rate="+10%", pitch="+0Hz", timeo
 
 def say(text, out_wav, engine="auto", api_key=None, voice=None, gemini_model=None,
         rate="+10%", pitch="+0Hz", style="broadcast", edge_voice=None,
-        gemini_voice=None, energy=70):
+        gemini_voice=None, energy=70, consent_text=False):
     """يولّد ملف صوتي للتعليق. engine: auto | gemini | edge
     rate: سرعة Edge TTS (تُستخدم أيضاً عند إعادة المحاولة لتقصير تعليق أطول من المقطع)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("نص التعليق فاضي")
+    if consent_text is not True:
+        raise VoiceConsentRequired("يلزم إذن صريح قبل إرسال نص التعليق إلى خدمة الصوت الخارجية.")
     if engine not in ("auto", "gemini", "edge"):
         raise ValueError("محرّك الصوت غير معروف")
     if style not in COMMENTARY_STYLES:
@@ -373,13 +384,15 @@ def say(text, out_wav, engine="auto", api_key=None, voice=None, gemini_model=Non
                 if voice in GEMINI_VOICES:
                     selected_voice = voice
                 p = tts_gemini(text, out_wav, api_key=api_key, model=gemini_model,
-                               voice=selected_voice, style=style, energy=energy)
+                               voice=selected_voice, style=style, energy=energy,
+                               consent_text=True)
             else:
                 selected_voice = edge_voice or EDGE_DEFAULT
                 if voice and voice not in GEMINI_VOICES:
                     selected_voice = voice
                 p = tts_edge(text, out_wav, voice=selected_voice,
-                             rate=edge_rate(rate), pitch=edge_pitch(pitch))
+                             rate=edge_rate(rate), pitch=edge_pitch(pitch),
+                             consent_text=True)
             return {"path": p, "engine": e, "seconds": audio_seconds(p)}
         except Exception as ex:
             errors.append(f"{e}: {ex}")

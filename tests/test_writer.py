@@ -69,7 +69,8 @@ def test_generate_uses_server_key_and_returns_only_generated_text(monkeypatch):
         return {"candidates": [{"content": {"parts": [{"text": "يا مدينةَ الضوء\nتفتّحُ شرفاتُكِ"}]}}]}
 
     monkeypatch.setattr(writer.AI, "_http", fake_http)
-    result = writer.generate({"mode": "poem", "topic": "مدينة"}, api_key="server-secret")
+    result = writer.generate({"mode": "poem", "topic": "مدينة"}, api_key="server-secret",
+                            consent_text=True)
     assert result == {
         "text": "يا مدينةَ الضوء\nتفتّحُ شرفاتُكِ",
         "mode": "poem",
@@ -87,7 +88,7 @@ def test_generate_uses_server_key_and_returns_only_generated_text(monkeypatch):
 def test_generate_requires_a_configured_key(monkeypatch):
     monkeypatch.setattr(writer.AI, "_key", lambda key: None)
     with pytest.raises(writer.WriterConfigurationError, match="مفتاح Gemini"):
-        writer.generate({"topic": "فكرة"})
+        writer.generate({"topic": "فكرة"}, consent_text=True)
 
 
 def test_generate_hard_caps_ai_voice_script_words(monkeypatch):
@@ -101,7 +102,7 @@ def test_generate_hard_caps_ai_voice_script_words(monkeypatch):
         return {"candidates": [{"content": {"parts": [{"text": generated}]}}]}
 
     monkeypatch.setattr(writer.AI, "_http", fake_http)
-    result = writer.generate({"mode": "script", "topic": "هدف", "length": "short"})
+    result = writer.generate({"mode": "script", "topic": "هدف", "length": "short"}, consent_text=True)
     assert "الحد الأعلى 22 كلمة" in captured["body"]["contents"][0]["parts"][0]["text"]
     assert result["word_limit"] == 22
     assert result["word_count"] == len(result["text"].split())
@@ -117,7 +118,7 @@ def test_generate_sanitizes_provider_errors(monkeypatch):
 
     monkeypatch.setattr(writer.AI, "_http", fail)
     with pytest.raises(writer.WriterProviderError) as error:
-        writer.generate({"topic": "فكرة"})
+        writer.generate({"topic": "فكرة"}, consent_text=True)
     assert "private-api-key" not in str(error.value)
 
 
@@ -212,8 +213,11 @@ def test_generate_adds_only_server_selected_video_frames(monkeypatch, tmp_path):
         return {"candidates": [{"content": {"parts": [{"text": "تعليق قصير للهدف"}]}}]}
 
     monkeypatch.setattr(writer.AI, "_http", fake_http)
-    result = writer.generate({"mode": "script", "topic": "هدف في اللحظة الأخيرة"},
-                             api_key="server-secret", video_path=clip, output_dir=output)
+    result = writer.generate(
+        {"mode": "script", "topic": "هدف في اللحظة الأخيرة"},
+        api_key="server-secret", video_path=clip, output_dir=output,
+        consent_text=True, consent_frames=True,
+    )
     parts = calls["body"]["contents"][0]["parts"]
     assert result["frames_attached"] == 2
     assert [part["inline_data"]["data"] for part in parts[1:]] == ["frame-one", "frame-two"]
@@ -225,4 +229,4 @@ def test_generate_rejects_unbounded_video_path(monkeypatch, tmp_path):
     clip = tmp_path / "reel.mp4"
     clip.write_bytes(b"clip")
     with pytest.raises(writer.WriterInputError, match="مخرجات المشروع"):
-        writer.generate({"topic": "هدف"}, video_path=clip)
+        writer.generate({"topic": "هدف"}, video_path=clip, consent_text=True)

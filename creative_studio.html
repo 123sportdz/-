@@ -64,8 +64,11 @@
       <div class="field"><label for="audience">الجمهور</label><input id="audience" maxlength="160" value="مشجعو كرة القدم" placeholder="مشجعو كرة القدم"></div>
       <div class="field"><label for="instructions">توجيه إضافي</label><input id="instructions" maxlength="1200" placeholder="مثلاً: بلا وسوم أو بلغة بسيطة"></div>
     </div>
+    <div class="privacy" role="note">عند التوليد، يُرسل نص الطلب والسياق إلى Google Gemini. اختيار ريل لا يرسل الفيديو كاملاً. إرسال صور منه اختيار منفصل حتى 3 صور ثابتة مصغّرة. لا يحدد التطبيق مدة الاحتفاظ لدى المزوّد ولا يضمنها، ولا ينشر الناتج تلقائياً.</div>
+    <label><input id="consentText" type="checkbox"> أوافق على إرسال نص هذا الطلب إلى Gemini لهذه العملية</label>
+    <label><input id="consentFrames" type="checkbox" disabled> أوافق بشكل منفصل على إرسال حتى 3 صور ثابتة مصغّرة من الريل المختار</label>
     <button class="primary" id="generate" type="button"><span class="spinner"></span><span class="button-label">✦ أنشئ محتوى للريل</span></button>
-    <p class="privacy" id="privacyNote">المدخلات النصية تُرسل إلى Gemini عند التوليد؛ لا يُنشر الناتج تلقائياً.</p>
+    <p class="privacy" id="privacyNote">لا تُرسل بيانات إلى Gemini حتى توافق على نص الطلب.</p>
   </aside>
   <main class="rightcol">
     <section class="panel result" aria-labelledby="resultHeading">
@@ -94,7 +97,8 @@ let currentMode="script",activeId="",activeJobTitle="",jobs=[],drafts=[],toastTi
 async function api(url,options={}){const headers=new Headers(options.headers||{});headers.set("Accept","application/json");if(options.body&&!headers.has("Content-Type"))headers.set("Content-Type","application/json");const response=await fetch(url,{...options,headers});let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.detail||"تعذّر إكمال الطلب.");return data}
 function notify(message,error=false){const item=$("toast");item.textContent=message;item.classList.toggle("error",error);item.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>item.classList.remove("show"),3600)}
 function currentJob(){return jobs.find(job=>job.id===$("jobSelect").value)||null}
-function updateJobContext(){const job=currentJob(),box=$("jobInfo");if(job){activeJobTitle=job.title||job.label||"ريل مكتمل";const duration=job.duration?`${Math.round(job.duration)} ثانية`:"مدة غير مسجلة";box.textContent=`${activeJobTitle} · ${duration} · سيحلّل Gemini ثلاث صور ثابتة من هذا الريل.`;box.classList.add("show");$("privacyNote").textContent="عند التوليد تُرسل إلى Gemini ثلاث صور ثابتة من الريل المحدد ونصوص السياق فقط؛ لا يُرسل الفيديو كاملاً ولا يحدث نشر تلقائي."}else{box.textContent="";box.classList.remove("show");$("privacyNote").textContent="المدخلات النصية تُرسل إلى Gemini عند التوليد؛ المسودات محلية ولا نشر تلقائي."}}
+function updateDataConsent(){const text=$("consentText"),frames=$("consentFrames");const enabled=!!text.checked&&!!currentJob();frames.disabled=!enabled;if(!enabled)frames.checked=false}
+function updateJobContext(){const job=currentJob(),box=$("jobInfo");if(job){activeJobTitle=job.title||job.label||"ريل مكتمل";const duration=job.duration?`${Math.round(job.duration)} ثانية`:"مدة غير مسجلة";box.textContent=`${activeJobTitle} · ${duration} · لا يُرسل الفيديو كاملاً.`;box.classList.add("show");$("privacyNote").textContent="يُرسل النص بعد موافقتك؛ لا تُرسل صور الريل إلا بموافقة مستقلة."}else{box.textContent="";box.classList.remove("show");$("privacyNote").textContent="لا تُرسل بيانات إلى Gemini حتى توافق على نص الطلب."}updateDataConsent()}
 function formData(){const job=currentJob();return{mode:currentMode,job_id:job?.id||"",job_title:job?.title||activeJobTitle,topic:$("topic").value.trim(),source:$("source").value.trim(),language:$("language").value,length:$("length").value,tone:$("tone").value,audience:$("audience").value.trim(),instructions:$("instructions").value.trim(),platform:$("platform").value}}
 function payloadForSave(){return{ id:activeId||undefined,title:$("draftTitle").value.trim(),...formData(),text:$("output").value }}
 function setMode(mode){if(!modes[mode])return;currentMode=mode;document.querySelectorAll(".mode").forEach(button=>{const active=button.dataset.mode===mode;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))});updateLengthHint()}
@@ -103,13 +107,16 @@ function updateWordCount(){const text=$("output").value.trim();$("wordCount").te
 function activateEditor(text="",title=""){setEditorVisible(true);$("output").value=text;$("draftTitle").value=title;updateWordCount()}
 document.querySelectorAll(".mode").forEach(button=>button.addEventListener("click",()=>setMode(button.dataset.mode)));
 $("jobSelect").addEventListener("change",updateJobContext);
+$("consentText").addEventListener("change",updateDataConsent);
 $("length").addEventListener("change",updateLengthHint);
 $("output").addEventListener("input",updateWordCount);
 $("manualEntry").addEventListener("click",()=>{activeId="";activateEditor();$("output").focus()});
 $("generate").addEventListener("click",async()=>{
-  const request=formData();if(!request.job_id&&!request.topic&&!request.source){notify("اختر ريلًا مكتملاً أو اكتب تفاصيل اللقطة أولاً.",true);$("topic").focus();return}
+  if(!$("consentText").checked){notify("وافق على إرسال نص الطلب إلى Gemini قبل التوليد.",true);$("consentText").focus();return}
+  const request={...formData(),consent_text:true,consent_frames:$("consentFrames").checked};if(!request.job_id&&!request.topic&&!request.source){notify("اختر ريلًا مكتملاً أو اكتب تفاصيل اللقطة أولاً.",true);$("topic").focus();return}
   if($("output").value.trim()&&!confirm("سيحل النص الجديد محل مساحة التحرير الحالية. احفظه أولاً إن أردت الاحتفاظ به. هل أتابع؟"))return;
   const button=$("generate");button.disabled=true;button.classList.add("busy");
+  $("consentText").checked=false;updateDataConsent();
   try{const result=await api("/api/creative/generate",{method:"POST",body:JSON.stringify(request)});activeId="";setMode(result.mode||currentMode);activateEditor(result.text,request.topic||request.job_title||request.source.slice(0,120));const sizeNote=result.word_limit?`${result.word_count}/${result.word_limit} كلمة`:`${result.word_count} كلمة`;const frameNote=result.frames_attached?` · استند إلى ${result.frames_attached} صور من الريل`:"";notify(`اكتمل محتوى الريل · ${sizeNote}${frameNote}`)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.classList.remove("busy")}
 });
 $("saveDraft").addEventListener("click",async()=>{
