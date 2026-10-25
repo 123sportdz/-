@@ -7,7 +7,6 @@ import threading
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 import dashboard
 
@@ -75,12 +74,12 @@ def test_gpu_detection_keeps_cpu_render_out_of_gpu_gate():
     assert dashboard._args_use_gpu(["--device", "cpu", "--encoder", "nvenc"]) is True
 
 
-def test_queue_reports_independent_gpu_limit(monkeypatch):
+def test_queue_reports_independent_gpu_limit(monkeypatch, dashboard_client):
     monkeypatch.setenv("REEL_MAX_JOBS", "3")
     monkeypatch.setenv("REEL_GPU_JOBS", "1")
     monkeypatch.setattr(dashboard, "JOBS", {})
     monkeypatch.setattr(dashboard, "GPU_SEM", dashboard._PriorityGate(1))
-    response = TestClient(dashboard.app).get("/api/queue")
+    response = dashboard_client.get("/api/queue")
     assert response.status_code == 200
     body = response.json()
     assert body["limit"] == 3
@@ -89,8 +88,8 @@ def test_queue_reports_independent_gpu_limit(monkeypatch):
     assert body["gpu_waiting"] == 0
 
 
-def test_invalid_priority_value_rejected():
-    client = TestClient(dashboard.app)
+def test_invalid_priority_value_rejected(dashboard_client):
+    client = dashboard_client
     response = client.post("/api/jobs", json={"input": "x.mp4", "priority": "urgent"})
     assert response.status_code == 400
     assert "normal" in response.json()["detail"]

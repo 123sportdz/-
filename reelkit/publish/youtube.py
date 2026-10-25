@@ -281,14 +281,8 @@ class YouTubeUploader:
         if privacy not in {"private", "unlisted", "public"}:
             raise ValueError("الخصوصية يجب أن تكون private أو unlisted أو public")
         if publish_at:
-            from datetime import datetime, timedelta, timezone
-            try:
-                when = datetime.strptime(str(publish_at), "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)
-            except (TypeError, ValueError) as e:
-                raise ValueError("صيغة موعد الجدولة غير صالحة — المطلوب ISO مثل 2026-10-04T19:00:00Z") from e
-            if when <= datetime.now(timezone.utc) - timedelta(minutes=5):
-                raise ValueError("موعد الجدولة في الماضي — اختر وقتاً مستقبلياً بصيغة UTC (ينتهي بـ Z)")
+            from reelkit.schedule import validate_publish_at
+            validate_publish_at(publish_at)
         from reelkit import rights as RIGHTS
         gate = RIGHTS.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
         if not gate["ok"]:

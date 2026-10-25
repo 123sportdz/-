@@ -7,20 +7,19 @@
 
 import pytest
 
-from fastapi.testclient import TestClient
 
 import dashboard
 import reelkit.audit as AUDIT
 
 
 @pytest.fixture
-def client(monkeypatch, tmp_path):
+def client(monkeypatch, tmp_path, dashboard_client):
     monkeypatch.setattr(dashboard, "JOBS", {})
     monkeypatch.setattr(dashboard, "PUBLISHING", set())
     monkeypatch.setattr(dashboard, "_persist", lambda *a, **k: None)
     target = tmp_path / "audit_log.jsonl"
     monkeypatch.setattr(AUDIT, "default_path", lambda root=None: target)
-    return TestClient(dashboard.app)
+    return dashboard_client
 
 
 def test_api_audit_returns_events_and_summary(client):

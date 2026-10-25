@@ -62,5 +62,23 @@ def describe(dt, tz_offset=TZ_OFFSET):
     return f"{days[loc.weekday()]} {loc.strftime('%H:%M')} (بتوقيت الجزائر)"
 
 
+def validate_publish_at(value, now=None):
+    """Validate a YouTube publishAt value before any publishing side effects."""
+    if not isinstance(value, str):
+        raise ValueError("صيغة موعد الجدولة غير صالحة — المطلوب ISO مثل 2026-10-04T19:00:00Z")
+    try:
+        when = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError("صيغة موعد الجدولة غير صالحة — المطلوب ISO مثل 2026-10-04T19:00:00Z") from exc
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    if when <= current - timedelta(minutes=5):
+        raise ValueError("موعد الجدولة في الماضي — اختر وقتاً مستقبلياً بصيغة UTC (ينتهي بـ Z)")
+    return when
+
+
 def next_peak_iso(now=None, **kw):
     return iso_utc(next_slot(now, **kw))

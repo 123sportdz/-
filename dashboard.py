@@ -726,37 +726,61 @@ async def _lifespan(_app):
 app = FastAPI(title="elhadath-reels", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 # ------------------------------------------------------------------ 🔒 حماية الشبكة
-# عند فتح اللوحة على الشبكة (host ≠ 127.0.0.1) بلا أي مصادقة، يستطيع أي جهاز على
-# الشبكة تغيير الإعدادات، تشغيل مهام، النشر، ورفع اعتمادات. نطلب رمزاً للطلبات
-# غير المحلية (يبقى localhost حرّاً للسهولة).
+# كل طلب، حتى من loopback أو خلف وكيل عكسي، يحتاج رمزاً صالحاً.
+# تشغيل ASGI بلا REEL_DASH_TOKEN يُغلق اللوحة بدلاً من فتحها افتراضياً.
 import hmac
-_DASH_TOKEN = os.environ.get("REEL_DASH_TOKEN", "")
+_DASH_TOKEN = str(os.environ.get("REEL_DASH_TOKEN", "")).strip()
 
 
-def _is_loopback_host(h):
-    h = (h or "").strip().lower()
-    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+def _ensure_dash_token():
+    global _DASH_TOKEN
+    token = str(os.environ.get("REEL_DASH_TOKEN", "")).strip()
+    if not token:
+        token = uuid.uuid4().hex
+        os.environ["REEL_DASH_TOKEN"] = token
+    _DASH_TOKEN = token
+    return token
 
 
 @app.middleware("http")
 async def _auth_guard(request: Request, call_next):
-    client = request.client.host if request.client else ""
-    if not _DASH_TOKEN or _is_loopback_host(client):
-        return await call_next(request)
-    tok = request.query_params.get("token") or ""
+    if not _DASH_TOKEN:
+        return Response(
+            "🔒 اللوحة مقفلة: عيّن REEL_DASH_TOKEN أو شغّل python dashboard.py لإنشاء رابط دخول محلي.",
+            status_code=503,
+        )
+    query_token = request.query_params.get("token") or ""
+    tok = query_token
     if not tok:
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             tok = auth[7:].strip()
     if not tok:
         tok = request.cookies.get("reel_token", "")
-    if not hmac.compare_digest(str(tok), str(_DASH_TOKEN)):
-        return Response("🔒 غير مصرّح — افتح الرابط مع ?token=… أو عيّن REEL_DASH_TOKEN",
-                        status_code=401)
-    resp = await call_next(request)
-    if request.query_params.get("token"):
-        resp.set_cookie("reel_token", str(_DASH_TOKEN), httponly=True, samesite="lax")
-    return resp
+    if not hmac.compare_digest(str(tok).encode("utf-8"), _DASH_TOKEN.encode("utf-8")):
+        return Response(
+            "🔒 غير مصرّح — استخدم رابط الدخول أو ترويسة Authorization: Bearer.",
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if query_token:
+        if request.method not in {"GET", "HEAD"}:
+            return Response("استخدم Authorization header لطلبات التغيير.", status_code=400)
+        clean_url = request.url.remove_query_params("token")
+        location = clean_url.path + (f"?{clean_url.query}" if clean_url.query else "")
+        resp = Response(
+            status_code=303,
+            headers={"Location": location, "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"},
+        )
+        resp.set_cookie("reel_token", _DASH_TOKEN, httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https")
+        return resp
+    if request.method in {"GET", "HEAD"}:
+        response = await call_next(request)
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+    return await call_next(request)
 
 # ------------------------------------------------------------------ API
 @app.get("/api/config")
@@ -2107,6 +2131,17 @@ def api_publish(jid: str, payload: dict):
             for target in targets):
         raise HTTPException(400, "اختر وجهة نشر صالحة")
     targets = list(dict.fromkeys(targets))
+    youtube_privacy = None
+    schedule_mode = "now"
+    if "youtube" in targets:
+        raw_privacy = payload.get("privacy", CFG.get("youtube_privacy", "private"))
+        if not isinstance(raw_privacy, str) or raw_privacy.strip().lower() not in {"private", "unlisted", "public"}:
+            raise HTTPException(400, "خصوصية YouTube غير صالحة")
+        youtube_privacy = raw_privacy.strip().lower()
+        raw_schedule = payload.get("schedule")
+        if raw_schedule is not None and not isinstance(raw_schedule, str):
+            raise HTTPException(400, "موعد النشر يجب أن يكون نصاً صالحاً")
+        schedule_mode = (raw_schedule or ("peak" if CFG.get("schedule_peak") else "now")).strip() or "now"
     rights = payload.get("rights") or {}
     if not isinstance(rights, dict):
         raise HTTPException(400, "بيانات مراجعة الحقوق غير صالحة")
@@ -2133,15 +2168,23 @@ def api_publish(jid: str, payload: dict):
             raise HTTPException(409, "توجد عملية نشر قائمة لهذه المهمة؛ انتظر اكتمالها")
         PUBLISHING.add(jid)
     try:
-        privacy = payload.get("privacy", CFG.get("youtube_privacy", "private"))
+        privacy = youtube_privacy or "private"
         publish_at = None
-        mode = str(payload.get("schedule") or ("peak" if CFG.get("schedule_peak") else "now"))
+        mode = schedule_mode
         if mode == "peak" and "youtube" in targets:
             publish_at = SCH.next_peak_iso()
+            if not isinstance(publish_at, str) or not publish_at.strip():
+                raise HTTPException(422, "تعذر حساب وقت صالح للجدولة؛ لم يبدأ النشر")
             privacy = "private"
         elif mode and mode not in ("now", "peak", "off"):
             publish_at = mode
             privacy = "private"
+        if publish_at:
+            from reelkit.schedule import validate_publish_at
+            try:
+                validate_publish_at(publish_at)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         if targets == ["youtube"]:
             from reelkit import rights as RT
             gate = RT.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
@@ -2265,14 +2308,54 @@ th{color:#9fb0c3;background:#161a22;position:sticky;top:0}
 <p class="muted">قراءة فقط — يوثّق قرارات النشر ونتائج بوابة الحقوق. لا يثبت الملكية ولا يمنح ترخيصاً.</p>
 <table><thead><tr><th>الوقت</th><th>الحدث</th><th>المهمة</th><th>النتيجة</th><th>تفاصيل</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">جارٍ التحميل…</td></tr></tbody></table>
 <script>
-fetch('/api/audit?limit=500').then(r=>r.json()).then(d=>{
-  const rows=document.getElementById('rows');
-  const ev=d.events||[];
-  if(!ev.length){rows.innerHTML='<tr><td colspan="5" class="muted">لا أحداث بعد</td></tr>';return}
-  rows.innerHTML=ev.map(e=>{const ok=e.ok===true?'<span class="ok">نجح</span>':e.ok===false?'<span class="bad">فشل</span>':'<span class="muted">—</span>';
-  const det=Object.entries(e).filter(([k])=>!['ts','event','job_id','ok'].includes(k)).map(([k,v])=>k+'='+String(v)).join(' | ');
-  return '<tr><td>'+(e.ts||'')+'</td><td><span class="tag">'+(e.event||'')+'</span></td><td>'+(e.job_id||'')+'</td><td>'+ok+'</td><td class="muted">'+det+'</td></tr>'}).join('')
-}).catch(()=>{document.getElementById('rows').innerHTML='<tr><td colspan="5" class="bad">تعذر تحميل السجل</td></tr>'})
+const rows=document.getElementById('rows');
+function messageRow(text, className) {
+  const tr=document.createElement('tr');
+  const td=document.createElement('td');
+  td.colSpan=5;
+  td.className=className;
+  td.textContent=text;
+  tr.append(td);
+  rows.replaceChildren(tr);
+}
+function addCell(tr, value, className) {
+  const td=document.createElement('td');
+  if(className) td.className=className;
+  td.textContent=String(value ?? '');
+  tr.append(td);
+  return td;
+}
+function detailValue(value) {
+  if(typeof value==='string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+fetch('/api/audit?limit=500', {headers:{Accept:'application/json'}}).then(r=>{
+  if(!r.ok) throw new Error('audit request failed');
+  return r.json();
+}).then(d=>{
+  const ev=Array.isArray(d.events)?d.events:[];
+  if(!ev.length){messageRow('لا أحداث بعد','muted');return}
+  rows.replaceChildren();
+  for(const e of ev){
+    const tr=document.createElement('tr');
+    addCell(tr,e.ts);
+    const eventCell=addCell(tr,'');
+    const tag=document.createElement('span');
+    tag.className='tag';
+    tag.textContent=String(e.event ?? '');
+    eventCell.append(tag);
+    addCell(tr,e.job_id);
+    const statusCell=addCell(tr,'');
+    const status=document.createElement('span');
+    status.className=e.ok===true?'ok':e.ok===false?'bad':'muted';
+    status.textContent=e.ok===true?'نجح':e.ok===false?'فشل':'—';
+    statusCell.append(status);
+    const detail=Object.entries(e).filter(([k])=>!['ts','event','job_id','ok'].includes(k))
+      .map(([k,v])=>String(k)+'='+detailValue(v)).join(' | ');
+    addCell(tr,detail,'muted');
+    rows.append(tr);
+  }
+}).catch(()=>messageRow('تعذر تحميل السجل','bad'))
 </script></body></html>"""
     return HTMLResponse(html)
 
@@ -3080,14 +3163,18 @@ if __name__ == "__main__":
     if port != a.port:
         print(f"⚠️  المنفذ {a.port} مشغول — استخدمنا {port}", flush=True)
         print(f"   (لو تبغى غيره: python dashboard.py --port {a.port + 50})", flush=True)
-    # 🔒 على الشبكة: ولّد رمزاً إن لم يُعيَّن (يمنع تحكّم أي جهاز باللوحة)
-    if not _is_loopback_host(a.host) and not globals().get("_DASH_TOKEN"):
-        tok = uuid.uuid4().hex
-        os.environ["REEL_DASH_TOKEN"] = tok
-        globals()["_DASH_TOKEN"] = tok
-        print("🔒 اللوحة مفتوحة على الشبكة — الرمز المطلوب:", flush=True)
-        print(f"   http://{a.host}:{port}/?token={tok}", flush=True)
-        print("   (عيّن REEL_DASH_TOKEN لتثبيته، أو استخدم --host 127.0.0.1 للوصول المحلي فقط)", flush=True)
+    generated_token = not str(os.environ.get("REEL_DASH_TOKEN", "")).strip()
+    token = _ensure_dash_token()
+    if generated_token:
+        print("🔒 رابط دخول مؤقت للوحة:", flush=True)
+        if a.host in ("0.0.0.0", "::"):
+            print(f"   http://127.0.0.1:{port}/?token={token}", flush=True)
+            print(f"   للشبكة المحلية: http://<عنوان-هذا-الجهاز>:{port}/?token={token}", flush=True)
+        else:
+            print(f"   http://{a.host}:{port}/?token={token}", flush=True)
+    else:
+        print("🔒 المصادقة مفعّلة؛ افتح الرابط مع ?token=<REEL_DASH_TOKEN> مرة واحدة.", flush=True)
+        print(f"   http://{a.host}:{port}/", flush=True)
     print(f"لوحة التحكم: http://{a.host}:{port}", flush=True)
     try:                              # تذكير بالمساحة قبل التشغيل
         from reelkit import space as _SP

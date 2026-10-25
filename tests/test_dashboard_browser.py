@@ -8,6 +8,7 @@
 يُتخطّى تلقائياً إذا لم تُثبَّت playwright أو Chromium.
 """
 
+import json
 import threading
 import time
 import urllib.request
@@ -22,6 +23,8 @@ pw = pytest.importorskip("playwright.sync_api", reason="playwright غير مثب
 def dash_url():
     import dashboard
 
+    previous_token = dashboard._DASH_TOKEN
+    dashboard._DASH_TOKEN = "playwright-dashboard-test-token"
     server = uvicorn.Server(uvicorn.Config(dashboard.app, host="127.0.0.1", port=0,
                                            log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -31,7 +34,7 @@ def dash_url():
         time.sleep(0.05)
     assert server.started, "فشل إقلاع خادم اللوحة للاختبار"
     port = server.servers[0].sockets[0].getsockname()[1]
-    url = f"http://127.0.0.1:{port}/"
+    url = f"http://127.0.0.1:{port}/?token={dashboard._DASH_TOKEN}"
     for _ in range(50):                       # انتظار الجاهزية الفعلية
         try:
             urllib.request.urlopen(url, timeout=2)
@@ -41,6 +44,7 @@ def dash_url():
     yield url
     server.should_exit = True
     thread.join(timeout=10)
+    dashboard._DASH_TOKEN = previous_token
 
 
 def test_dashboard_page_loads_with_no_js_errors(dash_url):
@@ -112,4 +116,35 @@ def test_voice_studio_fits_mobile_and_expands_manual_script(dash_url):
         assert panel_bounds["x"] >= 0
         assert panel_bounds["x"] + panel_bounds["width"] <= 390
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
+def test_audit_page_escapes_untrusted_event_values(dash_url):
+    from playwright.sync_api import sync_playwright
+
+    payload = {
+        "ok": True,
+        "events": [{
+            "ts": "<img src=x onerror=window.__auditXss=1>",
+            "event": "<svg onload=window.__auditXss=2>",
+            "job_id": "<script>window.__auditXss=3</script>",
+            "ok": False,
+            "detail": "<iframe src=javascript:window.__auditXss=4>",
+        }],
+    }
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            pytest.skip(f"Chromium غير متاح: {exc}")
+        page = browser.new_page()
+        page.route("**/api/audit*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)
+        ))
+        page.goto(dash_url.split("?", 1)[0].rstrip("/") + "/audit?token=playwright-dashboard-test-token",
+                  wait_until="networkidle", timeout=30000)
+        assert page.locator("#rows tr").count() == 1
+        assert page.locator("#rows img, #rows svg, #rows script, #rows iframe").count() == 0
+        assert page.locator("#rows").inner_text().find("<script>") >= 0
+        assert page.evaluate("window.__auditXss") is None
         browser.close()

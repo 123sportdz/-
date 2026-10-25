@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 import numpy as np
-from fastapi.testclient import TestClient
 
 import dashboard
 from reelkit import ai, render, voice
@@ -540,7 +539,7 @@ def test_dashboard_rejects_invalid_brand_position_and_scale():
         assert error.value.status_code == 400
 
 
-def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch):
+def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch, dashboard_client):
     captured = {}
 
     def fake_say(text, out_path, **kwargs):
@@ -557,8 +556,7 @@ def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch):
 
     monkeypatch.setattr(dashboard.VOICE, "say", fake_say)
     monkeypatch.setattr(dashboard.VOICE, "shift_commentary_pitch", fake_pitch)
-    client = TestClient(dashboard.app)
-    response = client.post("/api/voice/preview", json={
+    response = dashboard_client.post("/api/voice/preview", json={
         "text": "جملة معاينة", "voice_engine": "edge", "edge_voice": "ar-DZ-IsmaelNeural",
         "commentary_energy": 93, "commentary_pitch": 2,
     })
@@ -575,26 +573,26 @@ def test_voice_preview_api_returns_audio_and_cleans_temp(monkeypatch):
     assert not Path(captured["pitch_path"]).exists()
 
 
-def test_voice_preview_api_rejects_invalid_controls_without_synthesis(monkeypatch):
+def test_voice_preview_api_rejects_invalid_controls_without_synthesis(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard.VOICE, "say", lambda *_args, **_kwargs: pytest.fail("must not synthesize"))
-    response = TestClient(dashboard.app).post("/api/voice/preview", json={
+    response = dashboard_client.post("/api/voice/preview", json={
         "text": "معاينة", "voice_engine": "unknown",
     })
     assert response.status_code == 400
 
 
-def test_voice_preview_rejects_nonboolean_visibility(monkeypatch):
+def test_voice_preview_rejects_nonboolean_visibility(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard.VOICE, "say", lambda *_args, **_kwargs: pytest.fail("must not synthesize"))
-    response = TestClient(dashboard.app).post("/api/voice/preview", json={
+    response = dashboard_client.post("/api/voice/preview", json={
         "text": "معاينة", "voice_engine": "edge", "commentary_show": "false",
     })
     assert response.status_code == 400
 
 
-def test_gemini_voice_preview_requires_saved_key(monkeypatch):
+def test_gemini_voice_preview_requires_saved_key(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard.VOICE, "_key", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(dashboard.VOICE, "say", lambda *_args, **_kwargs: pytest.fail("must not synthesize"))
-    response = TestClient(dashboard.app).post("/api/voice/preview", json={
+    response = dashboard_client.post("/api/voice/preview", json={
         "text": "معاينة", "voice_engine": "gemini",
     })
     assert response.status_code == 503

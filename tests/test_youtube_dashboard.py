@@ -1,4 +1,4 @@
-from fastapi.testclient import TestClient
+from datetime import datetime, timedelta, timezone
 import json
 import pytest
 
@@ -9,12 +9,16 @@ import reelkit.publish.youtube as youtube_module
 VIDEO_ID = "AbCdEfGhIj1"
 
 
+def _future_schedule():
+    return (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard, "JOBS", {})
     monkeypatch.setattr(dashboard, "PUBLISHING", set())
     monkeypatch.setattr(dashboard, "_persist", lambda *args, **kwargs: None)
-    return TestClient(dashboard.app)
+    return dashboard_client
 
 
 def _public_evidence(tmp_path, monkeypatch):
@@ -195,7 +199,8 @@ def test_publish_api_rejects_malformed_component_rights_fields(client):
 def test_scheduled_unknown_rights_are_blocked_before_upload(client, monkeypatch):
     job = {"id": "job-scheduled-unknown", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job
-    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: "2026-10-21T12:00:00Z")
+    scheduled_for = _future_schedule()
+    monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: scheduled_for)
     monkeypatch.setattr(
         dashboard,
         "_do_publish_once",
@@ -222,7 +227,7 @@ def test_scheduled_licensed_upload_keeps_private_upload_and_passes_release_time(
     _public_evidence(tmp_path, monkeypatch)
     job = {"id": "job-scheduled-licensed", "status": "done", "output": "reel.mp4"}
     dashboard.JOBS[job["id"]] = job
-    scheduled_for = "2026-10-21T12:00:00Z"
+    scheduled_for = _future_schedule()
     monkeypatch.setattr(dashboard.SCH, "next_peak_iso", lambda: scheduled_for)
     monkeypatch.setattr(dashboard.SCH, "describe", lambda _value: "local schedule")
     calls = []
@@ -412,7 +417,7 @@ def test_scheduled_youtube_review_separates_private_upload_from_public_release(c
 
     response = client.post(
         f"/api/jobs/{job['id']}/publish",
-        json={"targets": ["youtube"], "schedule": "2026-10-20T12:00:00Z", "rights": rights},
+        json={"targets": ["youtube"], "schedule": _future_schedule(), "rights": rights},
     )
 
     assert response.status_code == 200
