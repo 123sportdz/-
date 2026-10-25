@@ -532,6 +532,18 @@ def unit_regressions(tmp):
     return ok
 
 
+def _spawn_dashboard_for_selftest(port, token, dashboard_client_class):
+    env = os.environ.copy()
+    env["REEL_DASH_TOKEN"] = token
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "dashboard.py"), "--host", "127.0.0.1", "--port", str(port)],
+        cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    client = dashboard_client_class(f"http://127.0.0.1:{port}", token=token, timeout=20)
+    return proc, client
+
+
 def unit_bot_control(tmp, src):
     """🤖 اختبار تكاملي لـreelbot: محاكي Bot API + لوحة حقيقية + مهمة فعلية.
 
@@ -606,11 +618,8 @@ def unit_bot_control(tmp, src):
 
     # ---------- 3) لوحة حقيقية ----------
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
-    dproc = subprocess.Popen([sys.executable, str(ROOT / "dashboard.py"), "--host", "127.0.0.1",
-                              "--port", str(port)], cwd=str(ROOT),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
-    dash = C.Dash(f"http://127.0.0.1:{port}", timeout=20)
+    dash_token = os.urandom(32).hex()
+    dproc, dash = _spawn_dashboard_for_selftest(port, dash_token, C.Dash)
     for _ in range(40):
         if dash.ping(timeout=2):
             break
