@@ -31,10 +31,13 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Install FFmpeg and Tesseract
+      - name: Ensure FFmpeg is available
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-ara
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version
 
       - name: Install Python dependencies
         run: |
@@ -85,10 +88,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install FFmpeg and Tesseract
+      - name: Ensure FFmpeg is available
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-ara
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version
 
       - name: Install CPU media dependencies
         run: |
