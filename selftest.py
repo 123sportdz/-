@@ -125,12 +125,15 @@ def unit_protrack(tmp):
     det[80:88, :] = np.nan                 # فجوة
     trk = P.track_2d(det, [], 1280, 720, fps=fps, rate=rate)
     assert trk is not None, "track_2d رجّع None"
-    cov = trk["coverage"]
-    err = float(np.nanmean(np.abs(trk["x"] - x))) / 1280 * 100
-    cam, cam_y = P.predictive_camera(trk["x"], trk["y"], fps, half=228, W=1280, H=720)
+    grid_trk = P.to_grid(trk, rate, duration=n / rate)
+    assert grid_trk is not None and len(grid_trk["x"]) == n, "to_grid لم يحفظ شبكة المصدر"
+    cov = trk["coverage_time"]
+    err = float(np.nanmean(np.abs(grid_trk["x"] - x))) / 1280 * 100
+    raw_x50 = float(grid_trk["x"][50])
+    cam, cam_y = P.predictive_camera(grid_trk["x"], grid_trk["y"], rate, half=228, W=1280, H=720)
     jit = float(np.mean(np.abs(np.diff(cam[~np.isnan(cam)], 2))))
-    bridged = P.template_bridge(str(tmp / "clip.mp4"), trk, fps, 1280, 720)
-    qa = P.qa_report(trk, cam, fps, trk["rejected"], bridged)
+    bridged = P.template_bridge(str(tmp / "clip.mp4"), grid_trk, fps, 1280, 720)
+    qa = P.qa_report(grid_trk, cam, rate, grid_trk["rejected"], bridged)
     # 🧪 حالة ضجيج واقعية (7 كشوفات/لحظة، معظمها منخفض الثقة) — مثل مقاطع المستخدم
     rng2 = np.random.default_rng(7)
     rows = []
@@ -148,8 +151,7 @@ def unit_protrack(tmp):
           f"خطأ={err2:.1f}px (المطلوب ≥90% و<8px)")
     # المهم: الشاذ (index 50، إزاحة +800px) ما يخرّب المسار (يُستبعد بالارتباط لا بالرفض)
     # الشاذ إما يُترك NaN (يُستكمل بالاستقراء) أو يأتي قريباً من الحقيقة — لا يخرّب المسار
-    _xv = float(trk["x"][50])
-    out_ok = (not np.isfinite(_xv)) or abs(_xv - x[50]) < 40
+    out_ok = (not np.isfinite(raw_x50)) or abs(raw_x50 - x[50]) < 40
     ok = cov >= 75 and err < 6.0 and out_ok and jit < 6.0
     from reelkit import autocut as AC
     env_t, env_e = AC.audio_env(str(tmp / "clip.mp4"))
