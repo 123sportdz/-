@@ -800,11 +800,10 @@ def main(argv=None):
             """تتبّع احترافي كامل على كشوفات معطاة. يرجّع (pro, bridged, cov_key)."""
             from reelkit import protrack as PT
             pr = PT.track_2d(det_cur, an["cuts"], info["width"], info["height"],
-                             fps=info["fps"], rate=rate_cur)
+                             fps=info["fps"], rate=rate_cur, duration=info["duration"])
             if pr is None:
                 return None, 0, 0.0
-            ck = max(float(pr.get("coverage_time", 0)), float(pr.get("coverage_hi", 0)),
-                     float(pr.get("coverage", 0)))
+            ck = PT.coverage_score(pr)
             if ck < 20:
                 return None, 0, ck
             br = 0
@@ -873,6 +872,10 @@ def main(argv=None):
                                 log(f"      — الجودة الأعلى ما حسّنت المسار ({cov3:.0f}%) → أبقيت الأصل")
                     except Exception as e:
                         log(f"      ⚠️ إعادة الكشف تعذّرت ({type(e).__name__}: {str(e)[:60]})")
+                if pro is not None and not PT.has_usable_coverage(pro):
+                    log(f"      تغطية زمنية غير كافية ({cov_key:.0f}%) → استخدام مسار التتبع الاحتياطي")
+                    pro = None
+                    bridged = 0
                 if pro is None:
                     log(f"      محرّك احترافي: تغطية ضعيفة ({cov_key:.0f}%) → الكلاسيكي")
                 else:
@@ -951,31 +954,6 @@ def main(argv=None):
             except Exception:
                 zoom_v = 1.12
             zoom_v = max(1.0, min(1.6, zoom_v))
-        half_v = (info["height"] / zoom_v) / 2.0 if zoom_v > 1.001 else None
-        if pro is not None or a.subject == "action":
-            from reelkit import protrack as PT
-            cam, cam_y = PT.predictive_camera(target, by, info["fps"], an["cuts"],
-                                              lead=lead_f, deadzone=deadzone,
-                                              half=crop_w0 / 2.0, W=info["width"],
-                                              H=info["height"], half_v=half_v)
-            log(f"      🎯 الإطار: {fsel} (منطقة ميتة {deadzone:.0f}px)"
-                + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
-            if pro is not None:
-                try:
-                    _miss = PT.frame_miss_pct(pro.get("x"), pro.get("y"), cam, cam_y=cam_y,
-                                              half_w=crop_w0 / 2.0, half_h=half_v)
-                    log(f"      🎯 خروج الكرة عن الكادر: {_miss:.1f}% من فريمات المسار")
-                except Exception:
-                    pass
-            if cam is None or np.all(np.isnan(cam)):
-                cam = np.full(n_frames, info["width"] / 2.0)
-        else:
-            cam = analysis.smooth_camera(target, info["fps"], an["cuts"])
-        if cam is None or np.all(np.isnan(cam)):   # no ball AND no motion (static/blank clip)
-            cam = np.full(n_frames, info["width"] / 2.0)
-            log("      لا كرة ولا حركة -> تأطير ثابت في الوسط")
-
-        # ---------- 🔍 تقريب درامي حسب سرعة الكرة ----------
         if a.zoom and a.zoom != "off" and a.layout != "split":
             try:
                 from reelkit import protrack as PT
@@ -991,13 +969,12 @@ def main(argv=None):
                 zoom = None
                 log(f"      ⚠️ التقريب تعذّر ({type(e).__name__})")
 
-        # ---------- 🎬 مقدمة سينمائية (خطف الانتباه في أول ثانية) ----------
         if zoom_v > 1.001 and a.layout != "split" and zoom is None:
-            zoom = np.full(n_frames, zoom_v)          # إطار عمودي ثابت حتى لو التقريب الدرامي مطفأ
+            zoom = np.full(n_frames, zoom_v)
         if a.hook and a.layout != "split":
             try:
                 damp = 0.85
-                nH = min(max(3, int(damp * info["fps"])), n_frames)   # مقطع أقصر من المقدمة؟ بلا broadcasting
+                nH = min(max(3, int(damp * info["fps"])), n_frames)
                 ramp = np.linspace(1.26, 1.0, nH) ** 1.0
                 if zoom is None:
                     zoom = np.ones(n_frames)
@@ -1006,6 +983,32 @@ def main(argv=None):
                 log(f"      🎬 مقدمة سينمائية: تقريب {ramp[0]:.2f}× ينفتح إلى 1.00× في {damp}s")
             except Exception as e:
                 log(f"      ⚠️ المقدمة تعذّرت ({type(e).__name__})")
+        if pro is not None or a.subject == "action":
+            from reelkit import protrack as PT
+            cam_half_w, cam_half_h = PT.camera_half_sizes(
+                crop_w0, info["width"], info["height"], zoom, n_frames)
+            cam, cam_y = PT.predictive_camera(target, by, info["fps"], an["cuts"],
+                                              lead=lead_f, deadzone=deadzone,
+                                              half=cam_half_w, W=info["width"],
+                                              H=info["height"], half_v=cam_half_h)
+            log(f"      🎯 الإطار: {fsel} (منطقة ميتة {deadzone:.0f}px)"
+                + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
+            if pro is not None:
+                try:
+                    _miss = PT.frame_miss_pct(bx, by, cam, cam_y=cam_y,
+                                              half_w=cam_half_w, half_h=cam_half_h)
+                    log(f"      🎯 خروج الكرة عن الكادر: {_miss:.1f}% من فريمات المسار")
+                except Exception:
+                    pass
+            if cam is None or np.all(np.isnan(cam)):
+                cam = np.full(n_frames, info["width"] / 2.0)
+        else:
+            cam = analysis.smooth_camera(target, info["fps"], an["cuts"])
+        if cam is None or np.all(np.isnan(cam)):   # no ball AND no motion (static/blank clip)
+            cam = np.full(n_frames, info["width"] / 2.0)
+            log("      لا كرة ولا حركة -> تأطير ثابت في الوسط")
+
+
         mode = analysis.shot_modes(person, an["cuts"], info["fps"], n_frames, a.pad_thresh)
         cov = float(np.mean(~np.isnan(bx))) * 100
         log(f"      ball tracked on {cov:.0f}% of frames | tight-shot layout {mode.mean()*100:.0f}%")
