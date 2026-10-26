@@ -148,6 +148,7 @@ def masked(cfg):
 # ------------------------------------------------------------------ jobs
 JOBS = {}
 PUBLISHING = set()
+PUBLISH_PROGRESS = {}
 _lock = threading.RLock()   # reentrant: _persist يُستدعى داخل أقسام مقفلة
 _last_persist = 0.0
 class _PriorityGate:
@@ -1763,10 +1764,15 @@ def api_jobs():
         js = [dict(j) for j in
               sorted(JOBS.values(), key=lambda j: j.get("created", 0), reverse=True)]
         publishing = set(PUBLISHING)
+        progress = {jid: dict(value) for jid, value in PUBLISH_PROGRESS.items()}
     for j in js:
         if j.get("status") == "running" and j.get("started"):
             j["elapsed"] = round(time.time() - j["started"], 1)
         j["publish_in_progress"] = j["id"] in publishing
+        if j["publish_in_progress"] and j["id"] in progress:
+            j["publish_progress"] = progress[j["id"]]
+        else:
+            j.pop("publish_progress", None)
         j["thumb"] = f"/api/jobs/{j['id']}/thumb"
         j["media"] = f"/media/{j['id']}/{(j.get('output') or '').split('/')[-1].split(chr(92))[-1]}"
     return js
@@ -2043,6 +2049,51 @@ def _publish_in_progress_result(targets):
             for target in targets or []}
 
 
+def _set_publish_progress(jid, percent, uploaded_bytes=None, total_bytes=None, complete=False):
+    jid = str(jid or "")
+    if not jid:
+        return
+    try:
+        percent = int(round(float(percent)))
+    except (TypeError, ValueError, OverflowError):
+        return
+    try:
+        uploaded = None if uploaded_bytes is None else max(0, int(uploaded_bytes))
+    except (TypeError, ValueError, OverflowError):
+        uploaded = None
+    try:
+        total = None if total_bytes is None else max(0, int(total_bytes))
+    except (TypeError, ValueError, OverflowError):
+        total = None
+    with _lock:
+        if jid not in PUBLISHING:
+            return
+        previous = PUBLISH_PROGRESS.get(jid) or {}
+        previous_percent = int(previous.get("percent") or 0)
+        previous_uploaded = previous.get("uploaded_bytes")
+        previous_total = previous.get("total_bytes")
+        if total is None:
+            total = previous_total
+        if uploaded is None:
+            uploaded = previous_uploaded
+        if uploaded is not None and previous_uploaded is not None:
+            uploaded = max(uploaded, int(previous_uploaded))
+        if uploaded is not None and total is not None:
+            uploaded = min(uploaded, total)
+            if total > 0:
+                percent = max(percent, int(uploaded * 100 / total))
+        limit = 100 if complete else 99
+        percent = max(previous_percent, max(0, min(limit, percent)))
+        if complete:
+            percent = 100
+        PUBLISH_PROGRESS[jid] = {
+            "percent": percent,
+            "uploaded_bytes": uploaded,
+            "total_bytes": total,
+            "stage": "اكتمل نقل الفيديو" if complete else "جارٍ رفع الفيديو إلى YouTube",
+        }
+
+
 def _quality_gate(job):
     """حاجز نشر نهائي: لا نرسل مخرجاً فشل فحصه الآلي."""
     report = job.get("quality_report")
@@ -2060,6 +2111,7 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
             if jid in PUBLISHING:
                 return _publish_in_progress_result(targets)
             PUBLISHING.add(jid)
+            PUBLISH_PROGRESS.pop(jid, None)
     try:
         return _do_publish_once(job, targets, title, desc, tags, privacy,
                                 publish_at=publish_at, rights=rights)
@@ -2067,6 +2119,7 @@ def _do_publish(job, targets, title, desc, tags, privacy, publish_at=None, right
         if jid:
             with _lock:
                 PUBLISHING.discard(jid)
+                PUBLISH_PROGRESS.pop(jid, None)
 
 
 def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, rights=None):
@@ -2132,11 +2185,27 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
         else:
             try:
                 from reelkit.publish.youtube import YouTubeUploader
-                r = YouTubeUploader().upload(job["output"], title, desc, tags, privacy=privacy,
-                                             publish_at=publish_at,
-                                             expected_channel_id=CFG.get("youtube_channel_id") or None,
-                                             contains_synthetic_media=rights.get("contains_synthetic_media") is True,
-                                             rights=rights)
+                output_path = job["output"]
+                try:
+                    total_size = os.path.getsize(output_path)
+                except (OSError, TypeError):
+                    total_size = None
+                _set_publish_progress(jid, 0, 0, total_size)
+
+                def _progress(percent, uploaded_bytes=None, reported_total=None):
+                    _set_publish_progress(
+                        jid, percent, uploaded_bytes,
+                        reported_total if reported_total is not None else total_size,
+                    )
+
+                r = YouTubeUploader().upload(
+                    output_path, title, desc, tags, privacy=privacy,
+                    publish_at=publish_at,
+                    expected_channel_id=CFG.get("youtube_channel_id") or None,
+                    contains_synthetic_media=rights.get("contains_synthetic_media") is True,
+                    rights=rights, progress_callback=_progress,
+                )
+                _set_publish_progress(jid, 100, total_size, total_size, complete=True)
                 item = {"ok": True, "id": r.get("id"), "url": f"https://youtu.be/{r.get('id')}"}
                 if publish_at:
                     item["scheduled_for"] = publish_at
@@ -2204,6 +2273,7 @@ def api_publish(jid: str, payload: dict):
         if jid in PUBLISHING:
             raise HTTPException(409, "توجد عملية نشر قائمة لهذه المهمة؛ انتظر اكتمالها")
         PUBLISHING.add(jid)
+        PUBLISH_PROGRESS.pop(jid, None)
     try:
         privacy = youtube_privacy or "private"
         publish_at = None
@@ -2238,6 +2308,7 @@ def api_publish(jid: str, payload: dict):
     finally:
         with _lock:
             PUBLISHING.discard(jid)
+            PUBLISH_PROGRESS.pop(jid, None)
 
 
 @app.get("/api/jobs/{jid}/audit")

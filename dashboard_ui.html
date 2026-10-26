@@ -1443,7 +1443,7 @@ async function poll(){
       const base=o.dataset.label||o.textContent.replace(/\s*\(\d+\)$/,"");
       o.dataset.label=base;o.textContent=(o.value&&counts[o.value]!==undefined)?base+" ("+counts[o.value]+")":base;});
     updateWorkflowFilterCounts();
-    renderJobs();renderRecent();updateLive();
+    renderJobs();renderRecent();updateLive();updatePublishProgress();
   }catch(e){}
   setTimeout(poll,2500);
 }
@@ -1507,6 +1507,7 @@ function jobCard(j){
       <div style="font-size:12px;color:var(--mut)">${esc((j.label||"").slice(0,70))}</div>
       ${j.quality_report?`<div style="font-size:12px;color:${j.quality_report.ok?'var(--ok)':'var(--warn)'};margin-top:5px">
         ${j.quality_report.ok?'✅ فحص الجودة سليم':'⚠️ '+esc((j.quality_report.issues||[]).join(' · '))}</div>`:""}      ${publishBadge(j)}
+      ${publishProgressMarkup(j)}
       <div class="acts">
         ${done?`<button class="btn sec sm" onclick="openJob('${j.id}')">👁 مراجعة ونشر</button>
           <button class="btn gray sm" title="تصدير معلومات الإنتاج للمراجعة؛ لا تثبت حق الاستخدام" onclick="dispute('${j.id}')">🛡️ معلومات الإنتاج</button>
@@ -1532,6 +1533,44 @@ function publishBadge(j){
   else if(st)bits.push("قيد المعالجة ⏳");
   if(y.region_restriction&&Array.isArray(y.region_restriction.blocked)&&y.region_restriction.blocked.length)bits.push("محجوب في "+y.region_restriction.blocked.length+" دولة");
   return `<div style="font-size:12px;color:var(--mut);margin-top:5px">▶️ YouTube: ${esc(bits.filter(Boolean).join(" · ")||"مرفوع")}</div>`;
+}
+function publishProgressMarkup(j){
+  if(!j?.publish_in_progress)return "";
+  const p=j.publish_progress&&typeof j.publish_progress==="object"?j.publish_progress:null;
+  const has=!!p&&Number.isFinite(Number(p.percent));
+  const percent=has?Math.max(0,Math.min(100,Math.round(Number(p.percent)))):0;
+  const uploaded=has?Number(p.uploaded_bytes)||0:0,total=has?Number(p.total_bytes)||0:0;
+  const bytes=total>0?`${fmtB(uploaded)} / ${fmtB(total)}`:"";
+  const label=has?`رفع YouTube: ${percent}%`:"جارٍ تنفيذ النشر…";
+  const stage=p&&typeof p.stage==="string"?p.stage:"جارٍ التحقق من الحقوق وبدء الإرسال";
+  return `<div class="warn publish-progress" data-publish-progress="${esc(j.id||"")}" style="margin:8px 0">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="spin publish-progress-spinner" style="${has?"display:none":""}"></span>
+      <b class="publish-progress-label">${esc(label)}</b>
+      <span class="publish-progress-bytes" style="margin-inline-start:auto;font-size:11px;color:var(--mut)">${esc(bytes)}</span>
+    </div>
+    <div class="bar" role="progressbar" aria-label="تقدم رفع YouTube" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i class="publish-progress-fill" style="width:${percent}%"></i></div>
+    <div class="publish-progress-stage" style="font-size:11px;color:var(--mut)">${esc(stage)}</div>
+  </div>`;
+}
+function updatePublishProgress(){
+  document.querySelectorAll("[data-publish-progress]").forEach(box=>{
+    const id=box.dataset.publishProgress,job=JOBS.find(item=>item.id===id);
+    if(!job||!job.publish_in_progress){box.remove();return;}
+    const p=job.publish_progress;
+    if(!p||typeof p!=="object")return;
+    const percent=Math.max(0,Math.min(100,Math.round(Number(p.percent)||0)));
+    const total=Number(p.total_bytes)||0,uploaded=Number(p.uploaded_bytes)||0;
+    const label=box.querySelector(".publish-progress-label"),bytes=box.querySelector(".publish-progress-bytes");
+    const stage=box.querySelector(".publish-progress-stage"),fill=box.querySelector(".publish-progress-fill");
+    const bar=box.querySelector("[role='progressbar']"),spinner=box.querySelector(".publish-progress-spinner");
+    if(label)label.textContent=`رفع YouTube: ${percent}%`;
+    if(bytes)bytes.textContent=total>0?`${fmtB(uploaded)} / ${fmtB(total)}`:"";
+    if(stage)stage.textContent=typeof p.stage==="string"?p.stage:"جارٍ رفع الفيديو إلى YouTube";
+    if(fill)fill.style.width=percent+"%";
+    if(bar)bar.setAttribute("aria-valuenow",String(percent));
+    if(spinner)spinner.style.display="none";
+  });
 }
 function sortJobs(list){
   const mode=$("srt")?$("srt").value:"new", num=v=>Number(v)||0;
@@ -1800,7 +1839,7 @@ function openJob(id){
           <button class="btn sm" ${publishDisabled} onclick="pub('${j.id}',['youtube'],this)">▶️ رفع إلى YouTube</button>
         </div>
         <div id="rightsReviewPanel" data-job-id="${esc(j.id)}">${rightsReviewMarkup(j.rights_review)}</div>
-        <div id="m_res" data-job-id="${esc(j.id)}">${youtubeStatusPanel(j.publish,j.id)}</div>
+        <div id="m_res" data-job-id="${esc(j.id)}">${publishProgressMarkup(j)}${youtubeStatusPanel(j.publish,j.id)}</div>
         <div class="warn">⚠️ سجل الحقوق يوثّق إجاباتك فقط؛ لا يثبت الترخيص ولا يمنع Content ID. الرفع الخاص لا يمنع المطالبة، فراجع YouTube Studio → Content → Restrictions قبل الإتاحة العامة.</div>
       </div></div>`;
   $("modal").classList.add("on");
@@ -1881,7 +1920,7 @@ async function submitPub(id,targets,trigger=null){
   if(Array.isArray(assetsList))rights.assets=assetsList;
   const body={targets,title:$("m_title")?.value||"",description:$("m_desc")?.value||"",
     tags:($("m_tags")?.value||"").split(",").map(s=>s.trim()).filter(Boolean),privacy:$("pub_privacy")?.value||"private",rights};
-  if($("m_res"))$("m_res").innerHTML='<div class="warn"><span class="spin"></span> جارٍ النشر بعد فحص الحقوق…</div>';
+  if($("m_res"))$("m_res").innerHTML=publishProgressMarkup({id,publish_in_progress:true});
   try{
     const response=await fetch(`/api/jobs/${encodeURIComponent(id)}/publish`,{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});

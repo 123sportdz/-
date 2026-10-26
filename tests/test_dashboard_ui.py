@@ -45,6 +45,16 @@ def test_job_card_shows_youtube_publish_badge_helper():
     assert "function exportJobsCsv()" in js
 
 
+def test_dashboard_shows_live_resumable_youtube_upload_progress():
+    js = "\n".join(_scripts())
+    assert "function publishProgressMarkup(j)" in js
+    assert "function updatePublishProgress()" in js
+    assert "data-publish-progress" in js
+    assert "aria-valuenow" in js
+    assert "updatePublishProgress()" in js
+    assert "publish_progress" in js
+
+
 def _extract_simple_js_function(js, name):
     match = re.search(rf"function {re.escape(name)}\([^)]*\)\{{(.*?)\n\}}", js, re.S)
     assert match, f"missing {name}"
