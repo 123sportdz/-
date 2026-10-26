@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import { storage } from './storage';
 
 export const SCRIPT_WORD_LIMITS: Record<string, number> = {
@@ -97,6 +96,7 @@ export const geminiService = {
     // If API key is available, call Gemini API
     if (apiKey) {
       try {
+        const { GoogleGenAI } = await import('@google/genai');
         const ai = new GoogleGenAI({ apiKey });
         const systemPrompt = `أنت محرر محتوى رياضي متخصص في كرة القدم لريلز "الحدث" (elhadath-reels).
 مهمتك: توليد نصوص باللغة الرياضية المتقنة والممتعة حصراً لكرة القدم.
