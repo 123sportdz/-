@@ -285,13 +285,59 @@ def _segment_bounds(times, cuts_t):
     return b
 
 
-def track_2d(det, cuts, W, H, fps=60.0, rate=15.0, min_conf=0.20):
+def _in_frame_mask(x, y, W, H):
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.shape != y.shape:
+        raise ValueError("track coordinates must have matching shapes")
+    return (np.isfinite(x) & np.isfinite(y) & (x >= 0.0) & (x < float(W))
+            & (y >= 0.0) & (y < float(H)))
+
+
+def track_2d(det, cuts, W, H, fps=60.0, rate=15.0, min_conf=0.20, duration=None):
     """تتبّع 2D احترافي. det: Nx6 (t,x,y,w,h,conf).
     يرجّع dict فيه: t[], x[], y[], conf[], accepted[], rejected[], coverage."""
+    det = np.asarray(det, dtype=float)
+    if det.size == 0:
+        return None
+    if det.ndim != 2 or det.shape[1] < 6:
+        raise ValueError("detections must have shape Nx6 or wider")
+    det = det[:, :6]
+    valid = np.isfinite(det).all(axis=1)
+    valid &= _in_frame_mask(det[:, 1], det[:, 2], W, H)
+    valid &= (det[:, 0] >= 0.0) & (det[:, 3] > 0.0) & (det[:, 4] > 0.0)
+    valid &= (det[:, 5] >= 0.0) & (det[:, 5] <= 1.0)
+    try:
+        duration = float(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    if duration is not None and (not np.isfinite(duration) or duration <= 0.0):
+        duration = None
+    if duration is not None:
+        valid &= det[:, 0] < duration
+    det = det[valid]
     if len(det) == 0:
         return None
     det = det[np.argsort(det[:, 0])]
-    dt = 1.0 / max(1e-6, rate)
+    try:
+        requested_rate = float(rate)
+    except (TypeError, ValueError):
+        requested_rate = 15.0
+    if not np.isfinite(requested_rate) or requested_rate <= 0.0:
+        requested_rate = 15.0
+    try:
+        source_fps = float(fps)
+    except (TypeError, ValueError):
+        source_fps = 0.0
+    if np.isfinite(source_fps) and source_fps > 0.0:
+        sample_step = max(1, int(round(source_fps / requested_rate)))
+        sample_rate = source_fps / sample_step
+    else:
+        sample_rate = requested_rate
+    dt = 1.0 / sample_rate
+    if duration is None:
+        duration = float(det[:, 0].max()) + dt
+    sample_count = max(1, int(np.ceil(duration * sample_rate)))
     # عتبة ثقة **تكيّفية**: لو الكاشف يغرقنا بضجيج منخفض الثقة، ننزل العتبة
     # حتى لا نرفض كل شي (شاهدنا 1692 كشفاً/16s حيث معظمها < 0.2).
     _conf = det[:, 5] if len(det) else np.array([0.0])
@@ -398,19 +444,37 @@ def track_2d(det, cuts, W, H, fps=60.0, rate=15.0, min_conf=0.20):
             for b in bad:
                 X[order[pos[b]]] = np.nan; Y[order[pos[b]]] = np.nan
                 acc_all[order[pos[b]]] = False
+    within = _in_frame_mask(X, Y, W, H)
+    X[~within] = np.nan
+    Y[~within] = np.nan
+    acc_all[~within] = False
     conf = det[:, 5].astype(float)
     cov = float(np.mean(~np.isnan(X))) * 100
     cov_hi = float(acc_all.sum()) / max(1, n_cand) * 100      # تغطية المرشّحين
-    # 🎯 التغطية الزمنية = أهم مقياس: نسبة اللحظات التي رُبطت فيها الكرة فعلاً
-    try:
-        tt_all = set(np.round(det[det[:, 5] >= eff_conf, 0], 4).tolist())
-        tt_ok = set(np.round(det[acc_all, 0], 4).tolist()) if acc_all.any() else set()
-        cov_t = len(tt_ok) / max(1, len(tt_all)) * 100
-    except Exception:
-        cov_t = cov_hi
+    # التغطية الزمنية تقيس المسار المقبول نسبةً إلى جميع عينات الفيديو، لا إلى أوقات الكشف فقط.
+    tt_ok = set(np.round(det[acc_all, 0], 4).tolist()) if acc_all.any() else set()
+    cov_t = min(100.0, len(tt_ok) / sample_count * 100.0)
     return dict(t=det[:, 0], x=X, y=Y, conf=conf, accepted=acc_all, rejected=rej,
                 coverage=cov, coverage_hi=cov_hi, coverage_time=cov_t,
-                eff_conf=float(eff_conf), n_cand=int(n_cand), W=W, H=H, rate=rate)
+                eff_conf=float(eff_conf), n_cand=int(n_cand), sample_count=sample_count,
+                sample_rate=float(sample_rate), W=W, H=H, rate=rate)
+
+
+def coverage_score(trk):
+    if not isinstance(trk, dict):
+        return 0.0
+    for key in ("coverage_time", "coverage_grid", "coverage_hi", "coverage"):
+        try:
+            value = float(trk.get(key))
+            if np.isfinite(value):
+                return float(np.clip(value, 0.0, 100.0))
+        except Exception:
+            pass
+    return 0.0
+
+
+def has_usable_coverage(trk, minimum=70.0):
+    return coverage_score(trk) >= float(minimum)
 
 
 def stable_mask(trk, k=0.5, lo=0.20, hi=0.45, min_run_s=0.40):
@@ -555,6 +619,35 @@ def template_bridge(video, trk, fps, W, H, max_gap=2.2, search=(90, 60), thresh=
 
 
 # ---------------------------------------------------------------- 5) الكاميرا
+def _frame_vector(value, n, default=0.0):
+    if value is None:
+        return np.full(n, float(default), dtype=float)
+    arr = np.asarray(value, dtype=float)
+    if arr.ndim == 0 or arr.size == 1:
+        return np.full(n, float(arr.reshape(-1)[0]), dtype=float)
+    if arr.size != n:
+        raise ValueError("frame values must be scalar or match track length")
+    return arr.reshape(n).copy()
+
+
+def _camera_limits(half, n, size):
+    if half is None or size is None:
+        return None, None
+    bounds = _frame_vector(half, n, float(size) / 2.0)
+    bounds = np.clip(np.nan_to_num(bounds, nan=float(size) / 2.0,
+                                  posinf=float(size) / 2.0, neginf=0.0),
+                     0.0, float(size) / 2.0)
+    return bounds, float(size) - bounds
+
+
+def camera_half_sizes(crop_w, W, H, zoom, n):
+    z = _frame_vector(zoom, n, 1.0)
+    z = np.clip(np.nan_to_num(z, nan=1.0, posinf=2.2, neginf=1.0), 1.0, 2.2)
+    cw = np.minimum(float(W), np.maximum(64.0, np.rint(float(crop_w) / z)))
+    ch = np.minimum(float(H), np.maximum(64.0, np.rint(float(H) / z)))
+    return cw / 2.0, ch / 2.0
+
+
 def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.0, amax=3400.0,
                       half=None, W=None, H=None, half_v=None, deadzone_v=60.0):
     """كاميرا بثّ: تسبق الهدف بـlead، تنعيم One Euro، منطقة ميتة، وحدود فيزيائية.
@@ -588,21 +681,35 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
                 vx[lo:hi] = 0.0
         except Exception:
             pass
-    tgt = x + lead * vx                                   # استباق
-    if half is not None:
-        tgt = np.clip(tgt, half, (W - half) if W else tgt.max())
+    tgt = x + lead * vx
+    x_lo, x_hi = _camera_limits(half, n, W)
+    if x_lo is not None:
+        tgt = np.clip(tgt, x_lo, x_hi)
     tgt = one_euro(tgt, fps, min_cutoff=0.9, beta=0.02)
+    if x_lo is not None:
+        tgt = np.clip(tgt, x_lo, x_hi)
     cam = np.empty(n); vel = 0.0; dt = 1.0 / fps
     cutset = set(int(c) for c in (cuts or []))
     cam[0] = tgt[0]
+    if x_lo is not None:
+        cam[0] = np.clip(cam[0], x_lo[0], x_hi[0])
     for i in range(1, n):
         if i in cutset:
-            cam[i] = tgt[i]; vel = 0.0; continue
+            cam[i] = np.clip(tgt[i], x_lo[i], x_hi[i]) if x_lo is not None else tgt[i]
+            vel = 0.0
+            continue
         d = tgt[i] - cam[i - 1]
         d_eff = d - np.clip(d, -deadzone, deadzone)
         des = np.clip(2.4 * d_eff, -vmax, vmax)
         vel += np.clip(des - vel, -amax * dt, amax * dt)
-        cam[i] = cam[i - 1] + vel * dt
+        next_cam = cam[i - 1] + vel * dt
+        if x_lo is not None:
+            bounded = np.clip(next_cam, x_lo[i], x_hi[i])
+            if bounded != next_cam:
+                vel = 0.0
+            cam[i] = bounded
+        else:
+            cam[i] = next_cam
     cam_y = None
     if y is not None:
         vy = savgol_vel(y, fps, 9)
@@ -614,6 +721,9 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
             except Exception:
                 pass
         ty = one_euro(y + lead * vy, fps, min_cutoff=0.9, beta=0.02)
+        y_lo, y_hi = _camera_limits(half_v, n, H)
+        if y_lo is not None:
+            ty = np.clip(ty, y_lo, y_hi)
         # 🎬 v1.67: منطقة ميتة عمودية — الكاميرا لا تتحرك لأي اهتزاز رأسي صغير
         # (اللاعب يقفز/الكرة ترتد قليلًا) وتتبع فقط الحركة الكبيرة، بنفس منطق المحور الأفقي.
         if deadzone_v and deadzone_v > 0:
@@ -621,16 +731,25 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
             cam_y[0] = ty[0]
             for i in range(1, n):
                 if i in cutset:
-                    cam_y[i] = ty[i]; vel_y = 0.0; continue
+                    cam_y[i] = np.clip(ty[i], y_lo[i], y_hi[i]) if y_lo is not None else ty[i]
+                    vel_y = 0.0
+                    continue
                 dy = ty[i] - cam_y[i - 1]
                 dy_eff = dy - np.clip(dy, -deadzone_v, deadzone_v)
                 des_y = np.clip(2.4 * dy_eff, -vmax, vmax)
                 vel_y += np.clip(des_y - vel_y, -amax * dt, amax * dt)
-                cam_y[i] = cam_y[i - 1] + vel_y * dt
+                next_y = cam_y[i - 1] + vel_y * dt
+                if y_lo is not None:
+                    bounded = np.clip(next_y, y_lo[i], y_hi[i])
+                    if bounded != next_y:
+                        vel_y = 0.0
+                    cam_y[i] = bounded
+                else:
+                    cam_y[i] = next_y
         else:
             cam_y = ty
-        if half_v is not None and H:
-            cam_y = np.clip(cam_y, half_v, H - half_v)      # حدود الإطار العمودي
+        if y_lo is not None:
+            cam_y = np.clip(cam_y, y_lo, y_hi)
     return cam, cam_y
 
 
@@ -661,20 +780,24 @@ def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None, cuts=()):
 
 
 def frame_miss_pct(bx, by, cam, cam_y=None, half_w=None, half_h=None):
-    """🎯 v1.67: نسبة الفريمات التي تكون فيها الكرة **خارج كادر الكاميرا**.
-    أهم مقياس جودة تأطير من وجهة نظر المشاهد: كل فريم خارجه = كرة مفقودة.
-    يُحسب فقط حيث يوجد موقع حقيقي للكرة (NaN لا يُحسب ضدها)."""
+    """نسبة مواقع الكرة المعروفة التي تقع خارج الفتحة الفعلية لكل إطار."""
     x = np.asarray(bx, float); c = np.asarray(cam, float)
+    if x.shape != c.shape:
+        raise ValueError("ball and camera tracks must have matching shapes")
     m = np.isfinite(x) & np.isfinite(c)
     if half_w is None or not m.any():
         return 0.0
+    half_widths = _frame_vector(half_w, len(x))
     miss = np.zeros(len(x), bool)
-    miss[m] = np.abs(x[m] - c[m]) > float(half_w)
+    miss[m] = np.abs(x[m] - c[m]) > half_widths[m]
     if by is not None and cam_y is not None and half_h is not None:
         y = np.asarray(by, float); cy = np.asarray(cam_y, float)
+        if y.shape != x.shape or cy.shape != x.shape:
+            raise ValueError("vertical ball and camera tracks must match the horizontal track")
         my = m & np.isfinite(y) & np.isfinite(cy)
         if my.any():
-            miss[my] |= np.abs(y[my] - cy[my]) > float(half_h)
+            half_heights = _frame_vector(half_h, len(x))
+            miss[my] |= np.abs(y[my] - cy[my]) > half_heights[my]
     return float(miss[m].mean() * 100)
 
 

@@ -125,3 +125,67 @@ def test_qa_report_includes_frame_miss():
     qa = PT.qa_report(trk, cam, fps, [], half_w=320.0)
     assert "frame_miss_pct" in qa
     assert 0.0 <= qa["frame_miss_pct"] <= 100.0
+
+
+def test_track_2d_coverage_uses_full_video_duration_and_discards_oob_candidates():
+    fps = 30.0
+    rate = 10.0
+    duration = 4.0
+    detections = [[i / rate, 100.0 + 5.0 * i, 200.0, 8.0, 8.0, 0.9]
+                  for i in range(20)]
+    detections.extend([
+        [2.0, -1.0, 200.0, 8.0, 8.0, 0.99],
+        [2.1, 1920.0, 200.0, 8.0, 8.0, 0.99],
+        [duration, 300.0, 200.0, 8.0, 8.0, 0.99],
+    ])
+    trk = PT.track_2d(np.asarray(detections), [], 1920, 1080,
+                      fps=fps, rate=rate, duration=duration)
+    assert trk is not None
+    assert len(trk["t"]) == 20
+    assert trk["sample_count"] == 40
+    assert trk["sample_rate"] == pytest.approx(rate)
+    assert PT.coverage_score(trk) == pytest.approx(50.0)
+    assert not PT.has_usable_coverage(trk)
+
+
+def test_track_2d_uses_effective_source_sample_rate():
+    fps = 50.0
+    rate = 15.0
+    duration = 1.2
+    detections = [[i * 3 / fps, 100.0 + 4.0 * i, 200.0, 8.0, 8.0, 0.9]
+                  for i in range(20)]
+    trk = PT.track_2d(np.asarray(detections), [], 1920, 1080,
+                      fps=fps, rate=rate, duration=duration)
+    assert trk is not None
+    assert trk["sample_rate"] == pytest.approx(fps / 3)
+    assert trk["sample_count"] == 20
+    assert PT.coverage_score(trk) == pytest.approx(100.0)
+
+
+def test_coverage_score_prefers_full_duration_over_candidate_coverage():
+    trk = {"coverage_time": 14.1, "coverage_hi": 71.4, "coverage": 80.0}
+    assert PT.coverage_score(trk) == pytest.approx(14.1)
+    assert not PT.has_usable_coverage(trk)
+
+
+def test_predictive_camera_respects_per_frame_zoom_crop_bounds():
+    zoom = np.array([1.0, 1.12, 1.26])
+    half_w, half_h = PT.camera_half_sizes(1080, 1080, 1920, zoom, len(zoom))
+    cam, cam_y = PT.predictive_camera(
+        np.full(3, -100.0), np.full(3, -100.0), 30.0,
+        half=half_w, W=1080, H=1920, half_v=half_h,
+        deadzone=0.0, deadzone_v=0.0,
+    )
+    assert np.all(cam >= half_w)
+    assert np.all(cam <= 1080 - half_w)
+    assert np.all(cam_y >= half_h)
+    assert np.all(cam_y <= 1920 - half_h)
+    assert cam[1] < cam[0]
+    assert cam_y[1] < cam_y[0]
+
+
+def test_frame_miss_pct_accepts_per_frame_crop_bounds():
+    x = np.array([100.0, 100.0, 100.0])
+    cam = np.array([100.0, 200.0, 300.0])
+    half_w = np.array([0.0, 99.0, 199.0])
+    assert PT.frame_miss_pct(x, None, cam, half_w=half_w) == pytest.approx(200.0 / 3.0)
