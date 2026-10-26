@@ -124,3 +124,28 @@ def test_writer_and_tts_require_explicit_text_consent_before_provider_access(mon
         voice.tts_gemini("تعليق", "unused.wav")
     with pytest.raises(voice.VoiceConsentRequired):
         voice.tts_edge("تعليق", "unused.wav")
+
+
+def test_commentary_rejects_prompt_echo_and_latin_dominant_output():
+    assert ai.commentary_quality_rejection("look at OCR and images:") is not None
+    assert ai.commentary_quality_rejection("محاولة") is not None
+    assert ai.commentary_quality_rejection("great goal by the team last night") is not None
+    assert ai.commentary_quality_rejection("مجهود رائع من اللاعب في تلك اللقطة") is None
+
+
+def test_commentary_meta_echo_tries_next_model(monkeypatch):
+    responses = [
+        _commentary_response("look at OCR and images:"),
+        _commentary_response("مجهود رائع من اللاعب في تلك اللقطة"),
+    ]
+
+    def fake_http(_url, _body, **_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(ai, "_key", lambda *_a, **_k: "test-key")
+    monkeypatch.setattr(ai, "pick_model", lambda *_a, **_k: "test-model")
+    monkeypatch.setattr(ai, "_http", fake_http)
+
+    result = ai.commentary(caption="هدف", consent_text=True)
+    assert result["commentary"] == "مجهود رائع من اللاعب في تلك اللقطة"
+    assert not responses

@@ -2,6 +2,19 @@
 import json, os, subprocess, tempfile, shutil, contextlib, uuid as _uuid
 
 
+
+def read_frame_lenient(cap):
+    """cap.read مع تسامح OOM: عند فشل التخصيص (نقص الذاكرة/القرص) نُرجع (False, None)
+    بدل رمي cv2.error الذي كان يُسقط المهمة كلها — فالتحليل الجزئي أفضل من فشل كامل.
+    أخطاء cv2 الأخرى تُعاد كما هي لأنها ليست قابلة للتعافي هنا."""
+    import cv2
+    try:
+        return cap.read()
+    except cv2.error as e:
+        if "memory" in str(e).lower():
+            return False, None
+        raise
+
 def safe_move(src, dst):
     """نقل/استبدال ملف بأمان **حتى بين قرصين مختلفين**.
 

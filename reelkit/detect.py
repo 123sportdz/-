@@ -9,6 +9,8 @@ v1.39 — دعم احترافي لكروت الرسومات (RTX):
 """
 import numpy as np, os, re
 
+from . import ffio
+
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BALL_MODEL = os.path.join(PKG_ROOT, "models", "ball_detector.pt")
 
@@ -252,7 +254,7 @@ class BallDetector:
 
         try:
             while True:
-                ok, fr = cap.read()
+                ok, fr = ffio.read_frame_lenient(cap)   # v1.68: تسامح OOM في قراءة الفريمات
                 if not ok:
                     break
                 n += 1
@@ -333,7 +335,7 @@ class PersonDetector:
 
         try:
             while True:
-                ok, fr = cap.read()
+                ok, fr = ffio.read_frame_lenient(cap)   # v1.68: تسامح OOM في قراءة الفريمات
                 if not ok:
                     break
                 if not H or not W:

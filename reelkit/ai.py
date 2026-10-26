@@ -255,6 +255,34 @@ def commentary_word_budget(max_words=22, duration=None, words_per_second=1.8, bu
     return min(requested, duration_cap)
 
 
+_COMMENTARY_META_MARKERS = ("look at", "ocr", "images", "as an ai", "i cannot")
+
+
+def commentary_quality_rejection(text):
+    """v1.68: فحص جودة التعليق — يرجع سبب الرفض أو None إذا كان مقبولاً.
+
+    يرفض: النص الأقصر من كلمتين، صدى تعليمات الموجه (مثل «look at OCR and images»
+    التي ظهرت في تقرير تشغيل حقيقي)، والنص اللاتيني المسيطر (المطلوب عربي).
+    الرفض يُجري الحلقة لموديل آخر بدل نشر تعليق تالق. النطاق: رفض صياغة تالفة،
+    ليس حكم لغوياً على جودة الأسلوب.
+    """
+    if not isinstance(text, str):
+        return "نص غير نصي"
+    compact = " ".join(text.split())
+    if len(compact.split()) < 2:
+        return "أقصر من كلمتين"
+    low = compact.lower()
+    for marker in _COMMENTARY_META_MARKERS:
+        if marker in low:
+            return f"صدى تعليمات: {marker}"
+    alpha = [ch for ch in compact if ch.isalpha()]
+    if alpha:
+        latin = sum(1 for ch in alpha if 0x41 <= ord(ch.upper()) <= 0x5A)
+        if latin / len(alpha) > 0.6:
+            return "نص غير عربي"
+    return None
+
+
 def commentary(video=None, caption="", ocr="", title="", api_key=None, model=None,
                timeout=90, style="broadcast", energy=70, words=22, duration=None,
                consent_text=False, consent_frames=False):
@@ -321,6 +349,9 @@ def commentary(video=None, caption="", ocr="", title="", api_key=None, model=Non
             commentary_text = limit_commentary_words(parsed.get("commentary"), words)
             if not commentary_text:
                 raise ValueError("تعليق فارغ")
+            rejection = commentary_quality_rejection(commentary_text)
+            if rejection:
+                raise ValueError(f"تعليق مرفوض: {rejection}")
             return {
                 "commentary": commentary_text,
                 "word_count": len(commentary_text.split()),

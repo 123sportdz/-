@@ -1,6 +1,8 @@
 """analysis — scene cuts, camera-motion-compensated action centroid, camera smoothing, shot modes."""
 import cv2, numpy as np
 
+from . import ffio
+
 def analyze(path, rate=15.0, cut_thresh=0.55, sw=320, sh=180):
     """Single fast pass. Returns dict with fps,W,H,step,times,cents,cuts."""
     cap = cv2.VideoCapture(path)
@@ -11,7 +13,7 @@ def analyze(path, rate=15.0, cut_thresh=0.55, sw=320, sh=180):
     times = []; cents = []; cuts = []
     try:
         while True:
-            ok, fr = cap.read()
+            ok, fr = ffio.read_frame_lenient(cap)   # v1.68: تسامح OOM في قراءة الفريمات
             if not ok:
                 break
             if not W or not H:

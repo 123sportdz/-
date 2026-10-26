@@ -733,8 +733,17 @@ def main(argv=None):
         if person is not None:
             log(f"      💾 كشف اللاعبين من الكاش: {len(person)} كشفاً")
         else:
-            person = pd.scan(readable, rate=4.0, fps=info["fps"])
-            if _pkey:
+            try:
+                person = pd.scan(readable, rate=4.0, fps=info["fps"])
+            except Exception as exc:
+                # v1.68: OpenCV قد يفشل في تخصيص الذاكرة أثناء قراءة الفريمات (مساحة القرص/الرام ضيقة).
+                # نكمل دون تحديد نوع اللقطة بدل إسقاط المهمة كلها.
+                if "memory" in str(exc).lower():
+                    log("      ⚠️ نقص الذاكرة أثناء كشف اللاعبين — متابعة بدون تحديد نوع اللقطة")
+                    person = np.zeros((0, 3), np.float32)
+                else:
+                    raise
+            if _pkey and len(person):
                 cache.save("person", _pkey, person)
 
         log(f"[5/6] tracking + camera …")
