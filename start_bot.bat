@@ -2,6 +2,7 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+call "%~dp0_env_local.bat"
 
 rem ---------------------------------------------------------------
 rem Telegram control bot - starts (or attaches to) the dashboard,
