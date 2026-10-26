@@ -18,6 +18,7 @@ def client(monkeypatch, dashboard_client):
     monkeypatch.setattr(dashboard, "JOBS", {})
     monkeypatch.setattr(dashboard, "PUBLISHING", set())
     monkeypatch.setattr(dashboard, "_persist", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dashboard, "PUBLISH_PROGRESS", {})
     return dashboard_client
 
 
@@ -103,6 +104,29 @@ def test_publish_api_blocks_output_that_failed_quality_gate(client, monkeypatch)
     assert "publish" not in job
 
 
+def test_jobs_api_exposes_monotonic_upload_progress_only_while_publishing(client):
+    jid = "job-progress"
+    dashboard.JOBS[jid] = {"id": jid, "status": "done", "output": "private/reel.mp4"}
+    dashboard.PUBLISHING.add(jid)
+    dashboard._set_publish_progress(jid, 52, 52, 100)
+    dashboard._set_publish_progress(jid, 28, 28, 100)
+
+    active = next(job for job in client.get("/api/jobs").json() if job["id"] == jid)
+    assert active["publish_in_progress"] is True
+    assert active["publish_progress"] == {
+        "percent": 52,
+        "uploaded_bytes": 52,
+        "total_bytes": 100,
+        "stage": "جارٍ رفع الفيديو إلى YouTube",
+    }
+    assert "publish_progress" not in dashboard.JOBS[jid]
+
+    dashboard.PUBLISHING.remove(jid)
+    inactive = next(job for job in client.get("/api/jobs").json() if job["id"] == jid)
+    assert inactive["publish_in_progress"] is False
+    assert "publish_progress" not in inactive
+
+
 def test_publish_api_records_review_before_upload(client, monkeypatch, tmp_path):
     _public_evidence(tmp_path, monkeypatch)
     job = {"id": "job-2", "status": "done", "output": "reel.mp4"}
@@ -113,6 +137,9 @@ def test_publish_api_records_review_before_upload(client, monkeypatch, tmp_path)
     class FakeUploader:
         def upload(self, *args, **kwargs):
             calls.append(kwargs)
+            callback = kwargs.get("progress_callback")
+            assert callable(callback)
+            callback(55, 55, 100)
             return {"id": VIDEO_ID}
 
     monkeypatch.setattr(youtube_module, "YouTubeUploader", FakeUploader)
@@ -133,6 +160,7 @@ def test_publish_api_records_review_before_upload(client, monkeypatch, tmp_path)
     assert job["rights_review"]["source_reference"] == "https://example.com/source"
     assert job["publish"]["youtube"]["id"] == VIDEO_ID
     assert "job-2" not in dashboard.PUBLISHING
+    assert "job-2" not in dashboard.PUBLISH_PROGRESS
 
 
 def test_publish_api_records_separate_visual_and_audio_rights(client, monkeypatch, tmp_path):

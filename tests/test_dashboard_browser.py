@@ -99,6 +99,56 @@ def test_injected_job_appears_in_jobs_list(dash_url):
             dashboard.JOBS.pop(jid, None)
 
 
+def test_live_youtube_upload_progress_updates_on_the_job_card(dash_url):
+    import dashboard
+    from playwright.sync_api import sync_playwright
+
+    jid = "browsertest-upload-progress"
+    total_bytes = 100 * 1024 * 1024
+    with dashboard._lock:
+        dashboard.JOBS[jid] = {
+            "id": jid, "input": "source.mp4", "output": "output.mp4",
+            "label": "upload-progress-test.mp4", "status": "done", "stage": "اكتمل",
+            "progress": 100, "created": time.time(), "options": {},
+            "title": "", "description": "", "tags": [], "publish": {},
+        }
+        dashboard.PUBLISHING.add(jid)
+        dashboard.PUBLISH_PROGRESS[jid] = {
+            "percent": 35, "uploaded_bytes": 35 * 1024 * 1024, "total_bytes": total_bytes,
+            "stage": "جارٍ رفع الفيديو إلى YouTube",
+        }
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(dash_url, wait_until="networkidle", timeout=30000)
+            page.click("button[data-tab='jobs']")
+            selector = f'[data-publish-progress="{jid}"] [role="progressbar"]'
+            page.wait_for_function(
+                "selector => document.querySelector(selector)?.getAttribute('aria-valuenow') === '35'",
+                arg=selector,
+                timeout=10000,
+            )
+            assert "35%" in page.locator(f'[data-publish-progress="{jid}"]').inner_text()
+            with dashboard._lock:
+                dashboard.PUBLISH_PROGRESS[jid] = {
+                    "percent": 68, "uploaded_bytes": 68 * 1024 * 1024, "total_bytes": total_bytes,
+                    "stage": "جارٍ رفع الفيديو إلى YouTube",
+                }
+            page.wait_for_function(
+                "selector => document.querySelector(selector)?.getAttribute('aria-valuenow') === '68'",
+                arg=selector,
+                timeout=10000,
+            )
+            assert "71.3 MB / 104.9 MB" in page.locator(f'[data-publish-progress="{jid}"]').inner_text()
+            browser.close()
+    finally:
+        with dashboard._lock:
+            dashboard.JOBS.pop(jid, None)
+            dashboard.PUBLISHING.discard(jid)
+            dashboard.PUBLISH_PROGRESS.pop(jid, None)
+
+
 def test_voice_studio_fits_mobile_and_expands_manual_script(dash_url):
     from playwright.sync_api import sync_playwright
 

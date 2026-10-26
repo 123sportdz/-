@@ -270,7 +270,7 @@ class YouTubeUploader:
     def upload(self, path, title, description="", tags=(), privacy="private",
                category_id=CATEGORY_SPORTS, made_for_kids=False, publish_at=None,
                expected_channel_id=None, thumbnail=None, contains_synthetic_media=False,
-               rights=None):
+               rights=None, progress_callback=None):
         path = os.fspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"ملف الفيديو غير موجود: {path}")
@@ -325,6 +325,18 @@ class YouTubeUploader:
         while resp is None:
             try:
                 status, resp = req.next_chunk()
+                if status is not None and callable(progress_callback):
+                    try:
+                        percent = int(round(float(status.progress()) * 100))
+                        uploaded = getattr(status, "resumable_progress", None)
+                        total = getattr(status, "total_size", None)
+                        if uploaded is not None:
+                            uploaded = int(uploaded)
+                        if total is not None:
+                            total = int(total)
+                        progress_callback(max(0, min(100, percent)), uploaded, total)
+                    except Exception:
+                        pass
                 attempt = 0
             except (ResumableUploadError, ConnectionError, TimeoutError, OSError) as e:
                 # HttpError 5xx تأتي كـResumableUploadError؛ 4xx (غير 408) لا تُعاد

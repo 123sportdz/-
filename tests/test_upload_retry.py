@@ -41,6 +41,8 @@ class ChunkedRequest:
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
+        if isinstance(item, tuple) and len(item) == 2:
+            return item
         return None, item
 
 
@@ -111,6 +113,46 @@ def test_connection_error_is_retried(tmp_path, monkeypatch):
         lambda: [ConnectionError("reset"), _resumable(500), {"id": "abcdefghijk"}],
     )
     result = uploader.upload(_video_file(tmp_path), "t", rights=RIGHTS_REVIEW)
+    assert result["id"] == "abcdefghijk"
+
+
+def test_resumable_progress_callback_reports_chunk_bytes(tmp_path, monkeypatch):
+    uploader, _ = _setup(
+        monkeypatch,
+        lambda: [
+            (SimpleNamespace(progress=lambda: 0.25, resumable_progress=25, total_size=100), None),
+            (SimpleNamespace(progress=lambda: 0.7, resumable_progress=70, total_size=100), None),
+            (None, {"id": "abcdefghijk"}),
+        ],
+    )
+    seen = []
+
+    result = uploader.upload(
+        _video_file(tmp_path), "t", rights=RIGHTS_REVIEW,
+        progress_callback=lambda percent, uploaded, total: seen.append((percent, uploaded, total)),
+    )
+
+    assert result["id"] == "abcdefghijk"
+    assert seen == [(25, 25, 100), (70, 70, 100)]
+
+
+def test_progress_callback_errors_do_not_interrupt_upload(tmp_path, monkeypatch):
+    uploader, _ = _setup(
+        monkeypatch,
+        lambda: [
+            (SimpleNamespace(progress=lambda: 0.5, resumable_progress=50, total_size=100), None),
+            (None, {"id": "abcdefghijk"}),
+        ],
+    )
+
+    def broken_callback(*_args):
+        raise RuntimeError("progress observer failed")
+
+    result = uploader.upload(
+        _video_file(tmp_path), "t", rights=RIGHTS_REVIEW,
+        progress_callback=broken_callback,
+    )
+
     assert result["id"] == "abcdefghijk"
 
 

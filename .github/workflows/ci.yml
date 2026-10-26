@@ -31,13 +31,16 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Ensure FFmpeg is available
+      - name: Set up FFmpeg and ffprobe
+        uses: FedericoCarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
+        with:
+          ffmpeg-version: 7.0.2
+
+      - name: Verify FFmpeg and ffprobe
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
-          fi
           ffmpeg -version
+          ffprobe -version
+          ffmpeg -hide_banner -encoders | grep -q libx264
 
       - name: Install Python dependencies
         run: |
@@ -88,13 +91,16 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Ensure FFmpeg is available
+      - name: Set up FFmpeg and ffprobe
+        uses: FedericoCarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
+        with:
+          ffmpeg-version: 7.0.2
+
+      - name: Verify FFmpeg and ffprobe
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
-          fi
           ffmpeg -version
+          ffprobe -version
+          ffmpeg -hide_banner -encoders | grep -q libx264
 
       - name: Install CPU media dependencies
         run: |
