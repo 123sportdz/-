@@ -789,6 +789,33 @@ async def _auth_guard(request: Request, call_next):
     return await call_next(request)
 
 # ------------------------------------------------------------------ API
+WEB_DIST = ROOT / "web" / "dist"
+
+
+@app.get("/app", response_class=HTMLResponse)
+@app.get("/app/", response_class=HTMLResponse)
+@app.get("/app/demo", response_class=HTMLResponse)
+@app.get("/app/demo/", response_class=HTMLResponse)
+def react_app():
+    index = WEB_DIST / "index.html"
+    if not index.is_file():
+        return HTMLResponse("واجهة React غير مبنية. شغّل bun install --frozen-lockfile ثم bun run build داخل web/.", status_code=503)
+    return FileResponse(index, media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/app/assets/{asset_path:path}")
+def react_asset(asset_path: str):
+    asset_root = (WEB_DIST / "assets").resolve()
+    target = (asset_root / asset_path).resolve()
+    if asset_root not in target.parents or not target.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(target, headers={
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
 @app.get("/api/config")
 def api_config():
     try:
@@ -807,7 +834,8 @@ def api_config():
             "device": CFG.get("device", ""),
             "cuda": cuda, "gpu_name": gpu_name,
             "automation": _automation_status(),
-            "youtube_privacy": CFG.get("youtube_privacy", "private")}
+            "youtube_privacy": CFG.get("youtube_privacy", "private"),
+            "max_upload_bytes": MAX_UPLOAD_BYTES}
 
 # المفاتيح المسموح حفظها (كان الشرط `k in CFG` يمنع حفظ أي خيار جديد مثل جدولة الذروة!)
 ALLOWED_CFG_KEYS = {
