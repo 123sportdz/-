@@ -1,6 +1,7 @@
 """🧩 ملفات إعدادات منفصلة (dev/prod) عبر REEL_CONFIG — أولوية 5."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,8 +31,8 @@ def test_reel_config_env_points_config_file_elsewhere(tmp_path, monkeypatch):
         "assert reel.CFG['gemini_api_key'] == 'profile-test-key';"
         "print('profile-ok')"
     )
-    env = {"PATH": "/usr/bin:/bin", "REEL_CONFIG": str(dev),
-           "HOME": str(tmp_path), "LANG": "C.UTF-8"}
+    env = os.environ.copy()
+    env["REEL_CONFIG"] = str(dev)
     result = subprocess.run([sys.executable, "-c", code], capture_output=True,
                             text=True, cwd=str(dashboard.ROOT), env=env, timeout=120)
     assert result.returncode == 0, result.stderr[-800:]

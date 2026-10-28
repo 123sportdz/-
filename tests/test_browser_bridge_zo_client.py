@@ -75,7 +75,7 @@ def test_screenshot_is_saved_without_printing_base64(monkeypatch, tmp_path, caps
     assert zo_client._action({"type": "screenshot"}) == 0
     output = capsys.readouterr().out
     assert base64.b64encode(image).decode("ascii") not in output
-    assert str(zo_client.SCREENSHOT_FILE) in output
+    assert json.loads(output)["screenshot_path"] == str(zo_client.SCREENSHOT_FILE)
     assert zo_client.SCREENSHOT_FILE.read_bytes() == image
 
 

@@ -111,12 +111,14 @@ def test_embedded_dashboard_javascript_is_syntactically_valid():
     import tempfile
     from pathlib import Path
 
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", delete=False) as fh:
         fh.write(js)
         path = fh.name
-    result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    Path(path).unlink(missing_ok=True)
+    try:
+        result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def test_voice_studio_exposes_energy_mix_and_preview_controls():
@@ -181,7 +183,7 @@ def test_creative_studio_script_length_hint_matches_backend_and_parses():
     assert 'id="lengthHint"' in html
     assert '$("length").value=item.length||"short";\n    updateLengthHint();' in js
 
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", delete=False) as handle:
         handle.write(js)
         script_path = handle.name
     try:

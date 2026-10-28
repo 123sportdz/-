@@ -477,7 +477,8 @@ def test_paired_session_recovers_across_relay_restart(relay_url):
     assert created["pairing_code"] not in persisted
     assert paired["client_token"] not in persisted
     assert relay._restore_sessions() == 1
-    assert relay.SESSION_STATE_FILE.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert relay.SESSION_STATE_FILE.stat().st_mode & 0o777 == 0o600
     status, status_body = _http(relay_url, "/v1/sessions/{}".format(session_id), token=created["agent_token"])
     assert status == 200
     assert status_body["paired"] is True

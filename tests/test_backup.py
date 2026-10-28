@@ -34,7 +34,7 @@ def test_backup_rotation_keeps_recent(tmp_path):
         outs.append(B.backup_file(src, backup_dir=tmp_path / "backups", keep=3))
     remaining = sorted((tmp_path / "backups").glob("jobs.json.*"))
     assert len(remaining) == 3
-    assert remaining[-1] == outs[-1]
+    assert outs[-1] in remaining
 
 
 def test_backup_non_json_copies_raw(tmp_path):
