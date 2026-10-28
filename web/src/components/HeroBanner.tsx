@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlayCircle, Layers, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
+import { PlayCircle, Layers } from 'lucide-react';
 import { Job } from '../types';
 
 interface HeroBannerProps {
@@ -27,12 +27,12 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ jobs, onFocusNew, onFocu
           حوّل لحظات المباراة إلى ريل احترافي
         </h1>
         <p className="text-[#aab8ca] text-sm max-w-xl mb-4 leading-relaxed">
-          اختَر المقطع، اضبط الكادر والتتبّع الذكي، اختر صوت المعلّق، واستمتع بنشر فوري آمن ومطابق لحقوق البث.
+          استكشف نموذجاً تفاعلياً لواجهة الريلز. المهام والمؤشرات المعروضة أمثلة تجريبية، ولا تُنفّذ معالجة أو نشرًا حقيقياً.
         </p>
 
         <div className="flex items-center gap-2 text-xs text-[#9fe8c4] bg-[#080d13]/70 border border-[#1d5c3e] rounded-full px-3.5 py-1.5 w-fit mb-4">
           <span className="w-2 h-2 rounded-full bg-[#25d07a] shadow-[0_0_8px_#25d07a]"></span>
-          <span>المصنع جاهز للعمل بكامل طاقته · YOLO11n + NVENC Resilient</span>
+          <span>واجهة تجريبية · محرك Python وYOLO والنشر غير متصلين</span>
         </div>
 
         <div className="flex flex-wrap gap-2.5">
@@ -62,7 +62,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ jobs, onFocusNew, onFocu
 
         <div className="bg-[#080d13]/60 border border-[#2c3a4d] rounded-xl p-3.5 relative overflow-hidden">
           <div className="text-2xl font-black text-[#25d07a]">{done}</div>
-          <span className="text-[11px] text-[#8ea0b5]">جاهزة للنشر</span>
+          <span className="text-[11px] text-[#8ea0b5]">مهام نموذجية مكتملة</span>
         </div>
 
         <div className="bg-[#080d13]/60 border border-[#2c3a4d] rounded-xl p-3.5 relative overflow-hidden">

@@ -9,6 +9,12 @@ const STORAGE_KEYS = {
   AUTOMATION: 'elhadath_automation',
   DRAFTS: 'elhadath_drafts',
   SCOUT: 'elhadath_scout_session',
+  VOICE_STUDIO_POSITION: 'elhadath_voice_studio_pos',
+  VOICE_STUDIO_SIZE: 'elhadath_voice_studio_size',
+};
+
+const SESSION_KEYS = {
+  GEMINI_API_KEY: 'elhadath_session_gemini_api_key',
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -91,7 +97,7 @@ const DEFAULT_AUTOMATION: AutomationSettings = {
     jobsProcessed: 0,
     runsTotal: 0,
     errors: 0,
-    statusText: 'المصنع التلقائي جاهز بانتظار التشغيل',
+    statusText: 'غير متصل — تفضيلات الأتمتة نموذجية فقط',
   },
 };
 
@@ -120,10 +126,9 @@ const DEFAULT_JOBS: Job[] = [
     show_channel_name: true,
     brand_y: 13,
     brand_scale: 100,
-    rights_status: 'recorded',
-    youtube_status: 'ready',
-    youtube_video_id: 'v_Mahrez92',
-    telegram_published: true,
+    rights_status: 'pending',
+    youtube_status: 'unchecked',
+    telegram_published: false,
     output_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     thumbnail_url: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
     commentary_text: 'الله يا رياض! تسديدة من خارج منطقة الجزاء تسكن الشباك المستحيلة!',
@@ -131,8 +136,6 @@ const DEFAULT_JOBS: Job[] = [
       { time: '14:02:10', event: 'job_enqueued', detail: 'مصدر المقطع: رابط تيليجرام @OffsideOffside1' },
       { time: '14:02:12', event: 'detector_init', detail: 'تم تحميل YOLO11n مع دقة quantize=16 (الذاكرة محررة)' },
       { time: '14:02:22', event: 'render_complete', detail: 'استخدم NVENC H.264 بمعدل 1080x1920 وبدون أخطاء' },
-      { time: '14:02:28', event: 'rights_verified', detail: 'تم التحقق من النموذج وتسجيل الحقوق في outputs/audit/events.jsonl' },
-      { time: '14:02:30', event: 'published_telegram', detail: 'نُشر بنجاح على القناة @elhadath_reels' },
     ],
     quality_report: {
       ball_detections: 1024,
@@ -209,10 +212,9 @@ const DEFAULT_JOBS: Job[] = [
     show_channel_name: true,
     brand_y: 13,
     brand_scale: 100,
-    rights_status: 'recorded',
-    youtube_status: 'ready',
-    youtube_video_id: 'v_AssistGold42',
-    telegram_published: true,
+    rights_status: 'pending',
+    youtube_status: 'unchecked',
+    telegram_published: false,
     output_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4',
     thumbnail_url: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=720&auto=format&fit=crop&q=80',
     commentary_text: 'يمر ببراعة من الأول والثاني ويهدي الكرة على طبق من ذهب!',
@@ -268,19 +270,106 @@ const DEFAULT_DRAFTS: CreativeDraft[] = [
   },
 ];
 
+const SIMULATED_SUCCESS_EVENTS = new Set([
+  'job_enqueued',
+  'detector_init',
+  'render_complete',
+  'rights_verified',
+  'rights_gate_approved',
+  'published_telegram',
+  'youtube_uploaded',
+  'youtube_upload_complete',
+]);
+
+function normalizePrototypeJobs(jobs: Job[]): Job[] {
+  return jobs
+    .filter(job => job && typeof job === 'object')
+    .map(job => {
+      const declaration = job.rights_declaration;
+      const hasLocalDeclaration = Boolean(
+        declaration &&
+        typeof declaration.sourceRef === 'string' && declaration.sourceRef.trim() &&
+        typeof declaration.evidence === 'string' && declaration.evidence.trim()
+      );
+      const auditLog = Array.isArray(job.audit_log)
+        ? job.audit_log.filter(event => event && !SIMULATED_SUCCESS_EVENTS.has(event.event))
+        : [];
+      return {
+        ...job,
+        stage_text: job.status === 'done' ? 'مهمة نموذجية مكتملة — لا يوجد رندر فعلي' : job.stage_text,
+        rights_status: hasLocalDeclaration ? 'recorded' : 'pending',
+        youtube_status: 'none',
+        youtube_video_id: undefined,
+        telegram_published: false,
+        audit_log: auditLog,
+      };
+    });
+}
+
 export const storage = {
   getSettings(): AppSettings {
     const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (!raw) return DEFAULT_SETTINGS;
-    try {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-    } catch {
-      return DEFAULT_SETTINGS;
+    let saved: Partial<AppSettings> = {};
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          saved = parsed as Partial<AppSettings>;
+        }
+      } catch {
+        saved = {};
+      }
     }
+
+    const legacyGeminiKey = String(saved.gemini_api_key || '').trim();
+    let sessionGeminiKey = '';
+    try {
+      sessionGeminiKey = sessionStorage.getItem(SESSION_KEYS.GEMINI_API_KEY) || '';
+      if (!sessionGeminiKey && legacyGeminiKey) {
+        sessionStorage.setItem(SESSION_KEYS.GEMINI_API_KEY, legacyGeminiKey);
+        sessionGeminiKey = legacyGeminiKey;
+      }
+    } catch {
+      sessionGeminiKey = '';
+    }
+
+    const persisted: Partial<AppSettings> = { ...DEFAULT_SETTINGS, ...saved };
+    delete persisted.gemini_api_key;
+    delete persisted.telegram_token;
+    delete persisted.tg_phone;
+    delete persisted.tg_user_linked;
+    if (raw) localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(persisted));
+
+    return {
+      ...DEFAULT_SETTINGS,
+      ...persisted,
+      gemini_api_key: sessionGeminiKey,
+      telegram_token: '',
+      tg_phone: '',
+      tg_user_linked: false,
+    };
   },
 
   saveSettings(settings: AppSettings): void {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    try {
+      const apiKey = String(settings.gemini_api_key || '').trim();
+      if (apiKey) sessionStorage.setItem(SESSION_KEYS.GEMINI_API_KEY, apiKey);
+      else sessionStorage.removeItem(SESSION_KEYS.GEMINI_API_KEY);
+    } catch {}
+
+    const persisted: Partial<AppSettings> = { ...settings };
+    delete persisted.gemini_api_key;
+    delete persisted.telegram_token;
+    delete persisted.tg_phone;
+    delete persisted.tg_user_linked;
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(persisted));
+  },
+
+  clearAppData(): void {
+    Object.values(STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
+    try {
+      sessionStorage.removeItem(SESSION_KEYS.GEMINI_API_KEY);
+    } catch {}
   },
 
   getVoice(): VoiceSettings {
@@ -300,13 +389,20 @@ export const storage = {
   getJobs(): Job[] {
     const raw = localStorage.getItem(STORAGE_KEYS.JOBS);
     if (!raw) {
-      this.saveJobs(DEFAULT_JOBS);
-      return DEFAULT_JOBS;
+      const jobs = normalizePrototypeJobs(DEFAULT_JOBS);
+      this.saveJobs(jobs);
+      return jobs;
     }
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new TypeError('Invalid prototype jobs');
+      const jobs = normalizePrototypeJobs(parsed as Job[]);
+      this.saveJobs(jobs);
+      return jobs;
     } catch {
-      return DEFAULT_JOBS;
+      const jobs = normalizePrototypeJobs(DEFAULT_JOBS);
+      this.saveJobs(jobs);
+      return jobs;
     }
   },
 
@@ -367,16 +463,49 @@ export const storage = {
 
   getAutomation(): AutomationSettings {
     const raw = localStorage.getItem(STORAGE_KEYS.AUTOMATION);
-    if (!raw) return DEFAULT_AUTOMATION;
-    try {
-      return { ...DEFAULT_AUTOMATION, ...JSON.parse(raw) };
-    } catch {
-      return DEFAULT_AUTOMATION;
+    let saved: Partial<AutomationSettings> = {};
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          saved = parsed as Partial<AutomationSettings>;
+        }
+      } catch {
+        saved = {};
+      }
     }
+    return {
+      ...DEFAULT_AUTOMATION,
+      ...saved,
+      enabled: false,
+      upload: 'none',
+      metrics: {
+        ...DEFAULT_AUTOMATION.metrics,
+        ...saved.metrics,
+        jobsProcessed: 0,
+        runsTotal: 0,
+        errors: 0,
+        lastRun: 'غير متاح في النموذج',
+        statusText: 'غير متصل — تفضيلات الأتمتة نموذجية فقط',
+      },
+    };
   },
 
   saveAutomation(settings: AutomationSettings): void {
-    localStorage.setItem(STORAGE_KEYS.AUTOMATION, JSON.stringify(settings));
+    const normalized = {
+      ...settings,
+      enabled: false,
+      upload: 'none' as const,
+      metrics: {
+        ...settings.metrics,
+        jobsProcessed: 0,
+        runsTotal: 0,
+        errors: 0,
+        lastRun: 'غير متاح في النموذج',
+        statusText: 'غير متصل — تفضيلات الأتمتة نموذجية فقط',
+      },
+    };
+    localStorage.setItem(STORAGE_KEYS.AUTOMATION, JSON.stringify(normalized));
   },
 
   getDrafts(): CreativeDraft[] {

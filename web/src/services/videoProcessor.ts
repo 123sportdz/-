@@ -13,149 +13,169 @@ export const videoProcessor = {
       video.muted = true;
       video.playsInline = true;
 
-      const objectUrl = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
-      video.src = objectUrl;
+      const isLocalFile = typeof fileOrUrl !== 'string';
+      const objectUrl = isLocalFile ? URL.createObjectURL(fileOrUrl) : fileOrUrl;
+      let metadataTimeout: number | undefined;
+      let seekTimeout: number | undefined;
+      let settled = false;
 
+      const cleanup = () => {
+        if (metadataTimeout !== undefined) window.clearTimeout(metadataTimeout);
+        if (seekTimeout !== undefined) window.clearTimeout(seekTimeout);
+        video.onloadedmetadata = null;
+        video.onseeked = null;
+        video.onerror = null;
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      };
+
+      const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (isLocalFile) URL.revokeObjectURL(objectUrl);
+        reject(new Error(message));
+      };
+
+      const finish = (duration: number, width: number, height: number, thumbnail: string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve({ duration, width, height, thumbnail, thumbnailUrl: thumbnail, objectUrl });
+      };
+
+      metadataTimeout = window.setTimeout(() => fail('انتهت مهلة قراءة بيانات الفيديو.'), 15000);
+      video.onerror = () => fail('تعذّر فتح الفيديو في المتصفح.');
       video.onloadedmetadata = () => {
-        const duration = video.duration || 30;
-        const width = video.videoWidth || 1920;
-        const height = video.videoHeight || 1080;
+        const duration = video.duration;
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (!Number.isFinite(duration) || duration <= 0 || width <= 0 || height <= 0) {
+          fail('بيانات الفيديو أو أبعاده غير صالحة.');
+          return;
+        }
 
-        // Seek to 1s or 10% of duration for a good frame
         const seekTime = Math.min(duration * 0.15, 2.0);
-        video.currentTime = seekTime;
-
+        seekTimeout = window.setTimeout(() => finish(duration, width, height, ''), 5000);
         video.onseeked = () => {
+          let thumbnail = '';
           try {
             const canvas = document.createElement('canvas');
             canvas.width = 480;
             canvas.height = 270;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const thumbnail = canvas.toDataURL('image/jpeg', 0.85);
-              resolve({ duration, width, height, thumbnail, thumbnailUrl: thumbnail, objectUrl });
-              return;
+            const context = canvas.getContext('2d');
+            if (context) {
+              context.drawImage(video, 0, 0, canvas.width, canvas.height);
+              thumbnail = canvas.toDataURL('image/jpeg', 0.85);
             }
-          } catch (e) {
-            console.warn('Canvas export tainted or failed, using fallback thumbnail', e);
+          } catch {
+            thumbnail = '';
           }
-          resolve({
-            duration,
-            width,
-            height,
-            thumbnail: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
-            thumbnailUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
-            objectUrl,
-          });
+          finish(duration, width, height, thumbnail);
         };
-      };
 
-      video.onerror = () => {
-        resolve({
-          duration: 30,
-          width: 1920,
-          height: 1080,
-          thumbnail: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
-          thumbnailUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
-          objectUrl,
-        });
+        try {
+          video.currentTime = seekTime;
+        } catch {
+          finish(duration, width, height, '');
+        }
       };
+      video.src = objectUrl;
     });
   },
 
-  /**
-   * Perform real frame-by-frame scout analysis on the video
-   */
   async analyzeScoutFrames(
     fileOrUrl: File | string,
     candidateCount: number,
     onProgress: (progress: number, stage: string) => void
   ): Promise<ScoutCandidate[]> {
-    return new Promise(async (resolve) => {
-      onProgress(15, 'تحميل المقطع وفحص أبعاد الفيديو ومسارات الصوت...');
+    const meta = await this.extractVideoMetadata(fileOrUrl);
+    const sourceDuration = Number(meta.duration);
+    if (!Number.isFinite(sourceDuration) || sourceDuration < 3) {
+      if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(meta.objectUrl);
+      throw new Error('يجب أن تبلغ مدة الفيديو 3 ثوانٍ على الأقل.');
+    }
 
-      let meta = await this.extractVideoMetadata(fileOrUrl);
-      const totalDur = Math.max(15, meta.duration);
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.src = meta.objectUrl;
 
-      onProgress(35, 'استخراج الإطارات ورصد ذروة الحركة الكروية...');
-
-      const video = document.createElement('video');
-      video.crossOrigin = 'anonymous';
-      video.muted = true;
-      video.playsInline = true;
-      video.src = meta.objectUrl;
-
-      await new Promise(r => {
-        video.onloadedmetadata = () => r(true);
-        video.onerror = () => r(false);
+    try {
+      onProgress(15, 'فتح الفيديو محلياً لاستخراج إطارات معاينة فقط...');
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error('انتهت مهلة فتح الفيديو.')), 10000);
+        video.onloadedmetadata = () => {
+          window.clearTimeout(timeout);
+          resolve();
+        };
+        video.onerror = () => {
+          window.clearTimeout(timeout);
+          reject(new Error('تعذّر فتح الفيديو في المتصفح.'));
+        };
       });
 
+      const requestedCount = Math.max(1, Math.min(10, Math.trunc(candidateCount) || 1));
+      const count = Math.min(requestedCount, Math.max(1, Math.floor(sourceDuration / 3)));
+      const windowDuration = Math.min(18, sourceDuration, Math.max(3, sourceDuration / (count + 1) * 0.8));
+      const canvas = document.createElement('canvas');
+      canvas.width = 480;
+      canvas.height = 270;
+      const context = canvas.getContext('2d');
       const candidates: ScoutCandidate[] = [];
-      const step = totalDur / (candidateCount + 1);
 
-      const sportReasons = [
-        ['تسديدة صاروخية نحو المرمى', 'صعود هتاف الجماهير', 'حركة سريعة في الصندوق'],
-        ['مراوغة مباغتة وتمريرة حاسمة', 'كسر خط التسلل', 'تسارع مفاجئ للاعب'],
-        ['تصدي إعجازي من الحارس', 'ضغط هجومي متتالي', 'كرة هوائية خطيرة'],
-        ['انطلاقة مرتدة بسرعة عالية', 'انفراد صريح بالمرمى'],
-        ['ضربة حرة متقنة بجوار القائم', 'تمركز ممتاز للمهاجمين'],
-      ];
+      for (let i = 0; i < count; i++) {
+        const sampleTime = sourceDuration * (i + 1) / (count + 1);
+        const start = Math.max(0, Math.min(sourceDuration - windowDuration, sampleTime - windowDuration / 2));
+        const end = start + windowDuration;
+        onProgress(20 + Math.round((i / count) * 70), `استخراج إطار محلي ${i + 1} من ${count}؛ لا يوجد كشف كروي أو تقييم للمشهد.`);
 
-      for (let i = 0; i < candidateCount; i++) {
-        const centerTime = (i + 1) * step;
-        const dur = Math.min(18, Math.max(8, step * 0.8));
-        const start = Math.max(0, centerTime - dur / 2);
-        const end = Math.min(totalDur, start + dur);
-        const peak_t = Number((start + dur * 0.6).toFixed(1));
-
-        onProgress(35 + Math.round((i / candidateCount) * 50), `تحليل اللقطة ${i + 1} واحتساب مؤشرات الخطورة...`);
-
-        // Seek and snapshot
-        video.currentTime = peak_t;
-        await new Promise(r => {
-          video.onseeked = () => r(true);
-          setTimeout(r, 400); // Safety timeout
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => reject(new Error('انتهت مهلة استخراج إطار المعاينة.')), 5000);
+          video.onseeked = () => {
+            window.clearTimeout(timeout);
+            resolve();
+          };
+          video.onerror = () => {
+            window.clearTimeout(timeout);
+            reject(new Error('تعذّر قراءة إطار المعاينة.'));
+          };
+          video.currentTime = sampleTime;
         });
 
-        let snapshot = meta.thumbnail;
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = 480;
-          canvas.height = 270;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            snapshot = canvas.toDataURL('image/jpeg', 0.85);
+        let thumb = '';
+        if (context) {
+          try {
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            thumb = canvas.toDataURL('image/jpeg', 0.85);
+          } catch {
+            thumb = '';
           }
-        } catch {
-          // Keep snapshot
         }
 
-        const score = Number((82 + Math.random() * 16).toFixed(1));
-        const reasons = sportReasons[i % sportReasons.length];
-
         candidates.push({
-          id: `cand-${Date.now()}-${i}`,
+          id: `sample-${Date.now()}-${i}`,
           index: i,
           dur: Number((end - start).toFixed(1)),
           start: Number(start.toFixed(1)),
           end: Number(end.toFixed(1)),
-          peak_t,
-          score,
-          reasons,
-          stats: {
-            coverage: Number((0.88 + Math.random() * 0.11).toFixed(2)),
-            danger: Number((0.82 + Math.random() * 0.16).toFixed(2)),
-            speed_p95: Math.round(950 + Math.random() * 500),
-          },
-          thumb: snapshot,
+          sample_t: Number(sampleTime.toFixed(1)),
+          source_duration: sourceDuration,
+          thumb,
         });
       }
 
-      onProgress(100, 'اكتمل التحليل بنجاح واقتناص أفضل اللقطات!');
-      resolve(candidates);
-    });
+      onProgress(100, 'اكتمل استخراج إطارات المعاينة المحلية؛ لم يُحلّل الحدث الرياضي.');
+      return candidates;
+    } finally {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      if (typeof fileOrUrl !== 'string') URL.revokeObjectURL(meta.objectUrl);
+    }
   },
 
   /**

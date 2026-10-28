@@ -40,6 +40,7 @@ export const CreativeStudioTab: React.FC<CreativeStudioTabProps> = ({
   const [tone, setTone] = useState<string>('حماسي وطبيعي');
   const [audience, setAudience] = useState<string>('مشجعو كرة القدم');
   const [instructions, setInstructions] = useState<string>('');
+  const [externalTextConsent, setExternalTextConsent] = useState<boolean>(false);
 
   // Generation & Editor State
   const [generating, setGenerating] = useState<boolean>(false);
@@ -69,16 +70,25 @@ export const CreativeStudioTab: React.FC<CreativeStudioTabProps> = ({
         audience,
         instructions,
         jobTitle: selectedJob?.title,
+        allowExternalText: externalTextConsent,
       });
 
       setEditorText(res.text);
       setDraftTitle(res.title);
       setActiveDraftId('draft-' + Date.now());
-      onToast('تم توليد محتوى الريل بنجاح! ⚽✨', 'ok');
+      onToast(
+        res.source === 'gemini'
+          ? 'تم التوليد عبر Gemini بعد موافقتك على إرسال النص.'
+          : res.source === 'local_fallback'
+            ? 'تعذّر Gemini؛ أُنشئت مسودة محلية بعد إرسال النص بموافقتك.'
+            : 'تم إنشاء مسودة محلية؛ لم يُرسل أي نص إلى Gemini.',
+        res.source === 'local_fallback' ? 'err' : 'ok'
+      );
     } catch {
-      onToast('تعذر التوليد، يرجى المحاولة ثانية', 'err');
+      onToast('تعذر إنشاء المسودة، يرجى المحاولة ثانية', 'err');
     } finally {
       setGenerating(false);
+      setExternalTextConsent(false);
     }
   };
 
@@ -343,6 +353,16 @@ export const CreativeStudioTab: React.FC<CreativeStudioTabProps> = ({
               </div>
             </div>
           </div>
+
+          <label className="flex items-start gap-2 rounded-xl border border-[#664c30] bg-[#282114] p-3 text-[11px] leading-relaxed text-[#e5c99a]">
+            <input
+              type="checkbox"
+              checked={externalTextConsent}
+              onChange={e => setExternalTextConsent(e.target.checked)}
+              className="mt-0.5 rounded"
+            />
+            <span>أوافق لهذه المسودة فقط على إرسال نص الطلب إلى Google Gemini عند إدخال مفتاح. لن يُرسل الفيديو أو الصور. إن لم أوافق، تُنشأ مسودة محلية.</span>
+          </label>
 
           {/* Generate Button */}
           <button

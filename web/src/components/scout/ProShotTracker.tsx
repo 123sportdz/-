@@ -13,7 +13,6 @@ import {
   Camera,
   ShieldCheck,
   Zap,
-  CheckCircle2,
   Tv,
 } from 'lucide-react';
 import { soundEffects } from '../../services/soundEffects';
@@ -44,27 +43,19 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
   const [duration, setDuration] = useState<number>(12);
 
   // Tracking options
-  const [showBallTrack, setShowBallTrack] = useState<boolean>(true);
-  const [showPlayerBoxes, setShowPlayerBoxes] = useState<boolean>(true);
+  const [showBallTrack, setShowBallTrack] = useState<boolean>(false);
+  const [showPlayerBoxes, setShowPlayerBoxes] = useState<boolean>(false);
   const [showCropGuide, setShowCropGuide] = useState<boolean>(true);
   const [showHeatmap, setShowHeatmap] = useState<boolean>(false);
-  const [showScoreboard, setShowScoreboard] = useState<boolean>(true);
+  const [showScoreboard, setShowScoreboard] = useState<boolean>(false);
   const [showSpotlight, setShowSpotlight] = useState<boolean>(false);
-  const [trackerEngine, setTrackerEngine] = useState<'yolo11n' | 'kalman' | 'optical_flow'>('yolo11n');
   const [subjectFocus, setSubjectFocus] = useState<'action' | 'ball' | 'player'>('action');
-
-  // Simulated Scoreboard details
-  const [homeTeam, setHomeTeam] = useState<string>('ريال مدريد');
-  const [awayTeam, setAwayTeam] = useState<string>('برشلونة');
-  const [homeScore, setHomeScore] = useState<number>(2);
-  const [awayScore, setAwayScore] = useState<number>(1);
-  const [matchMinute, setMatchMinute] = useState<string>("87'");
-
-  // Telemetry simulation state
-  const [ballSpeed, setBallSpeed] = useState<number>(98);
-  const [ballConfidence, setBallConfidence] = useState<number>(96.4);
-  const [dangerLevel, setDangerLevel] = useState<number>(88);
-  const [cropCenterX, setCropCenterX] = useState<number>(50); // percentage 0-100
+  const [homeTeam, setHomeTeam] = useState<string>('فريق 1');
+  const [awayTeam, setAwayTeam] = useState<string>('فريق 2');
+  const [homeScore, setHomeScore] = useState<number>(0);
+  const [awayScore, setAwayScore] = useState<number>(0);
+  const [matchMinute, setMatchMinute] = useState<string>('--');
+  const [cropCenterX, setCropCenterX] = useState<number>(50);
 
   // Fallback demo video if no source is given
   const effectiveVideoUrl =
@@ -111,11 +102,6 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
       setCropCenterX(prev => prev + (targetCropX - prev) * 0.08);
 
       // Update telemetry
-      const simulatedSpeed = Math.round(75 + Math.sin(cycle * Math.PI) * 42);
-      setBallSpeed(simulatedSpeed);
-      setBallConfidence(Number((94 + Math.cos(cycle * 3) * 4).toFixed(1)));
-      setDangerLevel(Math.round(60 + Math.sin(cycle * Math.PI) * 38));
-
       // Append ball trail
       ballTrailRef.current.push({ x: bx, y: by, time: Date.now() });
       if (ballTrailRef.current.length > 25) {
@@ -236,7 +222,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
         ctx.fillRect(ballPx - boxSize / 2, ballPy - boxSize / 2 - 20, 115, 18);
         ctx.fillStyle = '#25d07a';
         ctx.font = 'bold 10px monospace';
-        ctx.fillText(`⚽ كرة: ${ballConfidence}% (${simulatedSpeed}km/h)`, ballPx - boxSize / 2 + 4, ballPy - boxSize / 2 - 7);
+        ctx.fillText('مسار توضيحي', ballPx - boxSize / 2 + 4, ballPy - boxSize / 2 - 7);
 
         ctx.restore();
       }
@@ -291,7 +277,6 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
     showHeatmap,
     showSpotlight,
     cropCenterX,
-    ballConfidence,
   ]);
 
   // Video controls
@@ -328,11 +313,11 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
     if (onApplyCropSettings) {
       onApplyCropSettings({
         subject: subjectFocus,
-        tracker: trackerEngine === 'yolo11n' ? 'pro' : 'classic',
+        tracker: 'auto',
         replay: playbackSpeed < 1.0,
-        burst: dangerLevel > 80,
+        burst: false,
       });
-      if (onToast) onToast('تم تطبيق إعدادات التتبّع الذكي على إعدادات المقطع بنجاح 🎯', 'ok');
+      if (onToast) onToast('حُفظت تفضيلات معاينة محلية فقط؛ لم يعمل تتبّع أو رندر فعلي.', 'ok');
     }
   };
 
@@ -346,13 +331,13 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-black text-white">تتبّع اللقطات الاحترافي (Pro Shot & Object Tracker)</h3>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#182231] border border-[#36d1dc]/40 text-[#36d1dc] font-mono">
-                YOLO11n-q16
+              <h3 className="text-sm font-black text-white">معاينة القص والحركة (توضيحية)</h3>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#282114] border border-[#664c30] text-[#e5c99a]">
+                دون كاشف
               </span>
             </div>
             <p className="text-xs text-[#8ea0b5] mt-0.5">
-              كشف مسار الكرة وسرعتها، تحركات اللاعبين، وتوجيه الكاميرا العمودية الذكية 9:16 تلقائياً.
+              إطار 9:16 قابل للمعاينة؛ أي مسار أو مربعات أو لوحة نتيجة هي رسومات شكلية وليست كشفاً أو قياسات من الفيديو.
             </p>
           </div>
         </div>
@@ -416,32 +401,12 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
             <span className="text-white/50">-</span>
             <span className="bg-white/20 px-1.5 py-0.5 rounded text-[11px] font-mono">{awayScore}</span>
             <span className="text-sky-400">{awayTeam}</span>
-            {dangerLevel > 80 && (
-              <span className="bg-[#e63946] text-white text-[10px] px-1.5 py-0.5 rounded-full animate-pulse mr-1">
-                فرصة خطيرة!
-              </span>
-            )}
+            <span className="text-[10px] text-[#e5c99a]">لوحة توضيحية</span>
           </div>
         )}
 
-        {/* Telemetry HUD (Top Right) */}
-        <div className="absolute top-4 right-4 z-20 flex flex-col gap-1.5 items-end">
-          <div className="bg-black/80 backdrop-blur-md border border-[#25d07a]/40 rounded-xl p-2.5 text-right font-mono text-[11px] text-white shadow-xl min-w-[150px]">
-            <div className="flex items-center justify-between gap-3 text-[#25d07a] font-bold border-b border-white/10 pb-1 mb-1">
-              <span>⚽ سرعة الكرة</span>
-              <span className="text-sm font-black">{ballSpeed} km/h</span>
-            </div>
-            <div className="flex items-center justify-between gap-3 text-white/80 text-[10px]">
-              <span>دقة الذكاء (AI)</span>
-              <span className="text-[#36d1dc] font-bold">{ballConfidence}%</span>
-            </div>
-            <div className="flex items-center justify-between gap-3 text-white/80 text-[10px]">
-              <span>مؤشر الخطورة</span>
-              <span className={`font-bold ${dangerLevel > 75 ? 'text-[#e63946]' : 'text-amber-400'}`}>
-                {dangerLevel}%
-              </span>
-            </div>
-          </div>
+        <div className="absolute top-4 right-4 z-20 rounded-xl border border-[#664c30] bg-[#282114]/90 px-3 py-2 text-right text-[10px] text-[#e5c99a] shadow-xl">
+          مسار وحركة توضيحيان — لا توجد قياسات فعلية
         </div>
 
         {/* Bottom Playback HUD Bar */}
@@ -502,7 +467,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
       <div className="p-4 bg-[#131a23] border-t border-[#222e3d] grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
         {/* Toggle Overlays */}
         <div className="space-y-2">
-          <span className="block font-bold text-white mb-1.5">طبقات التتبّع البصري:</span>
+          <span className="block font-bold text-white mb-1.5">طبقات توضيحية غير متصلة:</span>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input
               type="checkbox"
@@ -510,7 +475,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
               onChange={e => setShowBallTrack(e.target.checked)}
               className="rounded"
             />
-            <span>⚽ مسار الكرة وتتبّع السرعة</span>
+            <span>مسار كرة توضيحي (لا سرعة فعلية)</span>
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input
@@ -519,7 +484,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
               onChange={e => setShowPlayerBoxes(e.target.checked)}
               className="rounded"
             />
-            <span>🏃 مربعات كشف اللاعبين (مهاجم/مدافع)</span>
+            <span>مربعات لاعبين توضيحية (لا كشف)</span>
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input
@@ -542,7 +507,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
               onChange={e => setShowHeatmap(e.target.checked)}
               className="rounded"
             />
-            <span>🔥 خريطة الحرارة ومناطق الخطورة</span>
+            <span>خريطة حرارية توضيحية (لا تحليل خطورة)</span>
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input
@@ -551,7 +516,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
               onChange={e => setShowSpotlight(e.target.checked)}
               className="rounded"
             />
-            <span>🔦 تسليط الضوء (Spotlight) على الكرة</span>
+            <span>تأثير إضاءة توضيحي</span>
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input
@@ -560,23 +525,14 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
               onChange={e => setShowScoreboard(e.target.checked)}
               className="rounded"
             />
-            <span>📺 لوحة النتيجة التلفزيونية (Scoreboard)</span>
+            <span>لوحة نتيجة توضيحية (لا تعكس مباراة حقيقية)</span>
           </label>
         </div>
 
-        {/* AI Tracking Engine & Focus */}
         <div className="space-y-2">
-          <span className="block font-bold text-white mb-1.5">محرّك التتبّع وبؤرة الكاميرا:</span>
-          <div>
-            <select
-              value={trackerEngine}
-              onChange={e => setTrackerEngine(e.target.value as any)}
-              className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg px-2.5 py-1.5 text-white"
-            >
-              <option value="yolo11n">YOLO11n-q16 (دقيق وسريع)</option>
-              <option value="kalman">Kalman Filter + DeepSORT</option>
-              <option value="optical_flow">Optical Flow (حركة ناعمة)</option>
-            </select>
+          <span className="block font-bold text-white mb-1.5">بؤرة المعاينة:</span>
+          <div className="rounded-lg border border-[#664c30] bg-[#282114] px-2.5 py-2 text-[10px] leading-relaxed text-[#e5c99a]">
+            محرّكات YOLO والتتبّع غير متصلة بهذه الواجهة.
           </div>
           <div>
             <select
@@ -593,13 +549,8 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
 
         {/* Action Button & Resilience Spec */}
         <div className="flex flex-col justify-between">
-          <div className="p-2.5 rounded-xl bg-[#0c1219] border border-[#222e3d] text-[11px] text-[#8ea0b5] space-y-1">
-            <div className="flex items-center gap-1.5 text-[#25d07a] font-bold">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>جاهزية الرندر v1.65:</span>
-            </div>
-            <div>• مشفّر NVENC مفعّل مع تراجع تلقائي إلى CPU</div>
-            <div>• حماية علامات البث الأصلية (بدون طمس)</div>
+          <div className="p-2.5 rounded-xl border border-[#664c30] bg-[#282114] text-[11px] leading-relaxed text-[#e5c99a]">
+            لا يوجد رندر أو تتبّع خادمي في هذا النموذج. علامات المصدر لا تُزال.
           </div>
 
           <button
@@ -607,7 +558,7 @@ export const ProShotTracker: React.FC<ProShotTrackerProps> = ({
             className="w-full mt-2 px-4 py-2.5 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-[#2f6fe0] to-[#1e4ba8] hover:brightness-110 transition flex items-center justify-center gap-2 shadow"
           >
             <Sparkles className="w-4 h-4 text-[#36d1dc]" />
-            <span>تطبيق التتبّع على إعدادات المقطع</span>
+            <span>حفظ تفضيلات المعاينة المحلية</span>
           </button>
         </div>
       </div>

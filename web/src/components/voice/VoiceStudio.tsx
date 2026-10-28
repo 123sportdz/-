@@ -175,7 +175,7 @@ export const VoiceStudio: React.FC<VoiceStudioProps> = ({
     }
 
     setIsPlaying(true);
-    onToast('جارٍ تشغيل المعاينة الصوتية الحية بصوت المعلّق والملعب...', 'ok');
+    onToast('تشغيل محلي بصوت المتصفح؛ لا يُرسل النص إلى خدمة خارجية.', 'ok');
     try {
       await voiceSynth.playPreview(voice, () => {
         setIsPlaying(false);
@@ -409,16 +409,10 @@ export const VoiceStudio: React.FC<VoiceStudioProps> = ({
       {/* Voice Engine & Style */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-2.5">
         <div>
-          <label className="block text-[#8ea0b5] font-semibold mb-1 text-[11px]">محرّك الصوت</label>
-          <select
-            value={voice.voice_engine}
-            onChange={e => update({ voice_engine: e.target.value as any })}
-            className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg px-2 py-1.5 text-white text-xs"
-          >
-            <option value="auto">تلقائي (Gemini ثم Edge)</option>
-            <option value="edge">Edge — مجاني وفوري</option>
-            <option value="gemini">Gemini — يحتاج مفتاحاً</option>
-          </select>
+          <label className="block text-[#8ea0b5] font-semibold mb-1 text-[11px]">مصدر المعاينة</label>
+          <div className="rounded-lg border border-[#2c3a4d] bg-[#0c1219] px-2 py-2 text-[11px] text-[#cfdcec]">
+            صوت المتصفح المحلي — لا اتصال بـ Gemini أو Edge
+          </div>
         </div>
 
         <div>
@@ -681,7 +675,7 @@ export const VoiceStudio: React.FC<VoiceStudioProps> = ({
           rows={2}
           value={voice.commentary_script}
           onChange={e => update({ commentary_script: e.target.value })}
-          placeholder="اتركه فارغاً ليكتب الذكاء الاصطناعي التعليق تلقائياً..."
+          placeholder="اكتب نصاً أو اتركه فارغاً لمعاينة عبارة نموذجية محلية..."
           className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg p-2 text-white placeholder:text-[#6f8291] text-xs"
         />
       </div>
@@ -711,7 +705,7 @@ export const VoiceStudio: React.FC<VoiceStudioProps> = ({
         </button>
 
         <span className="text-[10px] text-[#8ea0b5]">
-          صوت {voice.edge_voice.split('-')[2]?.replace('Neural', '') || 'عربي'}
+          الصوت العربي المتاح في المتصفح
         </span>
       </div>
     </div>

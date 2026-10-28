@@ -24,19 +24,19 @@ export const RightsGateModal: React.FC<RightsGateModalProps> = ({
   onSaveRights,
   onToast,
 }) => {
-  const [visualRights, setVisualRights] = useState<boolean>(job.rights_status === 'recorded');
-  const [audioRights, setAudioRights] = useState<boolean>(job.rights_status === 'recorded');
-  const [sourceRef, setSourceRef] = useState<string>(job.src_url || 'https://t.me/OffsideOffside1/2984');
-  const [evidence, setEvidence] = useState<string>('بث رياضي مصرح / مقطع قصير مع الحفاظ على علامات المصدر');
-  const [scope, setScope] = useState<'private' | 'unlisted' | 'public'>('private');
-  const [containsSyntheticMedia, setContainsSyntheticMedia] = useState<boolean>(false);
+  const [visualRights, setVisualRights] = useState<boolean>(job.rights_declaration?.visualRights ?? false);
+  const [audioRights, setAudioRights] = useState<boolean>(job.rights_declaration?.audioRights ?? false);
+  const [sourceRef, setSourceRef] = useState<string>(job.rights_declaration?.sourceRef || '');
+  const [evidence, setEvidence] = useState<string>(job.rights_declaration?.evidence || '');
+  const [scope, setScope] = useState<'private' | 'unlisted' | 'public'>(job.rights_declaration?.scope || 'private');
+  const [containsSyntheticMedia, setContainsSyntheticMedia] = useState<boolean>(job.rights_declaration?.containsSyntheticMedia ?? false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
     // Verification according to AGENTS.md rights gate rule
     if ((scope === 'public' || scope === 'unlisted') && (!visualRights || !audioRights)) {
-      onToast('تنبيه أمني: عند النشر العام أو غير المدرج يجب تأكيد حقوق الصورة والصوت بالكامل؛ غير ذلك يُسمح بالرفع الخاص (Private) فقط للمراجعة.', 'err');
+      onToast('أكمل إقرار الحقوق في النموذج. هذا لا يثبت الترخيص ولا يسمح بالنشر الحقيقي.', 'err');
       return;
     }
 
@@ -49,12 +49,7 @@ export const RightsGateModal: React.FC<RightsGateModalProps> = ({
       containsSyntheticMedia,
     });
 
-    onToast(
-      mode === 'youtube'
-        ? `تم التحقق من بوابة الحقوق والبدء برفع الريل على YouTube Shorts (${scope}) بنجاح`
-        : 'تم توثيق بيانات الحقوق وتسجيلها في outputs/audit/events.jsonl',
-      'ok'
-    );
+    onToast('حُفظ الإقرار في هذا المتصفح فقط؛ لم يُتحقق من الحقوق ولم يُرفع أي فيديو.', 'ok');
     onClose();
   };
 
@@ -67,7 +62,7 @@ export const RightsGateModal: React.FC<RightsGateModalProps> = ({
             <ShieldCheck className="w-5 h-5 text-[#36d1dc]" />
             <div>
               <h2 className="text-sm sm:text-base font-bold text-white">
-                {mode === 'youtube' ? 'بوابة التحقق من الحقوق ونشر YouTube' : 'نموذج مراجعة حقوق البث والملكية'}
+                {mode === 'youtube' ? 'نموذج إقرار حقوق YouTube (تجريبي)' : 'نموذج إقرار الحقوق (تجريبي)'}
               </h2>
               <span className="text-[11px] text-[#8ea0b5]">{job.title}</span>
             </div>
@@ -85,7 +80,7 @@ export const RightsGateModal: React.FC<RightsGateModalProps> = ({
         <div className="p-3 rounded-xl bg-[#282114] border border-[#664c30] text-[#e5c99a] mb-4 leading-relaxed flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 text-[#f0b429] shrink-0 mt-0.5" />
           <div>
-            <b>سياسة النزاهة وحقوق البث الرياضي:</b> علامات المصدر الأصلية لا تُحذف إلا بترخيص. الحقوق المجهولة تُرفع كفيديو خاص (Private) للمراجعة فقط ولا يُسمح بنشرها للعامة دون تأكيد.
+            <b>نموذج محلي فقط:</b> تسجيل الإقرار لا يتحقق من الملكية أو الترخيص، ولا يغيّر حالة أي منصة، ولا يرفع الفيديو. لا تعتمد عليه للنشر؛ استخدم بوابة الحقوق الخادمية في لوحة المشروع الحقيقية.
           </div>
         </div>
 
@@ -180,7 +175,7 @@ export const RightsGateModal: React.FC<RightsGateModalProps> = ({
               className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-black text-white bg-gradient-to-r from-[#25d07a] to-[#1d5c3e] hover:brightness-110 shadow-lg shadow-[#25d07a]/20 transition"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>{mode === 'youtube' ? 'تأكيد الحقوق ورفع الفيديو' : 'حفظ التوثيق واعتماد الحقوق'}</span>
+              <span>حفظ الإقرار محلياً فقط</span>
             </button>
           </div>
         </form>

@@ -39,17 +39,28 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
   };
 
   const startAnalysis = async () => {
+    const fileOrUrl = sourceFile || sourceUrl;
+    if (!fileOrUrl) {
+      setSession({
+        id: 'scout-' + Date.now(),
+        status: 'failed',
+        stage: 'اختر فيديو أولاً لاستخراج إطارات معاينة محلية.',
+        progress: 0,
+        duration: 0,
+        candidates: [],
+      });
+      return;
+    }
+
     setAnalyzing(true);
     setSession({
       id: 'scout-' + Date.now(),
       status: 'analyzing',
-      stage: 'نحلّل الصوت ونفحص الإطارات الحقيقية للمقطع...',
-      progress: 15,
-      duration: 180,
+      stage: 'استخراج إطارات معاينة محلية؛ لا يوجد تحليل صوت أو كشف رياضي.',
+      progress: 10,
+      duration: 0,
       candidates: [],
     });
-
-    const fileOrUrl = sourceFile || sourceUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
 
     try {
       const candidates = await videoProcessor.analyzeScoutFrames(
@@ -61,21 +72,28 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
       );
 
       const initialWindows: Record<number, { start: number; end: number }> = {};
-      candidates.forEach((c, idx) => {
-        initialWindows[idx] = { start: c.start, end: c.end };
+      candidates.forEach((candidate, idx) => {
+        initialWindows[idx] = { start: candidate.start, end: candidate.end };
       });
 
       setTrimWindows(initialWindows);
+      setSelectedIndices([]);
       setSession({
         id: 'scout-' + Date.now(),
         status: 'ready',
-        stage: 'اكتمل التحليل الحقيقي واقتناص اللقطات بنجاح',
+        stage: 'اكتمل استخراج الإطارات المحلية؛ لم تُرتّب اللقطات حسب الحدث.',
         progress: 100,
-        duration: Math.max(...candidates.map(c => c.end)),
+        duration: candidates[0]?.source_duration || 0,
         candidates,
       });
     } catch (err) {
-      console.warn('Real scout analysis error', err);
+      setSession(prev => prev ? {
+        ...prev,
+        status: 'failed',
+        stage: 'تعذّر استخراج إطارات المعاينة.',
+        progress: 0,
+        error: err instanceof Error ? err.message : 'تحقق من الفيديو وحاول مجدداً.',
+      } : null);
     } finally {
       setAnalyzing(false);
     }
@@ -92,19 +110,19 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
       [type]: num,
     };
 
-    // Validation per AGENTS.md:
-    // 1. Must include detected peak
-    // 2. Minimum 3 seconds
-    // 3. Not exceed max duration
     let err = '';
-    if (next.end <= next.start) {
+    if (next.start < 0) {
+      err = 'بداية القص لا يمكن أن تكون قبل الصفر.';
+    } else if (next.end <= next.start) {
       err = 'النهاية يجب أن تكون بعد البداية.';
+    } else if (next.end > candidate.source_duration) {
+      err = `النهاية تتجاوز مدة المصدر (${formatTime(candidate.source_duration)}).`;
     } else if (next.end - next.start < 3) {
-      err = 'يجب ألا تقل اللقطة عن 3 ثوانٍ.';
+      err = 'يجب ألا تقل نافذة القص عن 3 ثوانٍ.';
     } else if (next.end - next.start > maxDuration) {
       err = `مدة القص تتجاوز الحد الأقصى (${maxDuration} ث).`;
-    } else if (candidate.peak_t < next.start || candidate.peak_t > next.end) {
-      err = `وسّع القص ليشمل ذروة اللقطة (${formatTime(candidate.peak_t)}).`;
+    } else if (candidate.sample_t < next.start || candidate.sample_t > next.end) {
+      err = `يجب أن تشمل نافذة القص عينة الإطار (${formatTime(candidate.sample_t)}).`;
     }
 
     setTrimWindows(prev => ({ ...prev, [index]: next }));
@@ -133,11 +151,11 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
   };
 
   const handleBatch = () => {
-    if (!session) return;
+    if (!session || selectedIndices.some(idx => Boolean(trimErrors[idx]))) return;
     const items = selectedIndices.map(idx => {
-      const c = session.candidates[idx];
-      const win = trimWindows[idx] || { start: c.start, end: c.end };
-      return { candidate: c, start: win.start, end: win.end };
+      const candidate = session.candidates[idx];
+      const window = trimWindows[idx] || { start: candidate.start, end: candidate.end };
+      return { candidate, start: window.start, end: window.end };
     });
     onBatchProcess(items);
   };
@@ -148,10 +166,10 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
         <div>
           <h2 className="text-base font-bold text-[#cfdcec] flex items-center gap-2">
             <Telescope className="w-5 h-5 text-[#36d1dc]" />
-            <span>راصد اللقطات الذكي (Scout Match Review)</span>
+            <span>عينات الإطارات المحلية</span>
           </h2>
           <p className="text-xs text-[#8ea0b5] mt-1">
-            يرتّب الكشّاف لحظات الهتاف والسرعة والخطورة ويعرض لك بطاقات جاهزة للاعتماد أو التعديل قبل المعالجة الكاملة.
+            يستخرج صوراً ثابتة ونوافذ زمنية من الفيديو داخل المتصفح فقط؛ لا يكشف الكرة أو الأهداف ولا يحلل الصوت أو يقيس الخطورة.
           </p>
         </div>
 
@@ -177,7 +195,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-gradient-to-r from-[#2f6fe0] to-[#1e4ba8] hover:brightness-110 disabled:opacity-50 transition"
           >
             <Telescope className="w-3.5 h-3.5" />
-            <span>{analyzing ? 'جارٍ التحليل...' : '🔭 حلّل المقطع'}</span>
+            <span>{analyzing ? 'جارٍ استخراج الإطارات...' : 'استخراج عينات الإطارات'}</span>
           </button>
 
           {session && (
@@ -192,7 +210,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
       </div>
 
       {/* Progress or status */}
-      {session && session.status !== 'ready' && (
+      {session && session.status === 'analyzing' && (
         <div className="mt-4">
           <div className="flex justify-between text-xs text-[#aab8ca] mb-1.5">
             <span>{session.stage}</span>
@@ -207,16 +225,24 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
         </div>
       )}
 
-      {/* Empty State */}
+      {session?.status === 'failed' && (
+        <div role="alert" className="mt-4 rounded-xl border border-[#5c2428] bg-[#2c1a1b] p-3 text-xs leading-relaxed text-[#ffb3ba">
+          {session.stage} {session.error || ''}
+        </div>
+      )}
+
       {!session && (
         <div className="text-center py-10 px-4 text-[#8ea0b5] text-xs border border-dashed border-[#222e3d] rounded-xl mt-4">
-          اضغط «🔭 حلّل المقطع» لفحص الصوت، رصد الأهداف، وترتيب أقوى اللحظات كروياً.
+          اختر فيديو أولاً؛ سيُستخرج منه عدد محدود من الإطارات للمعاينة المحلية فقط.
         </div>
       )}
 
       {/* Candidates Grid */}
       {session && session.status === 'ready' && (
         <div className="mt-4">
+          <div className="mb-3 rounded-xl border border-[#664c30] bg-[#282114] p-3 text-[11px] leading-relaxed text-[#e5c99a]">
+            صور المعاينة ومواضعها مأخوذة من الملف؛ لا توجد نتائج ذكاء اصطناعي أو مؤشرات تتبّع.
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {session.candidates.map((cand, idx) => {
               const currentWindow = trimWindows[idx] || { start: cand.start, end: cand.end };
@@ -233,13 +259,19 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
                 >
                   {/* Thumbnail & Score Tag */}
                   <div className="relative aspect-video bg-[#090e14]">
-                    <img
-                      src={cand.thumb}
-                      alt={`إطار اللقطة ${idx + 1}`}
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute top-2 right-2 bg-[#0d151d]/90 border border-[#2c3a4d] rounded-md px-2 py-0.5 text-xs font-black text-[#36d1dc]">
-                      {cand.score.toFixed(1)} / 100
+                    {cand.thumb ? (
+                      <img
+                        src={cand.thumb}
+                        alt={`إطار المعاينة ${idx + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="grid h-full place-items-center text-xs text-[#8ea0b5]">
+                        تعذّر إنشاء صورة معاينة
+                      </div>
+                    )}
+                    <div className="absolute top-2 right-2 bg-[#0d151d]/90 border border-[#664c30] rounded-md px-2 py-0.5 text-[10px] font-bold text-[#e5c99a]">
+                      إطار معاينة
                     </div>
 
                     <label className="absolute top-2 left-2 bg-[#0d151d]/90 border border-[#2c3a4d] rounded-md px-2 py-0.5 text-[11px] font-bold text-white flex items-center gap-1.5 cursor-pointer">
@@ -253,7 +285,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
                     </label>
 
                     <div className="absolute bottom-2 right-2 bg-black/75 px-2 py-0.5 rounded text-[10px] text-white">
-                      الذروة: {formatTime(cand.peak_t)}
+                      عينة: {formatTime(cand.sample_t)}
                     </div>
                   </div>
 
@@ -268,24 +300,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
                       </span>
                     </div>
 
-                    {/* Reasons Tags */}
-                    <div className="flex flex-wrap gap-1 my-2">
-                      {cand.reasons.map((r, i) => (
-                        <span
-                          key={i}
-                          className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#15312f] border border-[#235e58] text-[#a8e3d5]"
-                        >
-                          {r}
-                        </span>
-                      ))}
-                    </div>
 
-                    {/* Metrics */}
-                    <div className="flex items-center gap-2.5 text-[10.5px] text-[#8ea0b5] pb-2 border-b border-[#222e3d]">
-                      <span>تتبّع {Math.round(cand.stats.coverage * 100)}%</span>
-                      <span>خطورة {Math.round(cand.stats.danger * 100)}%</span>
-                      <span>سرعة {cand.stats.speed_p95} px/s</span>
-                    </div>
 
                     {/* Trim Adjustment Controls */}
                     <div className="grid grid-cols-2 gap-2 mt-2 text-[11px]">
@@ -329,7 +344,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
                             : 'bg-[#26313f] hover:bg-[#324154] text-[#cfdcec] border border-[#2c3a4d]'
                         }`}
                       >
-                        {isUsed ? '✓ معتمدة' : 'استخدم اللقطة'}
+                        {isUsed ? '✓ نافذة محددة' : 'استخدم نافذة القص'}
                       </button>
 
                       <button
@@ -365,7 +380,7 @@ export const ScoutReview: React.FC<ScoutReviewProps> = ({
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#e63946] to-[#b3212c] hover:brightness-110 disabled:opacity-40 transition shadow-lg shadow-[#e63946]/20"
             >
               <Zap className="w-4 h-4" />
-              <span>حوّل المحدد ({selectedIndices.length}) إلى ريلز دفعة واحدة</span>
+              <span>إنشاء بطاقات معاينة تجريبية ({selectedIndices.length})</span>
             </button>
           </div>
         </div>

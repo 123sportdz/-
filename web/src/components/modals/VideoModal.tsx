@@ -27,7 +27,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
     setIsRendering(true);
     setRenderProgress(0);
     try {
-      const { downloadUrl } = await videoProcessor.renderVerticalReel({
+      const { blob, downloadUrl } = await videoProcessor.renderVerticalReel({
         videoElement: videoRef.current,
         startTime: 0,
         endTime: Math.min(job.duration, 15),
@@ -39,7 +39,8 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
 
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = `elhadath_${job.filename.replace(/\.[^/.]+$/, '')}_reel.webm`;
+      const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
+      a.download = `elhadath_${job.filename.replace(/\.[^/.]+$/, '')}_preview.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -154,7 +155,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                       left: `${30 + Math.cos(simulatedTime * 0.8) * 20}%`,
                     }}
                   >
-                    ⚽ YOLO11: Ball 96%
+                    مؤشر بصري تجريبي
                   </div>
                 )}
 
@@ -195,10 +196,9 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                   }}
                 >
                   <div className="font-bold flex items-center gap-1">
-                    <span>⚽ YOLO11n:</span>
-                    <span className="text-white">96.8%</span>
+                    <span>⚽ واجهة تتبّع تجريبية</span>
                   </div>
-                  <div className="text-[8px] text-amber-400">104 km/h · هدف</div>
+                  <div className="text-[8px] text-amber-400">لا يعرض كشفاً أو سرعة فعلية</div>
                 </div>
 
                 {/* Striker Player Bounding Box */}
@@ -209,14 +209,13 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                     left: `${28 + Math.cos(simulatedTime) * 15}%`,
                   }}
                 >
-                  <span className="bg-[#e63946] px-1 rounded text-[7px]">مهاجم #9</span>
+                  <span className="bg-[#e63946] px-1 rounded text-[7px]">عنصر توضيحي</span>
                 </div>
 
                 {/* Scoreboard Pill on top */}
                 <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-white/20 text-[10px] text-white font-bold pointer-events-none">
-                  <span className="text-[#36d1dc]">87'</span>
-                  <span className="text-amber-400">2 - 1</span>
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#25d07a] animate-ping" />
+                  <span className="text-[#36d1dc]">مثال</span>
+                  <span className="text-amber-400">نتيجة تجريبية</span>
                 </div>
               </>
             )}
@@ -281,7 +280,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                 }`}
               >
                 <Target className="w-3.5 h-3.5" />
-                <span>طبقة التتبّع (HUD)</span>
+                <span>طبقة توضيحية فقط</span>
               </button>
 
               <button
@@ -328,21 +327,21 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
               <div className="flex items-center justify-between border-b border-white/10 pb-1 mb-1">
                 <span className="font-bold text-white flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-[#25d07a]" />
-                  <span>تقرير جودة الرندر والتتبّع (v1.65):</span>
+                  <span>بيانات نموذجية — لا توجد نتائج تحليل فعلية</span>
                 </span>
-                <span className="text-[10px] text-[#25d07a] font-mono">درجة الجودة: 98.4%</span>
+                <span className="text-[10px] text-[#e5c99a] font-mono">عرض توضيحي</span>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[#8ea0b5] text-[11px]">
-                <div>المقاس: <b className="text-white">{job.out_size}</b></div>
-                <div>المدة: <b className="text-white">{job.duration} ثانية</b></div>
-                <div>الكاميرا: <b className="text-white">{job.subject}</b></div>
-                <div>المحرّك: <b className="text-white">{job.tracker} (YOLO11n-q16)</b></div>
-                <div>المشفّر: <b className="text-[#25d07a]">NVENC H.264 (libx264 Fallback)</b></div>
+                <div>المقاس النموذجي: <b className="text-white">{job.out_size}</b></div>
+                <div>المدة المعروضة: <b className="text-white">{job.duration} ثانية</b></div>
+                <div>اختيار الكاميرا: <b className="text-white">{job.subject}</b></div>
+                <div>YOLO ومحرك Python: <b className="text-[#e5c99a]">غير متصلين</b></div>
+                <div>الترميز: <b className="text-[#e5c99a]">Canvas داخل المتصفح فقط</b></div>
                 <div>شارة القناة: <b className="text-white">{job.brand_y}% عمودياً</b></div>
               </div>
             </div>
 
-            {/* Real Render & Export */}
+            {/* Browser preview export */}
             <div className="pt-2 space-y-2">
               <button
                 onClick={handleExportReel}
@@ -353,7 +352,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                 <span>
                   {isRendering
                     ? `جارٍ رندر الريل العمودي (${renderProgress}%)...`
-                    : '🎬 رندر وتصدير الريل العمودي الحقيقي (9:16 MP4)'}
+                    : '🎬 إنشاء معاينة محلية عمودية (9:16)'}
                 </span>
               </button>
 
@@ -364,7 +363,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ job, settings, logoSetti
                   className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#25d07a] to-[#1d5c3e] hover:brightness-110 shadow transition"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>تنزيل المقطع الأصلي</span>
+                  <span>تنزيل الفيديو المعروض</span>
                 </a>
 
                 {job.thumbnail_url && (
