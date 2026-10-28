@@ -31,10 +31,10 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Set up FFmpeg and ffprobe
-        uses: FedericoCarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
-        with:
-          ffmpeg-version: 7.0.2
+      - name: Install FFmpeg and ffprobe
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
 
       - name: Verify FFmpeg and ffprobe
         run: |
@@ -137,10 +137,10 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Set up FFmpeg and ffprobe
-        uses: FedericoCarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
-        with:
-          ffmpeg-version: 7.0.2
+      - name: Install FFmpeg and ffprobe
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
 
       - name: Verify FFmpeg and ffprobe
         run: |
