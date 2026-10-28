@@ -11,10 +11,11 @@ import { CreativeStudioTab } from './components/tabs/CreativeStudioTab';
 import { VideoModal } from './components/modals/VideoModal';
 import { RightsGateModal } from './components/modals/RightsGateModal';
 import { storage } from './services/storage';
+import { ProductionApp } from './ProductionApp';
 import { AppSettings, AutomationSettings, CreativeDraft, Job, LogoItem, LogoSettings, VoiceSettings, ChannelPost } from './types';
 import confetti from 'canvas-confetti';
 
-export function App() {
+function PrototypeApp() {
   // Global State
   const [activeTab, setActiveTab] = useState<'new' | 'jobs' | 'brand' | 'chan' | 'auto' | 'set' | 'studio'>('new');
   const [settings, setSettings] = useState<AppSettings>(storage.getSettings());
@@ -618,6 +619,11 @@ export function App() {
       </div>
     </div>
   );
+}
+
+export function App() {
+  if (window.location.pathname.startsWith('/app/demo')) return <PrototypeApp />;
+  return <ProductionApp />;
 }
 
 export default App;

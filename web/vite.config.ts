@@ -4,9 +4,14 @@ import tailwindcss from '@tailwindcss/vite';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: '/app/',
   plugins: [react(), tailwindcss()],
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 3000,
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:8000' },
+      '/media': { target: 'http://127.0.0.1:8000' },
+    },
   },
 });
