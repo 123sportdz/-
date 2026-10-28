@@ -109,14 +109,14 @@ export const JobsTab: React.FC<JobsTabProps> = ({
   const statusBadge = (status: Job['status']) => {
     switch (status) {
       case 'done':
-        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#25d07a]/15 text-[#79e0aa] border border-[#1d5c3e]">مكتملة</span>;
+        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#25d07a]/15 text-[#79e0aa] border border-[#1d5c3e]">نموذج مكتمل</span>;
       case 'running':
-        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#3b82f6]/20 text-[#8fb8ff] border border-[#2b4f86] animate-pulse">قيد المعالجة</span>;
+        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#3b82f6]/20 text-[#8fb8ff] border border-[#2b4f86] animate-pulse">محاكاة قيد التشغيل</span>;
       case 'failed':
-        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#e63946]/20 text-[#ff9aa2] border border-[#6b2a30]">فاشلة</span>;
+        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#e63946]/20 text-[#ff9aa2] border border-[#6b2a30]">فشل في النموذج</span>;
       case 'queued':
       default:
-        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#26313f] text-[#a9b8c9] border border-[#35475d]">في الانتظار 🚦</span>;
+        return <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-[#26313f] text-[#a9b8c9] border border-[#35475d]">نموذج في الانتظار</span>;
     }
   };
 
@@ -165,11 +165,11 @@ export const JobsTab: React.FC<JobsTabProps> = ({
           onChange={e => setStatusFilter(e.target.value)}
           className="bg-[#0c1219] border border-[#2c3a4d] rounded-xl px-2.5 py-1.5 text-xs text-white"
         >
-          <option value="">كل الحالات</option>
-          <option value="done">مكتملة</option>
-          <option value="running">قيد المعالجة</option>
-          <option value="failed">فاشلة</option>
-          <option value="queued">في الانتظار</option>
+          <option value="">كل الحالات النموذجية</option>
+          <option value="done">نموذج مكتمل</option>
+          <option value="running">محاكاة قيد التشغيل</option>
+          <option value="failed">فشل في النموذج</option>
+          <option value="queued">نموذج في الانتظار</option>
         </select>
 
         <select
@@ -178,12 +178,8 @@ export const JobsTab: React.FC<JobsTabProps> = ({
           className="bg-[#0c1219] border border-[#2c3a4d] rounded-xl px-2.5 py-1.5 text-xs text-white"
         >
           <option value="">كل مسارات المتابعة</option>
-          <option value="rights_pending">بحاجة لاستكمال بيانات الحقوق</option>
-          <option value="rights_recorded">نموذج مراجعة الحقوق مكتمل</option>
-          <option value="yt_all">كل مرفوعات YouTube</option>
-          <option value="yt_unchecked">YouTube: غير مفحوص</option>
-          <option value="yt_processing">YouTube: قيد المعالجة</option>
-          <option value="yt_ready">YouTube: اكتملت المعالجة</option>
+          <option value="rights_pending">لا يوجد إقرار حقوق محلي</option>
+          <option value="rights_recorded">إقرار محلي محفوظ (غير متحقق)</option>
         </select>
 
         <select
@@ -268,7 +264,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                   {job.status === 'running' && (
                     <div className="mt-2.5">
                       <div className="flex justify-between text-[11px] text-[#aab8ca] mb-1">
-                        <span>المرحلة {job.stage}/6: {job.stage_text}</span>
+                        <span>محاكاة الواجهة · المرحلة {job.stage}/6: {job.stage_text}</span>
                         <span className="font-mono">{job.progress}%</span>
                       </div>
                       <div className="w-full h-2 rounded-full bg-[#0a0e13] overflow-hidden border border-[#222e3d]">
@@ -286,16 +282,16 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                     <span>المقاس: <b className="text-[#cfdcec]">{job.out_size}</b></span>
                     <span>الجودة: <b className="text-[#cfdcec]">{job.quality}</b></span>
                     <span>المدة: <b className="text-[#cfdcec]">{job.duration} ثانية</b></span>
-                    <span>زمن المعالجة: <b className="text-[#cfdcec]">{job.elapsed_s}s</b> ({job.speed_x}×)</span>
-                    <span>FPS: <b className="text-[#cfdcec]">{job.fps}</b></span>
+                    <span>زمن المحاكاة: <b className="text-[#cfdcec]">{job.elapsed_s}s</b> ({job.speed_x}×)</span>
+                    <span>FPS نموذجي: <b className="text-[#cfdcec]">{job.fps}</b></span>
                   </div>
 
                   {/* Rights and YouTube status */}
                   <div className="flex items-center gap-2 flex-wrap text-xs mt-2.5">
                     {job.rights_status === 'recorded' ? (
-                      <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-[#15312f] border border-[#235e58] text-[#9fe8c4]">
-                        <ShieldCheck className="w-3 h-3 text-[#25d07a]" />
-                        <span>نموذج الحقوق مكتمل</span>
+                      <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-[#282114] border border-[#664c30] text-[#e5c99a]">
+                        <ShieldCheck className="w-3 h-3 text-[#f0b429]" />
+                        <span>إقرار محلي محفوظ — غير متحقق</span>
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-[#2c1a1b] border border-[#5c2428] text-[#ff9aa2]">
@@ -304,19 +300,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                       </span>
                     )}
 
-                    {job.youtube_status === 'ready' && (
-                      <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-[#1b2636] border border-[#284c78] text-[#8fb8ff]">
-                        <Tv className="w-3 h-3 text-[#3b82f6]" />
-                        <span>يوتيوب: تم الرفع ({job.youtube_video_id})</span>
-                      </span>
-                    )}
 
-                    {job.telegram_published && (
-                      <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-[#15312f] border border-[#235e58] text-[#9fe8c4]">
-                        <Share2 className="w-3 h-3 text-[#25d07a]" />
-                        <span>نُشر على تيليجرام</span>
-                      </span>
-                    )}
                   </div>
 
                   {/* Commentary snippet */}
@@ -343,7 +327,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#26313f] hover:bg-[#324154] text-[#cfdcec] border border-[#2c3a4d] transition"
                   >
                     <ShieldCheck className="w-3.5 h-3.5 text-[#36d1dc]" />
-                    <span>مراجعة الحقوق</span>
+                    <span>نموذج حقوق تجريبي</span>
                   </button>
 
                   <button
@@ -351,7 +335,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#26313f] hover:bg-[#324154] text-[#cfdcec] border border-[#2c3a4d] transition"
                   >
                     <Tv className="w-3.5 h-3.5 text-[#e63946]" />
-                    <span>نشر يوتيوب</span>
+                    <span>نموذج YouTube محلي</span>
                   </button>
 
                   <button
@@ -359,7 +343,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#26313f] hover:bg-[#324154] text-[#cfdcec] border border-[#2c3a4d] transition"
                   >
                     <Share2 className="w-3.5 h-3.5 text-[#25d07a]" />
-                    <span>تيليجرام</span>
+                    <span>Telegram غير متصل</span>
                   </button>
 
                   <button
@@ -391,7 +375,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
                 {expandedLogJobId === job.id && (
                   <div className="mt-3 p-3 bg-[#080c11] border border-[#222e3d] rounded-xl text-xs font-mono">
                     <div className="font-bold text-[#36d1dc] mb-1.5">
-                      سجل التدقيق المشفر (outputs/audit/events.jsonl):
+                      سجل واجهة محلي غير موثّق — لا يطابق سجل الخادم:
                     </div>
                     {job.audit_log && job.audit_log.length > 0 ? (
                       <div className="space-y-1">
@@ -407,7 +391,7 @@ export const JobsTab: React.FC<JobsTabProps> = ({
 
                     {job.quality_report && (
                       <div className="mt-2 pt-2 border-t border-[#222e3d] text-[11px] text-[#8ea0b5]">
-                        <span className="text-white font-bold">تقرير الجودة (v1.65):</span> كشف الكرة: {job.quality_report.ball_detections} إطار (ثقة {Math.round(job.quality_report.ball_confidence_avg * 100)}%) · الكودك: {job.quality_report.encoder} · سلاسة الكاميرا: {Math.round(job.quality_report.camera_smoothness * 100)}%
+                        <span className="text-white font-bold">حقول واجهة نموذجية:</span> لا تمثل كشفاً أو ترميزاً أو قياس جودة فعلياً.
                       </div>
                     )}
                   </div>

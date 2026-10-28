@@ -40,7 +40,7 @@ export function App() {
     }, 4000);
   };
 
-  // Background processor for running jobs (simulates the 6-stage rendering pipeline with NVENC resilience)
+  // Local progress simulation for the interface prototype only.
   useEffect(() => {
     const interval = setInterval(() => {
       setJobs(prevJobs => {
@@ -57,30 +57,30 @@ export function App() {
                 ...job,
                 status: 'done' as const,
                 stage: 6,
-                stage_text: 'اكتملت المعالجة بنجاح',
+                stage_text: 'اكتملت محاكاة بطاقة المهمة — لا يوجد رندر فعلي',
                 progress: 100,
                 elapsed_s: Number((job.elapsed_s + 2.5).toFixed(1)),
                 audit_log: [
                   ...job.audit_log,
                   {
                     time: new Date().toLocaleTimeString('ar-EG'),
-                    event: 'render_complete',
-                    detail: 'تم التصدير بنجاح عبر مشفر NVENC H.264 بمعدل 1080x1920 وبدون أخطاء',
+                    event: 'demo_render_complete',
+                    detail: 'اكتملت محاكاة الواجهة فقط؛ لم يعمل محرك Python أو YOLO أو NVENC.',
                   },
                 ],
               };
             } else if (nextProgress > 80) {
               nextStage = 6;
-              nextStageText = 'الرندر والترميز (NVENC H.264)';
+              nextStageText = 'محاكاة واجهة: مرحلة التصدير';
             } else if (nextProgress > 60) {
               nextStage = 5;
-              nextStageText = 'التتبّع والكاميرا العمودية';
+              nextStageText = 'محاكاة واجهة: تتبّع الكاميرا';
             } else if (nextProgress > 40) {
               nextStage = 4;
-              nextStageText = 'كشف اللاعبين والمساحات';
+              nextStageText = 'محاكاة واجهة: تحليل الحركة';
             } else if (nextProgress > 20) {
               nextStage = 3;
-              nextStageText = 'كشف الكرة (YOLO11n-q16)';
+              nextStageText = 'محاكاة واجهة: رصد الكرة';
             }
 
             return {
@@ -129,8 +129,10 @@ export function App() {
       show_channel_name: jobData.show_channel_name ?? true,
       brand_y: jobData.brand_y ?? 13,
       brand_scale: jobData.brand_scale ?? 100,
-      rights_status: jobData.rights_status || 'pending',
-      youtube_status: jobData.youtube_status || 'none',
+      rights_status: 'pending',
+      youtube_status: 'none',
+      youtube_video_id: undefined,
+      telegram_published: false,
       output_url: jobData.output_url || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
       thumbnail_url: jobData.thumbnail_url || 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
       commentary_text: jobData.commentary_text,
@@ -202,27 +204,7 @@ export function App() {
   };
 
   const handlePublishTelegram = (job: Job) => {
-    const updated = jobs.map(j => {
-      if (j.id === job.id) {
-        return {
-          ...j,
-          telegram_published: true,
-          audit_log: [
-            ...j.audit_log,
-            {
-              time: new Date().toLocaleTimeString('ar-EG'),
-              event: 'published_telegram',
-              detail: `نُشر بنجاح على القناة الرسمية ${settings.telegram_chat || '@elhadath_reels'}`,
-            },
-          ],
-        };
-      }
-      return j;
-    });
-    setJobs(updated);
-    storage.saveJobs(updated);
-    showToast(`تم نشر «${job.title}» على تيليجرام بنجاح 📤`, 'ok');
-    confetti({ particleCount: 40, spread: 50 });
+    showToast('النشر غير متصل في نموذج الويب؛ لم يتم إرسال أي فيديو إلى Telegram.', 'err');
   };
 
   const handleSuggestTitle = (job: Job) => {
@@ -236,7 +218,7 @@ export function App() {
     const updated = jobs.map(j => (j.id === job.id ? { ...j, title: picked } : j));
     setJobs(updated);
     storage.saveJobs(updated);
-    showToast(`تم تحديث العنوان الذكي: ${picked}`, 'ok');
+    showToast(`اقتراح عنوان محلي تجريبي: ${picked}`, 'ok');
   };
 
   const handleRetryFailed = () => {
@@ -253,7 +235,7 @@ export function App() {
     );
     setJobs(updated);
     storage.saveJobs(updated);
-    showToast('تمت إعادة إدراج المهام الفاشلة في طابور المعالجة', 'ok');
+    showToast('أُعيدت حالة البطاقة التجريبية فقط؛ لم تبدأ معالجة فعلية.', 'ok');
   };
 
   const handleClearFinished = () => {
@@ -276,7 +258,7 @@ export function App() {
       duration: Math.min(58, doneJobs.reduce((acc, curr) => acc + curr.duration, 0)),
       status: 'running',
       stage: 1,
-      stage_text: 'دمج المقاطع ومطابقة الموسيقى',
+      stage_text: 'محاكاة واجهة: بطاقة تجميع محلية فقط',
       progress: 20,
       out_size: '1080x1920',
       quality: 'ultra',
@@ -287,7 +269,7 @@ export function App() {
       show_channel_name: true,
       brand_y: 13,
       brand_scale: 100,
-      rights_status: 'recorded',
+      rights_status: 'pending',
       youtube_status: 'none',
       output_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4',
       thumbnail_url: doneJobs[0]?.thumbnail_url,
@@ -295,14 +277,14 @@ export function App() {
       audit_log: [
         {
           time: new Date().toLocaleTimeString('ar-EG'),
-          event: 'montage_created',
-          detail: `تم دمج ${doneJobs.length} مقاطع في ريل موحد`,
+          event: 'demo_montage_created',
+          detail: `بطاقة تجميع تجريبية لـ ${doneJobs.length} مهام؛ لم يُرندر ملف فيديو.`,
         },
       ],
     };
 
     handleCreateJob(montageJob);
-    showToast('تم بدء تجميع ريل الترتيب (أفضل 3 أهداف)! 🏆', 'ok');
+    showToast('أُنشئت بطاقة تجميع تجريبية؛ لم تُدمج مقاطع أو يُرندر فيديو.', 'ok');
     confetti({ particleCount: 60, spread: 70 });
   };
 
@@ -329,14 +311,18 @@ export function App() {
         return {
           ...j,
           rights_status: 'recorded' as const,
-          youtube_status: 'ready' as const,
-          youtube_video_id: 'yt_' + Math.random().toString(36).substring(2, 8),
+          rights_declaration: {
+            ...rightsData,
+            recorded_at: new Date().toISOString(),
+          },
+          youtube_status: 'unchecked' as const,
+          youtube_video_id: undefined,
           audit_log: [
             ...j.audit_log,
             {
               time: new Date().toLocaleTimeString('ar-EG'),
-              event: 'rights_gate_approved',
-              detail: `تم توثيق الحقوق (${rightsData.scope}) - المرجع: ${rightsData.sourceRef} (synthetic: ${rightsData.containsSyntheticMedia})`,
+              event: 'rights_declaration_saved_local',
+              detail: 'إقرار محلي تجريبي؛ لم يتم التحقق من الحقوق أو رفع الفيديو.',
             },
           ],
         };
@@ -349,46 +335,48 @@ export function App() {
 
   const handleConvertPostToReel = (post: ChannelPost) => {
     setActiveTab('new');
-    showToast(`تم نقل المقطع «${post.title}» إلى نموذج الريل الجديد`, 'ok');
+    showToast(`«${post.title}» منشور نموذجي؛ لم يُجلب فيديو أو يُنشأ ريل فعلي.`, 'ok');
   };
 
   const handleExportDiagnostics = () => {
     const report = {
-      app: 'elhadath-reels',
+      report_type: 'prototype_state',
+      app: 'Elhadath Reels web prototype',
       version: '1.66.0',
       timestamp: new Date().toISOString(),
-      platform: 'React / Vite / Tailwind v4 / Node 22',
-      hardware: {
-        detector: 'YOLO11n (quantize=16)',
-        encoder: 'NVENC H.264 (Hardware) with automatic libx264 CPU failover',
-        cuda: 'Available & Cached cleared pre-encode',
-      },
+      runtime: 'Browser-only React/Vite prototype; not connected to the Python renderer.',
+      integrations: { gemini: 'per-request consent only', telegram: false, youtube: false },
+      capabilities: { rendering: false, rights_validation: false, publishing: false },
+      sample_data: true,
       jobs_count: jobs.length,
-      settings: {
+      preferences: {
         brand_name: settings.brand_name,
         show_channel_name: settings.show_channel_name,
-        youtube_privacy: settings.youtube_privacy,
-        device: settings.device,
+        youtube_privacy_preference: settings.youtube_privacy,
+        device_preference: settings.device,
       },
-      audit_events_count: jobs.reduce((acc, j) => acc + (j.audit_log?.length || 0), 0),
+      local_events_count: jobs.reduce((acc, j) => acc + (j.audit_log?.length || 0), 0),
     };
 
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `elhadath_diagnostics_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `elhadath_prototype_state_${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast('تم تحميل تقرير تشخيص النظام بنجاح', 'ok');
+    showToast('تم تنزيل بيانات النموذج المحلي؛ لا تتضمن تشخيصاً حقيقياً للجهاز.', 'ok');
   };
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top Header */}
-      <Header settings={settings} jobs={jobs} onExportDiagnostics={handleExportDiagnostics} />
+      <Header onExportDiagnostics={handleExportDiagnostics} />
+      <div role="status" className="mx-6 mt-4 rounded-xl border border-[#664c30] bg-[#282114] px-4 py-3 text-xs leading-relaxed text-[#e5c99a]">
+        <b>نموذج واجهة فقط:</b> المهام والمؤشرات تجريبية. يمكن إنشاء معاينة Canvas محلية، لكن محرك Python وYOLO، والتحقق الخادمي من الحقوق، ورفع YouTube/Telegram غير متصلين.
+      </div>
 
       {/* Main Navigation Bar */}
       <nav className="sticky top-[69px] z-30 flex items-center gap-1.5 px-6 border-b border-[#222e3d] bg-[#0f151c]/70 backdrop-blur-md overflow-x-auto">

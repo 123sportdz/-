@@ -25,6 +25,15 @@ export interface Job {
   brand_y: number;
   brand_scale: number;
   rights_status: 'pending' | 'recorded';
+  rights_declaration?: {
+    visualRights: boolean;
+    audioRights: boolean;
+    sourceRef: string;
+    evidence: string;
+    scope: 'private' | 'unlisted' | 'public';
+    containsSyntheticMedia: boolean;
+    recorded_at: string;
+  };
   youtube_status: 'none' | 'unchecked' | 'processing' | 'ready' | 'attention';
   youtube_video_id?: string;
   telegram_published?: boolean;
@@ -53,14 +62,8 @@ export interface ScoutCandidate {
   dur: number;
   start: number;
   end: number;
-  peak_t: number;
-  score: number;
-  reasons: string[];
-  stats: {
-    coverage: number;
-    danger: number;
-    speed_p95: number;
-  };
+  sample_t: number;
+  source_duration: number;
   thumb: string;
 }
 

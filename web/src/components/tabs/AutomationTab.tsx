@@ -15,19 +15,23 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
 }) => {
   const [local, setLocal] = useState<AutomationSettings>(automation);
 
-  const handleToggle = (start: boolean) => {
+  const handleSavePreferences = () => {
     const updated = {
       ...local,
-      enabled: start,
+      enabled: false,
+      upload: 'none' as const,
       metrics: {
         ...local.metrics,
-        statusText: start ? 'المصنع التلقائي يعمل ويراقب المقاطع...' : 'المصنع التلقائي متوقف',
-        lastRun: start ? 'الآن' : local.metrics.lastRun,
+        statusText: 'غير متصل — تفضيلات الأتمتة نموذجية فقط',
+        lastRun: 'غير متاح في النموذج',
+        jobsProcessed: 0,
+        runsTotal: 0,
+        errors: 0,
       },
     };
     setLocal(updated);
-    onSaveAutomation(updated, start);
-    onToast(start ? 'تم تشغيل المصنع التلقائي بنجاح ▶️' : 'تم إيقاف المصنع التلقائي ⏹', 'ok');
+    onSaveAutomation(updated, false);
+    onToast('حُفظت التفضيلات محلياً فقط؛ لم يبدأ مراقب ولم يُرسل أي فيديو.', 'ok');
   };
 
   return (
@@ -47,7 +51,7 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
         </div>
 
         <p className="text-xs text-[#8ea0b5] mb-4 leading-relaxed">
-          يراقب القناة أو المجلد تلقائياً، يكتشف المقاطع الرياضية الجديدة لمرة واحدة فقط، ينزل الفيديو، ويضعه في طابور المعالجة العمودية، مع الحفاظ الكامل على حقوق البث.
+          هذه الشاشة تحفظ تفضيلات العرض فقط. لا تراقب قناة أو مجلداً، ولا تنزّل مقاطع أو تشغّل الرندر أو النشر.
         </p>
 
         {/* Inputs */}
@@ -165,45 +169,18 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="block text-[#8ea0b5] font-semibold mb-1">النشر بعد اكتمال المعالجة</label>
-            <select
-              value={local.upload}
-              onChange={e => setLocal({ ...local, upload: e.target.value as any })}
-              className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg p-2 text-white font-medium"
-            >
-              <option value="none">لا تنشر — اتركه في النتائج (الخيار الآمن)</option>
-              <option value="telegram">تيليجرام فقط</option>
-              <option value="youtube">يوتيوب فقط</option>
-              <option value="both">تيليجرام + يوتيوب</option>
-            </select>
+          <div className="rounded-lg border border-[#664c30] bg-[#282114] p-3 text-[11px] leading-relaxed text-[#e5c99a]">
+            النشر غير متاح في النموذج؛ لن يُرسل أي فيديو إلى YouTube أو Telegram.
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-5">
+        <div className="mt-5">
           <button
-            onClick={() => handleToggle(true)}
-            className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#25d07a] to-[#1d5c3e] hover:brightness-110 shadow-lg shadow-[#25d07a]/20 transition"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>▶️ حفظ وتشغيل</span>
-          </button>
-
-          <button
-            onClick={() => handleToggle(false)}
+            onClick={handleSavePreferences}
             className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-[#26313f] hover:bg-[#324154] text-[#cfdcec] border border-[#2c3a4d] transition"
           >
-            <Square className="w-3.5 h-3.5 fill-current" />
-            <span>⏹ حفظ وإيقاف</span>
-          </button>
-
-          <button
-            onClick={() => onToast('تم تحديث حالة الأتمتة', 'ok')}
-            className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-[#182231] hover:bg-[#222e3d] text-[#36d1dc] border border-[#2c3a4d] transition"
-          >
             <RefreshCw className="w-3.5 h-3.5" />
-            <span>🔄 تحديث الحالة</span>
+            <span>حفظ التفضيلات المحلية فقط</span>
           </button>
         </div>
       </div>
@@ -213,28 +190,28 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
         <div className="bg-[#131a23] border border-[#222e3d] rounded-2xl p-5 shadow-xl">
           <h2 className="text-sm font-bold text-[#cfdcec] flex items-center gap-2 mb-3">
             <Activity className="w-4 h-4 text-[#36d1dc]" />
-            <span>إحصاءات التشغيل التلقائي</span>
+            <span>معلومات نموذجية — لا توجد إحصاءات تشغيل فعلية</span>
           </h2>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div className="p-3 rounded-xl bg-[#080d13]/60 border border-[#222e3d]">
-              <span className="text-[#8ea0b5] block mb-1">آخر فحص دوري</span>
-              <b className="text-white text-sm">{local.metrics.lastRun}</b>
+              <span className="text-[#8ea0b5] block mb-1">آخر فحص</span>
+              <b className="text-white text-sm">غير متاح في النموذج</b>
             </div>
 
             <div className="p-3 rounded-xl bg-[#080d13]/60 border border-[#222e3d]">
               <span className="text-[#8ea0b5] block mb-1">المهام المعالجة</span>
-              <b className="text-[#25d07a] text-sm">{local.metrics.jobsProcessed} مهمة</b>
+              <b className="text-[#25d07a] text-sm">غير متاح</b>
             </div>
 
             <div className="p-3 rounded-xl bg-[#080d13]/60 border border-[#222e3d]">
               <span className="text-[#8ea0b5] block mb-1">الدورات المكتملة</span>
-              <b className="text-[#3b82f6] text-sm">{local.metrics.runsTotal} دورة</b>
+              <b className="text-[#3b82f6] text-sm">غير متاح</b>
             </div>
 
             <div className="p-3 rounded-xl bg-[#080d13]/60 border border-[#222e3d]">
               <span className="text-[#8ea0b5] block mb-1">أخطاء التنزيل/الحقوق</span>
-              <b className="text-[#ff9aa2] text-sm">{local.metrics.errors}</b>
+              <b className="text-[#ff9aa2] text-sm">غير متاح</b>
             </div>
           </div>
         </div>
@@ -248,23 +225,23 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
 
           <div className="space-y-2.5 text-xs">
             <div className="flex justify-between items-center p-2.5 rounded-lg bg-[#0c1219] border border-[#222e3d]">
-              <span className="text-[#8ea0b5]">محرّك الذكاء الاصطناعي (YOLO):</span>
-              <span className="text-[#25d07a] font-bold">YOLO11n (quantize=16)</span>
+              <span className="text-[#8ea0b5]">محرّك الفيديو/التتبّع:</span>
+              <span className="text-[#e5c99a] font-bold">غير متصل بالنموذج</span>
             </div>
 
             <div className="flex justify-between items-center p-2.5 rounded-lg bg-[#0c1219] border border-[#222e3d]">
-              <span className="text-[#8ea0b5]">ترميز الفيديو السريع:</span>
-              <span className="text-[#36d1dc] font-bold">NVENC H.264 + libx264 Fallback</span>
+              <span className="text-[#8ea0b5]">ترميز الفيديو:</span>
+              <span className="text-[#e5c99a] font-bold">غير متاح في النموذج</span>
             </div>
 
             <div className="flex justify-between items-center p-2.5 rounded-lg bg-[#0c1219] border border-[#222e3d]">
-              <span className="text-[#8ea0b5]">نظام التشغيل والذاكرة:</span>
-              <span className="text-white font-mono">Linux 64-bit / 3072 MB Node</span>
+              <span className="text-[#8ea0b5]">العتاد:</span>
+              <span className="text-white font-mono">غير مفحوص من المتصفح</span>
             </div>
 
             <div className="flex justify-between items-center p-2.5 rounded-lg bg-[#0c1219] border border-[#222e3d]">
-              <span className="text-[#8ea0b5]">التعافي الذاتي من انقطاع الذاكرة (v1.63):</span>
-              <span className="text-[#9fe8c4] font-bold">مفعّل (Auto-Recover)</span>
+              <span className="text-[#8ea0b5]">التعافي من أخطاء الرندر:</span>
+              <span className="text-[#e5c99a] font-bold">غير متصل بالنموذج</span>
             </div>
           </div>
         </div>

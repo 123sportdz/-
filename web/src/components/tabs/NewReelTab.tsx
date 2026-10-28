@@ -33,7 +33,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
   const [videoMeta, setVideoMeta] = useState<{ duration: number; width: number; height: number } | null>(null);
   const [isProcessingInput, setIsProcessingInput] = useState<boolean>(false);
 
-  const [srcUrl, setSrcUrl] = useState<string>('https://t.me/OffsideOffside1/2984');
+  const [srcUrl, setSrcUrl] = useState<string>('');
   const [subject, setSubject] = useState<string>('action');
   const [layout, setLayout] = useState<string>('single');
   const [tracker, setTracker] = useState<string>('auto');
@@ -58,10 +58,6 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
   const [retryHealing, setRetryHealing] = useState<boolean>(true);
   const [maxDur, setMaxDur] = useState<number>(58);
   const [genThumb, setGenThumb] = useState<boolean>(true);
-  const [rmWatermark, setRmWatermark] = useState<boolean>(false);
-  const [ballTrail, setBallTrail] = useState<boolean>(false);
-  const [autoYt, setAutoYt] = useState<boolean>(false);
-  const [autoTg, setAutoTg] = useState<boolean>(false);
   const [activeViewMode, setActiveViewMode] = useState<'standard' | 'tracker'>('standard');
 
   // Status message
@@ -144,13 +140,18 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
   };
 
   const handleStartProcessing = (isQuickCheck: boolean = false) => {
+    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined);
+    if (!videoUrlToUse) {
+      onToast(selectedFile ? 'انتظر اكتمال قراءة الفيديو أولاً.' : 'اختر ملف فيديو أو رابط ملف مباشر أولاً.', 'err');
+      return;
+    }
+
     const jobTitle = selectedFile
       ? selectedFile.name.replace(/\.[^/.]+$/, '')
       : srcUrl
       ? `ريل ${new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}`
       : 'ريل جديد';
 
-    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined) || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
     const thumbToUse = extractedThumb || 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80';
     const durToUse = isQuickCheck ? 6 : (videoMeta?.duration ? Math.min(videoMeta.duration, maxDur) : maxDur);
 
@@ -173,7 +174,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
       brand_y: brandY,
       brand_scale: brandScale,
       rights_status: 'pending',
-      youtube_status: autoYt ? 'processing' : 'none',
+      youtube_status: 'none',
       telegram_published: false,
       output_url: videoUrlToUse,
       thumbnail_url: thumbToUse,
@@ -181,14 +182,14 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
       audit_log: [
         {
           time: new Date().toLocaleTimeString('ar-EG'),
-          event: 'job_created',
-          detail: `بدء المعالجة (${isQuickCheck ? 'معاينة سريعة 6 ثوان' : 'كاملة'}) لمقطع ${selectedFile ? 'محلي حقيقي' : 'عن بعد'}`,
+          event: 'demo_job_created',
+          detail: 'بطاقة مهمة تجريبية محلية؛ لم يبدأ محرك الرندر.',
         },
       ],
     };
 
     onCreateJob(newJob);
-    onToast(isQuickCheck ? 'بدأت المعاينة السريعة (6 ثوانٍ)!' : 'تمت إضافة المهمة إلى طابور المعالجة!', 'ok');
+    onToast('أُنشئت بطاقة مهمة تجريبية في المتصفح؛ لم تتم معالجة الفيديو.', 'ok');
     confetti({ particleCount: 50, spread: 60, origin: { y: 0.8 } });
   };
 
@@ -199,7 +200,11 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
   };
 
   const handlePreviewScoutCandidate = (candidate: ScoutCandidate, start: number, end: number) => {
-    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined) || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined);
+    if (!videoUrlToUse) {
+      onToast('اختر ملف فيديو أو رابط ملف مباشر قبل المعاينة.', 'err');
+      return;
+    }
     const tempJob: Job = {
       id: 'preview-' + candidate.id,
       title: `معاينة لقطة ${candidate.index + 1} (${candidate.dur}s)`,
@@ -226,16 +231,20 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
       youtube_status: 'none',
       output_url: videoUrlToUse,
       thumbnail_url: candidate.thumb || extractedThumb || undefined,
-      commentary_text: `ذروة الإثارة: ${candidate.reasons.join(' · ')}`,
+      commentary_text: `عينة إطار عند ${candidate.sample_t.toFixed(1)} ثانية؛ لم يُحلّل الحدث الرياضي.`,
       audit_log: [],
     };
     onPreviewVideo(tempJob);
   };
 
   const handleBatchScout = (items: Array<{ candidate: ScoutCandidate; start: number; end: number }>) => {
-    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined) || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+    const videoUrlToUse = extractedVideoUrl || (srcUrl.trim().startsWith('http') ? srcUrl.trim() : undefined);
+    if (!videoUrlToUse) {
+      onToast('لا يوجد فيديو صالح لدفعة المعاينة.', 'err');
+      return;
+    }
     const newJobs: Array<Partial<Job>> = items.map((item, idx) => ({
-      title: `ريل لقطة ${item.candidate.index + 1} · ${item.candidate.reasons[0] || 'هدف'}`,
+      title: `عينة إطار ${item.candidate.index + 1} · ${item.candidate.sample_t.toFixed(1)} ث`,
       filename: `scout_clip_${item.candidate.index + 1}.mp4`,
       src_url: srcUrl,
       duration: Math.round(item.end - item.start),
@@ -256,18 +265,18 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
       youtube_status: 'none',
       output_url: videoUrlToUse,
       thumbnail_url: item.candidate.thumb || extractedThumb || undefined,
-      commentary_text: voice.commentary ? voice.commentary_script || item.candidate.reasons.join(' ') : undefined,
+      commentary_text: voice.commentary ? voice.commentary_script || `عينة إطار عند ${item.candidate.sample_t.toFixed(1)} ثانية.` : undefined,
       audit_log: [
         {
           time: new Date().toLocaleTimeString('ar-EG'),
-          event: 'scout_batch_enqueued',
-          detail: `اقتطاع من ${item.start.toFixed(1)}s إلى ${item.end.toFixed(1)}s`,
+          event: 'demo_scout_batch_created',
+          detail: `بطاقة قص تجريبية من ${item.start.toFixed(1)}s إلى ${item.end.toFixed(1)}s؛ لا يوجد رندر فعلي.`,
         },
       ],
     }));
 
     onBatchCreateJobs(newJobs);
-    onToast(`تم إدراج ${items.length} مهام ريل من راصد اللقطات!`, 'ok');
+    onToast(`أُنشئت ${items.length} بطاقة قص تجريبية؛ لم يُرندر فيديو.`, 'ok');
     confetti({ particleCount: 70, spread: 80, origin: { y: 0.7 } });
   };
 
@@ -297,9 +306,9 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
             }`}
           >
             <Target className="w-4 h-4 text-[#e63946]" />
-            <span>🎯 استوديو تتبّع اللقطات والكاميرا الذكية (Pro Shot Tracker)</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#e63946] text-white font-mono">
-              YOLO11n-q16
+            <span>🎯 معاينة القص والحركة</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#282114] text-[#e5c99a]">
+              توضيحية فقط
             </span>
           </button>
         </div>
@@ -308,8 +317,8 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
           <span className="w-2 h-2 rounded-full bg-[#25d07a] animate-pulse" />
           <span>
             {activeViewMode === 'tracker'
-              ? 'مراقبة مسار الكرة، السرعة (km/h)، إطار 9:16 الديناميكي ولوحة النتيجة'
-              : 'التحكم في خيارات المقاس والشعار واستوديو صوت المعلق الرياضي'}
+              ? 'إطار 9:16 ورسوم توضيحية؛ لا يوجد كشف فعلي للكرة أو اللاعبين'
+              : 'تفضيلات نموذجية؛ معالجة الفيديو الفعلية غير متصلة'}
           </span>
         </div>
       </div>
@@ -351,7 +360,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
         >
           <Upload className="w-8 h-8 text-[#8ea0b5] mx-auto mb-2" />
           <b className="block text-sm text-[#e8eef6]">اسحب المقطع هنا أو اضغط للاختيار</b>
-          <span className="text-xs text-[#8ea0b5]">MP4 / MOV / MKV / WebM — معالجة واستخراج إطارات حقيقية</span>
+          <span className="text-xs text-[#8ea0b5]">MP4 / MOV / MKV / WebM — قراءة محلية للمدة والأبعاد وإطار معاينة؛ لا يوجد رندر خادمي</span>
           <input
             type="file"
             id="reel_file_input"
@@ -363,7 +372,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
           {isProcessingInput && (
             <div className="mt-3 py-2 px-3 bg-[#182330] rounded-lg text-xs text-[#36d1dc] flex items-center justify-center gap-2">
               <span className="w-3.5 h-3.5 border-2 border-[#36d1dc] border-t-transparent rounded-full animate-spin" />
-              <span>جارٍ فحص كودك الفيديو واستخراج الإطارات والأبعاد...</span>
+              <span>جارٍ قراءة مدة الفيديو وأبعاده وإنشاء إطار معاينة محلي...</span>
             </div>
           )}
 
@@ -395,13 +404,13 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
 
         {/* URL Input */}
         <div className="mt-4">
-          <label className="block text-xs font-semibold text-[#8ea0b5] mb-1">أو رابط فيديو مباشر / تيليجرام</label>
+          <label className="block text-xs font-semibold text-[#8ea0b5] mb-1">رابط ملف فيديو مباشر (MP4 / WebM فقط؛ لا يوجد جلب من Telegram)</label>
           <div className="relative">
             <input
               type="text"
               value={srcUrl}
               onChange={e => setSrcUrl(e.target.value)}
-              placeholder="https://t.me/OffsideOffside1/2984 أو رابط مباشر"
+              placeholder="https://example.com/video.mp4"
               className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg p-2.5 text-xs text-white placeholder:text-[#6f8291]"
             />
             <Link2 className="w-4 h-4 text-[#8ea0b5] absolute left-3 top-3 pointer-events-none" />
@@ -411,7 +420,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
         {/* Primary Settings Grid */}
         <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
           <div>
-            <label className="block text-[#8ea0b5] font-semibold mb-1">الكاميرا تتبع</label>
+            <label className="block text-[#8ea0b5] font-semibold mb-1">تفضيل موضوع القص (غير متصل)</label>
             <select
               value={subject}
               onChange={e => setSubject(e.target.value)}
@@ -442,9 +451,9 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
               onChange={e => setTracker(e.target.value)}
               className="w-full bg-[#0c1219] border border-[#2c3a4d] rounded-lg p-2 text-white"
             >
-              <option value="auto">🎯 تلقائي (احترافي إن أمكن)</option>
-              <option value="pro">🏆 احترافي (2D + RTS + جسر القالب)</option>
-              <option value="classic">كلاسيكي</option>
+              <option value="auto">تلقائي (تفضيل فقط)</option>
+              <option value="pro">احترافي (غير متصل)</option>
+              <option value="classic">كلاسيكي (غير متصل)</option>
             </select>
           </div>
 
@@ -601,7 +610,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input type="checkbox" checked={bridge} onChange={e => setBridge(e.target.checked)} className="rounded" />
-            <span>🧩 جسر القالب البصري (يملأ فجوات الكشف)</span>
+            <span>تفضيل جسر القالب (غير متصل)</span>
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input type="checkbox" checked={replay} onChange={e => setReplay(e.target.checked)} className="rounded" />
@@ -617,7 +626,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
           </label>
           <label className="flex items-center gap-2 text-[#cfdcec] cursor-pointer">
             <input type="checkbox" checked={retryHealing} onChange={e => setRetryHealing(e.target.checked)} className="rounded" />
-            <span>🩺 شفاء ذاتي (إعادة الكشف لو ضعف)</span>
+            <span>تفضيل إعادة المحاولة (غير متصل)</span>
           </label>
         </div>
 
@@ -628,7 +637,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
             className="px-3.5 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#2f6fe0] to-[#1e4ba8] hover:brightness-110 transition flex items-center justify-center gap-1.5 shadow"
           >
             <Play className="w-3.5 h-3.5" />
-            <span>🎬 معاينة (6s)</span>
+            <span>إنشاء بطاقة معاينة 6s</span>
           </button>
 
           <button
@@ -636,7 +645,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
             className="px-3.5 py-2.5 rounded-xl text-xs font-black text-white bg-gradient-to-r from-[#e63946] to-[#b3212c] hover:brightness-110 transition flex items-center justify-center gap-1.5 shadow-lg shadow-[#e63946]/30"
           >
             <Zap className="w-4 h-4" />
-            <span>🚀 ابدأ المعالجة</span>
+            <span>إنشاء بطاقة مهمة تجريبية</span>
           </button>
 
           <button
@@ -648,7 +657,7 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
             }`}
           >
             <Target className="w-4 h-4" />
-            <span>🎯 فحص التتبّع</span>
+            <span>معاينة حركة توضيحية</span>
           </button>
 
           <button
@@ -659,10 +668,8 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
                 dur: 15,
                 start: 0,
                 end: 15,
-                peak_t: 7.5,
-                score: 95,
-                reasons: ['معاينة صورة وشعار'],
-                stats: { coverage: 0.95, danger: 0.9, speed_p95: 1200 },
+                sample_t: 7.5,
+                source_duration: 15,
                 thumb: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=720&auto=format&fit=crop&q=80',
               }, 0, 6);
             }}
@@ -713,48 +720,17 @@ export const NewReelTab: React.FC<NewReelTabProps> = ({
 
           {/* Source marks & ball trail */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pb-3 border-b border-[#222e3d]">
-            <label className="flex items-center gap-2 text-[#8ea0b5] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={rmWatermark}
-                onChange={e => setRmWatermark(e.target.checked)}
-                className="rounded"
-              />
-              <span>إزالة علامات المصدر (فقط بإذن المالك)</span>
-            </label>
+            <div className="rounded-lg border border-[#222e3d] bg-[#0c1219] px-3 py-2 text-[#8ea0b5]">
+              علامات البث المصدرية محفوظة؛ لا تتوفر إزالة العلامات في نموذج الويب.
+            </div>
 
-            <label className="flex items-center gap-2 text-[#8ea0b5] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={ballTrail}
-                onChange={e => setBallTrail(e.target.checked)}
-                className="rounded"
-              />
-              <span>إظهار مسار الكرة (حلقة تتبّع ديناميكية)</span>
-            </label>
+            <div className="rounded-lg border border-[#664c30] bg-[#282114] px-3 py-2 text-[#e5c99a]">
+              مسار الكرة غير متصل بمحرك الكشف في هذا النموذج.
+            </div>
           </div>
 
-          {/* Auto upload toggles */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs mt-3">
-            <label className="flex items-center gap-2 text-[#cfdcec] font-medium cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoYt}
-                onChange={e => setAutoYt(e.target.checked)}
-                className="rounded"
-              />
-              <span>🚀 رفع تلقائي لليوتيوب (YouTube Shorts)</span>
-            </label>
-
-            <label className="flex items-center gap-2 text-[#cfdcec] font-medium cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoTg}
-                onChange={e => setAutoTg(e.target.checked)}
-                className="rounded"
-              />
-              <span>📤 نشر تلقائي على تيليجرام</span>
-            </label>
+          <div className="mt-3 rounded-xl border border-[#664c30] bg-[#282114] p-3 text-[11px] leading-relaxed text-[#e5c99a]">
+            الرفع التلقائي غير متاح في هذا النموذج. لن يُرسل الملف إلى YouTube أو Telegram.
           </div>
 
           {/* Voice Studio Panel */}

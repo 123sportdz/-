@@ -86,7 +86,8 @@ export const geminiService = {
     audience: string;
     instructions: string;
     jobTitle?: string;
-  }): Promise<{ text: string; title: string }> {
+    allowExternalText: boolean;
+  }): Promise<{ text: string; title: string; source: 'gemini' | 'local' | 'local_fallback' }> {
     const settings = storage.getSettings();
     const apiKey = String(settings.gemini_api_key || '').trim();
     const model = settings.gemini_model || 'gemini-2.5-flash';
@@ -94,7 +95,7 @@ export const geminiService = {
     const wordCap = params.mode === 'script' ? SCRIPT_WORD_LIMITS[params.length] || 22 : undefined;
 
     // If API key is available, call Gemini API
-    if (apiKey) {
+    if (apiKey && params.allowExternalText) {
       try {
         const { GoogleGenAI } = await import('@google/genai');
         const ai = new GoogleGenAI({ apiKey });
@@ -126,14 +127,13 @@ ${params.instructions ? `توجيه إضافي: ${params.instructions}` : ''}
 
         const draftTitle = params.topic ? `${CONTENT_MODES[params.mode]?.label || 'نص'} — ${params.topic.slice(0, 40)}` : `مسودة ريل ${new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}`;
 
-        return { text: generated, title: draftTitle };
-      } catch (err) {
-        console.warn('Gemini call failed or rate limited, falling back to smart sports template generator', err);
+        return { text: generated, title: draftTitle, source: 'gemini' };
+      } catch {
+        return { ...this.generateSmartFallback(params, wordCap), source: 'local_fallback' };
       }
     }
 
-    // High quality offline fallback sports generator conforming to the rule
-    return this.generateSmartFallback(params, wordCap);
+    return { ...this.generateSmartFallback(params, wordCap), source: 'local' };
   },
 
   generateSmartFallback(params: {
