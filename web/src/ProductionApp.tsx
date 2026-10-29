@@ -25,6 +25,7 @@ import {
   dashboardApi,
 } from './services/dashboardApi';
 import type { ReactNode } from 'react';
+import { WorkflowGuide } from './components/WorkflowGuide';
 
 type Section = 'create' | 'jobs';
 type JobFilter = 'all' | 'active' | 'done' | 'failed';
@@ -75,6 +76,7 @@ function isActive(status: string): boolean {
 
 export function ProductionApp() {
   const [section, setSection] = useState<Section>('create');
+  const [workflowTarget, setWorkflowTarget] = useState<string | null>(null);
   const [filter, setFilter] = useState<JobFilter>('all');
   const [jobs, setJobs] = useState<DashboardJob[]>([]);
   const [queue, setQueue] = useState<DashboardQueue>(emptyQueue);
@@ -176,6 +178,12 @@ export function ProductionApp() {
       window.clearTimeout(timer);
     };
   }, [scoutSession?.id, scoutSession?.status]);
+
+  useEffect(() => {
+    if (!workflowTarget) return;
+    document.getElementById(workflowTarget)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setWorkflowTarget(null);
+  }, [section, workflowTarget]);
 
   const visibleJobs = useMemo(() => jobs.filter(job => {
     if (filter === 'active') return isActive(job.status);
@@ -397,9 +405,19 @@ export function ProductionApp() {
           <button onClick={() => void refresh()} className="mr-auto rounded-lg border border-[#2c3a4d] px-3 py-2 text-xs text-[#c9d6e5] hover:bg-[#182231]"><RefreshCw className="ml-1 inline size-3.5" /> تحديث</button>
         </div>
 
+        <WorkflowGuide
+          sourceReady={Boolean(sourceFile || sourceUrl.trim())}
+          scoutSession={scoutSession}
+          jobs={jobs}
+          onNavigate={(targetSection, targetId) => {
+            setSection(targetSection);
+            setWorkflowTarget(targetId);
+          }}
+        />
+
         {section === 'create' ? (
           <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,.9fr)]">
-            <section className="rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
+            <section id="workflow-source" className="scroll-mt-24 rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
               <div className="mb-5 flex items-start gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-[#2a1820] text-[#ff6b76]"><Upload className="size-5" /></div>
                 <div><h2 className="text-lg font-extrabold">أرسل مقطعاً إلى محرك المعالجة</h2><p className="mt-1 text-xs leading-6 text-[#8ea0b5]">الرفع إلى خادمك نفسه. لا يُرسل الفيديو إلى Gemini أو أي خدمة خارجية من هذه الصفحة.</p></div>
@@ -462,13 +480,13 @@ export function ProductionApp() {
                 </div>
               )}
               {formError && <p role="alert" className="mt-4 rounded-lg border border-[#7a1f2b] bg-[#2a1014] p-3 text-xs leading-6 text-[#ffd1d5]">{formError}</p>}
-              <button onClick={() => void startRender()} disabled={isSubmitting || uploadProgress !== null || (!sourceFile && !sourceUrl.trim())} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-[#e63946] px-4 py-3 text-sm font-black text-white transition hover:bg-[#ff4c59] disabled:cursor-not-allowed disabled:opacity-50">
+              <button id="workflow-render" onClick={() => void startRender()} disabled={isSubmitting || uploadProgress !== null || (!sourceFile && !sourceUrl.trim())} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-[#e63946] px-4 py-3 text-sm font-black text-white transition hover:bg-[#ff4c59] disabled:cursor-not-allowed disabled:opacity-50">
                 {isSubmitting || uploadProgress !== null ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
                 {uploadProgress !== null ? 'جارٍ رفع الملف…' : isSubmitting ? 'جارٍ إنشاء المهمة…' : 'ابدأ الرندر الفعلي'}
               </button>
             </section>
 
-            <section className="rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
+            <section id="workflow-scout" className="scroll-mt-24 rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
               <div className="mb-4 flex items-start gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-[#182231] text-[#36d1dc]"><Activity className="size-5" /></div>
                 <div><h2 className="text-lg font-extrabold">كشف اللقطات ومراجعتها</h2><p className="mt-1 text-xs leading-6 text-[#8ea0b5]">يستعمل جلسة الكشّاف الحقيقية على الخادم؛ تُحفظ الجلسات مؤقتاً في الذاكرة.</p></div>
@@ -510,7 +528,7 @@ export function ProductionApp() {
             </section>
           </div>
         ) : (
-          <section className="mt-5 rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
+          <section id="workflow-jobs" className="scroll-mt-24 mt-5 rounded-2xl border border-[#222e3d] bg-[#131a23] p-4 sm:p-6">
             <div className="mb-5 flex flex-wrap items-center gap-3">
               <div className="flex-1"><h2 className="text-lg font-extrabold">طابور محرك الرندر الفعلي</h2><p className="mt-1 text-xs text-[#8ea0b5]">تُحدّث الحالة كل 3 ثوانٍ من خادم المشروع، من دون بيانات نموذجية.</p></div>
               <label className="sr-only" htmlFor="job-filter">تصفية المهام</label>
