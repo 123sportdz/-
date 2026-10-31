@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from reelkit import control as C
 from reelkit.control import Dash, DashError, Tg, TgError, esc, fmt_job, fmt_jobs, kb_job, kb_jobs
+from reelkit.errors import friendly_text
 
 ROOT = C.project_root()
 
@@ -62,7 +63,7 @@ class ControlBot:
         try:
             j = self.dash.job(jid)
         except DashError as e:
-            return None, str(e)
+            return None, friendly_text(str(e))
         if not j:
             return None, f"ما لقيت مهمة بالمعرّف {jid}"
         return j, None
@@ -490,7 +491,9 @@ class ControlBot:
                 return self._edit(chat_id, msg_id, f"🆔 <code>{chat_id}</code>")
             self.tg.answer_callback(cb.get("id", ""), "غير معروف", alert=True)
         except DashError as e:
-            self.tg.answer_callback(cb.get("id", ""), f"خطأ: {str(e)[:120]}", alert=True)
+            # رسائل اللوحة العربية تمر كما هي؛ النص الأجنبي يُصنَّف دون تسريب.
+            self.tg.answer_callback(cb.get("id", ""),
+                                    f"خطأ: {friendly_text(str(e))[:160]}", alert=True)
         except TgError:
             pass
 

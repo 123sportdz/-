@@ -34,7 +34,7 @@ from reelkit.publish.telegram import TelegramBot, ChannelFeed, fetch_post
 from reelkit import schedule as SCH
 from reelkit.publish.youtube import find_client_secret
 from reelkit import audit as AUDIT
-from reelkit.errors import friendly_error, error_detail
+from reelkit.errors import friendly_error, error_detail, friendly_text
 
 LOGOS_DIR = ROOT / "logo_library"
 LOGOS_DIR.mkdir(exist_ok=True)
@@ -473,7 +473,8 @@ def _automation_loop():
                     seen[key] = {"job": jid, "queued_at": time.time()}
                     queued += 1
                 except Exception as e:
-                    _automation_runtime["last_error"] = str(e)[:240]
+                    print("[automation] فشل إنشاء مهمة:", error_detail(e), flush=True)
+                    _automation_runtime["last_error"] = friendly_text(str(e))
             # لا نسمح لملف الحالة بالنمو بلا نهاية.
             if len(seen) > 1000:
                 for k in list(seen)[:-1000]:
@@ -481,7 +482,9 @@ def _automation_loop():
             _save_automation_state(state)
             _automation_runtime.update(last_cycle=time.time(), queued=queued, last_error="")
         except Exception as e:
-            _automation_runtime.update(last_cycle=time.time(), queued=0, last_error=str(e)[:240])
+            print("⚠️ دورة الأتمتة فشلت:", error_detail(e), flush=True)
+            _automation_runtime.update(last_cycle=time.time(), queued=0,
+                                       last_error=friendly_text(str(e)))
         wait_for = max(30, min(86400, int(CFG.get("automation_interval", 300) or 300)))
         _automation_stop.wait(wait_for)
     _automation_runtime["status"] = "stopped"
@@ -1778,7 +1781,9 @@ def api_create_batch(payload: dict):
         except HTTPException as e:
             ids.append({"error": str(e.detail)})
         except Exception as e:                       # خطأ واحد لا يجهض الدفعة كلها
-            ids.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
+            # التفصيل الخام للسجل فقط؛ رسالة العميل عربية مصنّفة دون نص الاستثناء.
+            print("[batch] فشل إنشاء مهمة:", error_detail(e), flush=True)
+            ids.append({"error": friendly_text(str(e))})
     out = {"ids": ids}
     if truncated:
         out["warning"] = f"اقتُطعت الدفعة إلى {MAX_BATCH} عنصراً (من {len(items)})"

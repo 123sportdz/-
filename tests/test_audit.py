@@ -4,7 +4,7 @@ from types import ModuleType
 import pytest
 
 import reelkit.audit as AUDIT
-from reelkit.errors import friendly_error, error_detail
+from reelkit.errors import friendly_error, friendly_text, error_detail
 from reelkit.publish.youtube import YouTubeUploader
 
 
@@ -205,3 +205,27 @@ def test_upload_trims_whitespace_tags_and_caps_count(tmp_path, monkeypatch):
     sent = videos.insert_kwargs["body"]["snippet"]["tags"]
     assert all(tag == tag.strip() for tag in sent)
     assert len(sent) <= 30
+
+# ---------- friendly_text: نصوص خطأ ملتقطة مسبقاً ----------
+
+def test_friendly_text_passes_arabic_app_messages_through():
+    app_message = "موضع شارة القناة يجب أن يكون بين 0.025 و0.35"
+    assert friendly_text(app_message) == app_message
+
+
+def test_friendly_text_maps_foreign_provider_text():
+    message = friendly_text("googleapiclient HttpError 403 quotaExceeded")
+    assert "حد الرفع اليومي" in message
+    assert "quotaExceeded" not in message
+
+
+def test_friendly_text_never_echoes_unclassified_foreign_text():
+    message = friendly_text("/home/user/secrets/token.json line 3 boom")
+    assert "token.json" not in message
+    assert "/home/user" not in message
+    assert "سجل المهمة" in message
+
+
+def test_friendly_text_empty_uses_fallback():
+    assert friendly_text("") == "حدث خطأ غير معروف — أعد المحاولة."
+    assert friendly_text(None, "بديل") == "بديل"
