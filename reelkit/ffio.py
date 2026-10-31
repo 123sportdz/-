@@ -258,15 +258,21 @@ def purge_temp(base, min_age=120.0, prefixes=("reelkit_",)):
             if not os.path.isdir(d):
                 continue
             try:
-                # 🕒 عمر آخر نشاط داخل المجلد (مو بس mtime المجلد نفسه — قديم حتى أثناء
-                # معالجة طويلة لا تنشئ ملفات جديدة، فلا نحذف مجلد مهمة شغّالة)
-                latest = os.path.getmtime(d)
-                for dp, dn, fn in os.walk(d):
-                    for nm in dn + fn:
+                # 🕒 عمر آخر نشاط داخل المجلد: نعتمد **ملفات** داخل المجلد (الرندر
+                # الشغّال يكتب ملفات باستمرار فتبقى mtimes طازجة) — mtime المجلد نفسه
+                # غير موثوق على بعض أنظمة الملفات (utime على المجلد لا يثبت) فيُظهر
+                # المجلد المهجور «شغّالاً» ولا يُنظّف أبداً. المجلد الفارغ فقط
+                # نرجع لـ mtime المجلد، ومع min_age محافظ لا نمس مجلد مهمة شغّالة.
+                latest = None
+                for dp, _dn, fn in os.walk(d):
+                    for nm in fn:
                         try:
-                            latest = max(latest, os.path.getmtime(os.path.join(dp, nm)))
+                            m = os.path.getmtime(os.path.join(dp, nm))
+                            latest = m if latest is None else max(latest, m)
                         except OSError:
                             pass
+                if latest is None:
+                    latest = os.path.getmtime(d)
                 if _t.time() - latest < min_age:
                     continue
                 _c, sz = temp_usage(d)

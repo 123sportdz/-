@@ -724,6 +724,15 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(_app):
+    # 🧹 تنظيف تلقائي لبقايا المهام المنهارة/الملغاة (مجلدات reelkit_*) عند إقلاع اللوحة.
+    # نحذف فقط ما لم يُلمس منذ 24 ساعة حتى لا نمس مجلد مهمة شغّالة.
+    try:
+        from reelkit import space as _sp
+        _n, _f = _sp.clean_temp(str(ROOT), min_age=24 * 3600)
+        if _n:
+            print(f"🧹 تنظيف الإقلاع: حُذف {_n} مجلد عمل مهجور ({_sp.human(_f)}).", flush=True)
+    except Exception:
+        pass
     # تشغيل الأتمتة المحفوظة (on_event مُهملة في FastAPI الحديثة)
     try:
         if CFG.get("automation_enabled"):
