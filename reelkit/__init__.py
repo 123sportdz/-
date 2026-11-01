@@ -5,4 +5,4 @@ Pipeline:  ffmpeg normalize -> YOLO ball detect -> Kalman track (+coast) ->
            (tracked 9:16 crop | full frame + blurred pad) -> optional authorized mark cleanup ->
            graphics -> H.264 + audio.
 """
-__version__ = "1.65"
+__version__ = "1.67"

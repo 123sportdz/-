@@ -343,7 +343,7 @@ function PrototypeApp() {
     const report = {
       report_type: 'prototype_state',
       app: 'Elhadath Reels web prototype',
-      version: '1.66.0',
+      version: '1.67.0',
       timestamp: new Date().toISOString(),
       runtime: 'Browser-only React/Vite prototype; not connected to the Python renderer.',
       integrations: { gemini: 'per-request consent only', telegram: false, youtube: false },
