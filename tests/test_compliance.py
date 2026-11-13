@@ -150,3 +150,21 @@ def test_edit_profile_normalizes_measured_facts():
     assert profile["segments"] == 1
     assert profile["source_kind"] == "licensed"
     assert profile["commentary_words"] == 22
+
+
+def test_improve_plan_reaches_target_with_measured_steps():
+    plan = C.improve_plan({"duration_s": 45, "segments": 1})
+    assert plan["reached"] is True
+    assert plan["score"] >= plan["target"]
+    assert plan["steps"]
+    assert plan["steps"][0]["score"] < plan["score"]          # تصاعدي
+    assert plan["steps"][0]["delta"] > 0
+    assert "تعليق" in plan["steps"][0]["action"]
+
+
+def test_improve_plan_is_empty_when_already_good():
+    plan = C.improve_plan({"duration_s": 40, "commentary_s": 30, "segments": 3,
+                           "has_captions": True, "has_graphics": True,
+                           "has_crop": True})
+    assert plan["steps"] == []
+    assert plan["reached"] is True

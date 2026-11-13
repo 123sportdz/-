@@ -216,3 +216,33 @@ def test_savgol_velocity_does_not_mix_shots_at_cuts():
     vel_cut = PT.savgol_vel(x, fps, 9, cuts=[cut])
     assert float(np.nanmax(np.abs(vel_raw))) > 5000.0
     assert float(np.nanmax(np.abs(vel_cut))) < 10.0
+
+
+def test_autotune_reduces_ball_miss():
+    """المعايرة تتعلّم من قياس الفقدان: منطقة ميتة كبيرة تُصلَح تلقائياً."""
+    fps = 30.0
+    n = 900
+    t = np.arange(n) / fps
+    x = 640 + 150 * np.sin(2 * np.pi * 1.0 * t)
+    base_cam, _ = PT.predictive_camera(x, None, fps, deadzone=300.0, lead=0.16,
+                                       half=180.0, W=1280, H=720)
+    base_miss = PT.frame_miss_pct(x, None, base_cam, half_w=180.0)
+    cam, _, info = PT.autotune_camera(x, None, fps, deadzone=300.0, lead=0.16,
+                                      half=180.0, W=1280, H=720)
+    assert base_miss > 10.0
+    assert info["miss_pct"] < base_miss
+    assert info["miss_pct"] <= 5.0
+    assert 150.0 < info["deadzone"] < 400.0
+    assert len(info["trials"]) >= 6
+
+
+def test_autotune_respects_crop_bounds_and_empty_input():
+    n = 120
+    x = np.linspace(0, 1280, n)
+    half = np.full(n, 200.0)
+    cam, cam_y, info = PT.autotune_camera(x, np.full(n, 360.0), 30.0, half=half,
+                                          W=1280, H=720, half_v=np.full(n, 200.0))
+    assert np.all(np.isfinite(cam))
+    assert np.all(cam >= half - 1e-6)
+    assert np.all(cam <= 1280 - half + 1e-6)
+    assert PT.autotune_camera([], None, 30.0) == (None, None, {})

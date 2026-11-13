@@ -785,6 +785,69 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
     return cam, cam_y
 
 
+def autotune_camera(bx, by, fps, cuts=(), *, lead=0.16, deadzone=88.0,
+                    half=None, W=None, H=None, half_v=None, deadzone_v=60.0,
+                    vmax=1200.0, amax=3400.0, deadzones=None, leads=None,
+                    miss_weight=8.0, jitter_weight=0.35):
+    """يختار (منطقة ميتة، تسبيق) بقياس فعلي بدل قيمة ثابتة لكل المقاطع.
+
+    🎬 v1.74: الإعداد الافتراضي `deadzone = crop_w * 0.105` يعمل على أغلب
+    المقاطع، لكن مباراة سريعة تحتاج منطقة أصغر (وإلا تأخرت الكاميرا وخرجت
+    الكرة)، ولقطة هادئة تحتاج أكبر (وإلا اهتزّت بلا داع). هنا نجرّب شبكة
+    صغيرة 4×3، نقيس خروج الكرة عن الكادر فعلياً + اهتزاز الكاميرا، ونأخذ
+    الأفضل. التكلفة 12 مروراً على مسار خفيف (بدون كشف ولا فك ترميز).
+
+    يرجّع (cam, cam_y, info). `info["trials"]` يشمل كل التجارب للتدقيق.
+    """
+    x = np.asarray(bx, float)
+    n = len(x)
+    if n == 0:
+        return None, None, {}
+    base_dz = max(0.0, float(deadzone))
+    base_lead = max(0.0, float(lead))
+    dz_grid = deadzones if deadzones is not None else [
+        base_dz * m for m in (0.65, 0.85, 1.0, 1.25)]
+    lead_grid = leads if leads is not None else [
+        max(0.06, base_lead * 0.7), base_lead, base_lead * 1.3]
+    seen = set()
+    trials = []
+    best = None
+    for dz in dz_grid:
+        for ld in lead_grid:
+            key = (round(float(dz), 3), round(float(ld), 3))
+            if key in seen:
+                continue
+            seen.add(key)
+            cam, cam_y = predictive_camera(x, by, fps, cuts, lead=float(ld),
+                                           deadzone=float(dz), vmax=vmax, amax=amax,
+                                           half=half, W=W, H=H, half_v=half_v,
+                                           deadzone_v=deadzone_v)
+            if cam is None:
+                continue
+            miss = frame_miss_pct(x, by, cam, cam_y=cam_y, half_w=half, half_h=half_v) \
+                if half is not None else 0.0
+            finite = cam[np.isfinite(cam)]
+            jitter = float(np.mean(np.abs(np.diff(finite, 2)))) if len(finite) > 2 else 0.0
+            score = float(miss) * miss_weight + jitter * jitter_weight
+            trials.append({"deadzone": float(dz), "lead": float(ld),
+                           "miss_pct": float(miss), "jitter_px": jitter,
+                           "score": score})
+            if best is None or score < best[0]:
+                best = (score, cam, cam_y, float(dz), float(ld), miss, jitter)
+    if best is None:
+        cam, cam_y = predictive_camera(x, by, fps, cuts, lead=base_lead,
+                                       deadzone=base_dz, vmax=vmax, amax=amax,
+                                       half=half, W=W, H=H, half_v=half_v,
+                                       deadzone_v=deadzone_v)
+        return cam, cam_y, {"deadzone": base_dz, "lead": base_lead,
+                            "miss_pct": 0.0, "jitter_px": 0.0, "trials": trials}
+    _, cam, cam_y, dz, ld, miss, jitter = best
+    return cam, cam_y, {"deadzone": dz, "lead": ld, "miss_pct": miss,
+                        "jitter_px": jitter, "score": best[0],
+                        "baseline": {"deadzone": base_dz, "lead": base_lead},
+                        "trials": trials}
+
+
 def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None, cuts=()):
     """تقريب درامي حسب سرعة الكرة (punch-in ناعم).
     🎬 v1.67: `cuts` — سرعة وهمية حول القطع كانت تُطلق punch-in مفاجئاً عند بداية

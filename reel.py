@@ -304,6 +304,8 @@ def main(argv=None):
                     help="🎬 مقدمة سينمائية: تقريب 1.26× ينفتح إلى 1.00× في أول نصف ثانية")
     ap.add_argument("--no-bridge", action="store_true",
                     help="تعطيل جسر القالب البصري (يستخدم إذا كان يخطئ في التتبّع)")
+    ap.add_argument("--no-autotune", action="store_true",
+                    help="عطّل المعايرة التلقائية لمنطقة الكاميرا الميتة والتسبيق (v1.74)")
     ap.add_argument("--framing", choices=["tight", "normal", "loose"], default=None,
                     help="شدّة التتبّع: tight = الكرة في وسط الإطار | normal | loose = كاميرا أهدأ")
     ap.add_argument("--vcenter", default=None,
@@ -989,12 +991,32 @@ def main(argv=None):
             from reelkit import protrack as PT
             cam_half_w, cam_half_h = PT.camera_half_sizes(
                 crop_w0, info["width"], info["height"], zoom, n_frames)
-            cam, cam_y = PT.predictive_camera(target, by, info["fps"], an["cuts"],
-                                              lead=lead_f, deadzone=deadzone,
-                                              half=cam_half_w, W=info["width"],
-                                              H=info["height"], half_v=cam_half_h)
-            log(f"      🎯 الإطار: {fsel} (منطقة ميتة {deadzone:.0f}px)"
-                + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
+            if a.no_autotune:
+                cam, cam_y = PT.predictive_camera(target, by, info["fps"], an["cuts"],
+                                                  lead=lead_f, deadzone=deadzone,
+                                                  half=cam_half_w, W=info["width"],
+                                                  H=info["height"], half_v=cam_half_h)
+                tune = {}
+            else:
+                # 🎛️ معايرة لكل مقطع: نجرّب 12 تركيبة ونقيس خروج الكرة فعلياً.
+                cam, cam_y, tune = PT.autotune_camera(
+                    target, by, info["fps"], an["cuts"], lead=lead_f,
+                    deadzone=deadzone, half=cam_half_w, W=info["width"],
+                    H=info["height"], half_v=cam_half_h)
+                if cam is None:
+                    cam, cam_y = PT.predictive_camera(
+                        target, by, info["fps"], an["cuts"], lead=lead_f,
+                        deadzone=deadzone, half=cam_half_w, W=info["width"],
+                        H=info["height"], half_v=cam_half_h)
+                    tune = {}
+            if tune:
+                log(f"      🎯 الإطار: {fsel} (معايرة: منطقة ميتة {tune['deadzone']:.0f}px، "
+                    f"تسبيق {tune['lead']:.2f}، خروج الكرة {tune['miss_pct']:.1f}%، "
+                    f"اهتزاز {tune['jitter_px']:.2f}px)"
+                    + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
+            else:
+                log(f"      🎯 الإطار: {fsel} (منطقة ميتة {deadzone:.0f}px)"
+                    + (f" | إطار عمودي {zoom_v:.2f}×" if zoom_v > 1.001 else " | بلا إطار عمودي"))
             if pro is not None:
                 try:
                     _miss = PT.frame_miss_pct(bx, by, cam, cam_y=cam_y,
