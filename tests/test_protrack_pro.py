@@ -103,7 +103,6 @@ def test_dynamic_zoom_does_not_punch_in_across_cuts():
 
 
 def test_frame_miss_pct_counts_only_frames_with_ball():
-    fps = 30.0
     n = 60
     x = np.full(n, np.nan)
     x[:15] = 100.0                               # كرة خارج الكادر (مركزه 640)

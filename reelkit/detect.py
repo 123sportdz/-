@@ -53,9 +53,6 @@ def pick_device(device=None):
     return (dev, False, "")
 
 
-def device_report(device=None):    return (dev, False, "")
-
-
 def precision_kwargs(enabled, version=None):
     if not enabled:
         return {}

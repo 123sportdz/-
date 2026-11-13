@@ -76,7 +76,7 @@ def main():
         print(f"    {x['drive']:4s} متاح {x['free_h']}")
     if freed < 1024 ** 2:
         print("\n💡 لو C: لسا ممتلئ: افتح مجلد TEMP واحذف يدوياً أي مجلدات كبيرة قديمة،")
-        print(f"   أو نفّذ:  python cleanup.py --incoming-days 2")
+        print("   أو نفّذ:  python cleanup.py --incoming-days 2")
     return 0
 
 

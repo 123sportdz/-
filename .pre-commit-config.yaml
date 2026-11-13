@@ -1,0 +1,16 @@
+# خطافات محلية اختيارية: pip install pre-commit && pre-commit install
+# لا نضيف مُنسّقات تلقائية (trailing-whitespace / end-of-file) كي لا تُعيد كتابة
+# ملفات لم يلمسها المُساهم؛ الفحص الحالي يمنع الأخطاء الفعلية فقط.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]
