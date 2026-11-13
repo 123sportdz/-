@@ -2271,6 +2271,51 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
     return result
 
 
+def _edit_profile(job):
+    """وقائع التحرير المتاحة فعلاً للمهمة — تُغذّي فحص إعادة الاستخدام.
+
+    لا نخمّن ما لا نعرفه: التعليق الصوتي يبقى 0 حتى يُسجَّل، والفحص يقول ذلك
+    صراحةً في `actions` بدل ادّعاء تحويل غير موجود.
+    """
+    job = job if isinstance(job, dict) else {}
+    opts = job.get("options") if isinstance(job.get("options"), dict) else {}
+    quality = job.get("quality_report") if isinstance(job.get("quality_report"), dict) else {}
+    try:
+        duration = float(job.get("duration") or quality.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    caption = str(job.get("caption") or opts.get("caption") or "").strip()
+    replay = str(opts.get("replay") or "off").strip().lower()
+    try:
+        segments = int(opts.get("segments") or 1)
+    except (TypeError, ValueError):
+        segments = 1
+    source_url = str(job.get("source_url") or "")
+    # مدة التعليق: المقاسة إن سجّلها الرندر، وإلا تقدير من عدد الكلمات (≈2.6 كلمة/ث).
+    commentary_s = 0.0
+    try:
+        commentary_s = float(opts.get("commentary_seconds") or 0.0)
+    except (TypeError, ValueError):
+        commentary_s = 0.0
+    if commentary_s <= 0:
+        script = opts.get("commentary_script") or opts.get("text")
+        requested = bool(opts.get("commentary") or script or opts.get("commentary_text_only"))
+        if requested:
+            words = len(str(script).split()) if script else 22
+            commentary_s = min(max(3.0, words / 2.6), max(3.0, duration * 0.8) if duration else 60.0)
+    return {
+        "duration_s": duration,
+        "commentary_s": commentary_s,
+        "segments": max(1, segments),
+        "has_captions": bool(caption),
+        "has_graphics": bool(opts.get("name") or CFG.get("brand_name")),
+        "has_replay": replay not in ("", "off", "0", "none", "false"),
+        "has_crop": True,
+        "is_full_match": duration > 600,
+        "source_kind": "broadcast" if source_url.startswith("http") else "unknown",
+    }
+
+
 @app.post("/api/jobs/{jid}/publish")
 def api_publish(jid: str, payload: dict):
     targets = payload.get("targets", [])
@@ -2303,6 +2348,15 @@ def api_publish(jid: str, payload: dict):
     if any(field in rights and (not isinstance(rights[field], str) or len(rights[field]) > limit)
            for field, limit in text_limits.items()):
         raise HTTPException(400, "أسس الحقوق ومراجع الصورة والصوت يجب أن تكون نصوصاً ضمن الحد المسموح")
+    if "youtube" in targets:
+        from reelkit import compliance as COMPLIANCE
+        freeze = COMPLIANCE.publish_gate(privacy=youtube_privacy or "private")
+        if not freeze["ok"]:
+            AUDIT.append_event("compliance_gate_denied", jid, target="youtube",
+                               error=freeze.get("error"))
+            return {"youtube": {"ok": False, "code": "compliance_freeze",
+                                "error": freeze["error"],
+                                "details": freeze.get("restriction")}}
     with _lock:
         job = JOBS.get(jid)
         if not job:
@@ -2343,10 +2397,23 @@ def api_publish(jid: str, payload: dict):
                 return {"youtube": {"ok": False, "code": "rights_gate",
                                      "error": " | ".join(gate["errors"]), "details": gate},
                         "rights_review": review}
-        return _do_publish_once(job, targets,
-                                payload.get("title") or job.get("title") or "مقطع رياضي",
-                                payload.get("description", ""), payload.get("tags", []),
-                                privacy, publish_at=publish_at, rights=rights)
+        # 🧪 تقدير إعادة الاستخدام: استشاري لا حاجز. بوابة الحقوق هي الحاكمة،
+        # لكن المخرج الخام (بلا تعليق/كابشن) يظهر تحذيره مع نتيجة النشر كي
+        # يُصلَح قبل أن يمنع YouTube تحقيق الدخل أو يقيّد الوصول.
+        reuse = None
+        if "youtube" in targets:
+            from reelkit import compliance as COMPLIANCE
+            reuse = COMPLIANCE.assess_reuse(_edit_profile(job))
+            if reuse["blockers"]:
+                AUDIT.append_event("compliance_status", jid, kind="reuse_warning",
+                                   detail={"tier": reuse["tier"], "score": reuse["score"]})
+        result = _do_publish_once(job, targets,
+                                  payload.get("title") or job.get("title") or "مقطع رياضي",
+                                  payload.get("description", ""), payload.get("tags", []),
+                                  privacy, publish_at=publish_at, rights=rights)
+        if reuse is not None and isinstance(result, dict) and "youtube" in result:
+            result["youtube"]["reuse"] = reuse
+        return result
     finally:
         with _lock:
             PUBLISHING.discard(jid)
@@ -2537,6 +2604,13 @@ def api_youtube_status(jid: str):
     if not isinstance(status, dict):
         raise HTTPException(502, "أعاد YouTube حالة غير صالحة")
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    from reelkit import compliance as COMPLIANCE
+    compliance_verdict = COMPLIANCE.record_status(
+        jid, video_id, status, privacy=str(status.get("privacy_status") or ""))
+    restriction = COMPLIANCE.restriction()
+    AUDIT.append_event("compliance_status", jid, video_id=video_id,
+                       kind=compliance_verdict.get("kind"),
+                       restriction=restriction.get("level"))
     with _lock:
         job = JOBS.get(jid)
         if not job:
@@ -2547,8 +2621,63 @@ def api_youtube_status(jid: str):
             raise HTTPException(409, "تغيّر فيديو YouTube المرتبط بهذه المهمة؛ أعد فتحها")
         youtube["status"] = status
         youtube["status_checked_at"] = checked_at
+        youtube["compliance"] = compliance_verdict
         _persist()
-    return {"ok": True, "status": status, "status_checked_at": checked_at}
+    return {"ok": True, "status": status, "status_checked_at": checked_at,
+            "compliance": compliance_verdict, "restriction": restriction}
+
+
+@app.get("/api/compliance")
+def api_compliance():
+    """ملخص سجل المطالبات/الإنذارات وقفل النشر الحالي. قراءة فقط."""
+    from reelkit import compliance as COMPLIANCE
+    return COMPLIANCE.summary()
+
+
+@app.post("/api/compliance/strike")
+def api_compliance_strike(payload: dict):
+    """تسجيل إنذار حقوق نشره YouTube في Studio (لا يظهر في Data API)."""
+    video_id = str(payload.get("video_id") or "").strip()
+    if video_id and not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise HTTPException(400, "معرّف فيديو YouTube غير صالح")
+    from reelkit import compliance as COMPLIANCE
+    lock = COMPLIANCE.record_strike(str(payload.get("job_id") or ""), video_id,
+                                    reason=str(payload.get("reason") or "")[:200],
+                                    note=str(payload.get("note") or "")[:500])
+    AUDIT.append_event("compliance_strike", str(payload.get("job_id") or ""),
+                       video_id=video_id, restriction=lock.get("level"))
+    return {"ok": True, "restriction": lock}
+
+
+@app.get("/api/jobs/{jid}/dossier")
+def api_job_dossier(jid: str):
+    """ملف وقائع Markdown للاعتراض اليدوي. لا يُرسل شيئاً."""
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        snapshot = dict(job)
+        review = job.get("rights_review") if isinstance(job.get("rights_review"), dict) else {}
+        publish = job.get("publish") if isinstance(job.get("publish"), dict) else {}
+        youtube = publish.get("youtube") if isinstance(publish.get("youtube"), dict) else {}
+        video_id = str(youtube.get("id") or "")
+    from reelkit import compliance as COMPLIANCE
+    doc = COMPLIANCE.build_dossier(snapshot, review, video_id)
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(doc["markdown"], media_type="text/markdown; charset=utf-8",
+                             headers={"X-Dossier-SHA256": doc["sha256"]})
+
+
+@app.get("/api/jobs/{jid}/reuse-check")
+def api_job_reuse_check(jid: str):
+    """تقدير إعادة الاستخدام قبل النشر: ما الذي يجعل المخرج «reused content»."""
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        profile = _edit_profile(job)
+    from reelkit import compliance as COMPLIANCE
+    return {"profile": profile, "reuse": COMPLIANCE.assess_reuse(profile)}
 
 def _logo_list():
     out = []
