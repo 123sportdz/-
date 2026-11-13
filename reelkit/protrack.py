@@ -785,6 +785,30 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
     return cam, cam_y
 
 
+def _worst_shot_miss(x, by, cam, cam_y, half, half_v, cuts) -> float:
+    """أعلى نسبة خروج للكرة داخل لقطة واحدة (0 لو لا قطوع أو لا حدود قص)."""
+    if half is None or cam is None or not cuts:
+        return 0.0
+    n = len(x)
+    try:
+        edges = sorted({int(c) for c in cuts if 0 < int(c) < n})
+    except (TypeError, ValueError):
+        return 0.0
+    bounds = [0] + edges + [n]
+    worst = 0.0
+    for lo, hi in zip(bounds[:-1], bounds[1:]):
+        if hi - lo < 2:
+            continue
+        seg_by = None if by is None else np.asarray(by, float)[lo:hi]
+        seg_cy = None if cam_y is None else np.asarray(cam_y, float)[lo:hi]
+        miss = frame_miss_pct(x[lo:hi], seg_by, cam[lo:hi], cam_y=seg_cy,
+                              half_w=half[lo:hi] if np.ndim(half) else half,
+                              half_h=(half_v[lo:hi] if (half_v is not None and np.ndim(half_v))
+                                      else half_v))
+        worst = max(worst, float(miss))
+    return worst
+
+
 def autotune_camera(bx, by, fps, cuts=(), *, lead=0.16, deadzone=88.0,
                     half=None, W=None, H=None, half_v=None, deadzone_v=60.0,
                     vmax=1200.0, amax=3400.0, deadzones=None, leads=None,
@@ -826,23 +850,28 @@ def autotune_camera(bx, by, fps, cuts=(), *, lead=0.16, deadzone=88.0,
                 continue
             miss = frame_miss_pct(x, by, cam, cam_y=cam_y, half_w=half, half_h=half_v) \
                 if half is not None else 0.0
+            # ⚖️ متوسط جيد لا يعني لقطة سيئة: نزن أسوأ لقطة أيضاً، وإلا فاز إعداد
+            # يهمل هجمة واحدة سريعة لأن بقية المقطع هادئ.
+            worst = _worst_shot_miss(x, by, cam, cam_y, half, half_v, cuts)
             finite = cam[np.isfinite(cam)]
             jitter = float(np.mean(np.abs(np.diff(finite, 2)))) if len(finite) > 2 else 0.0
-            score = float(miss) * miss_weight + jitter * jitter_weight
+            score = float(miss) * miss_weight + worst * 2.0 + jitter * jitter_weight
             trials.append({"deadzone": float(dz), "lead": float(ld),
-                           "miss_pct": float(miss), "jitter_px": jitter,
-                           "score": score})
+                           "miss_pct": float(miss), "worst_shot_miss": float(worst),
+                           "jitter_px": jitter, "score": score})
             if best is None or score < best[0]:
-                best = (score, cam, cam_y, float(dz), float(ld), miss, jitter)
+                best = (score, cam, cam_y, float(dz), float(ld), miss, worst, jitter)
     if best is None:
         cam, cam_y = predictive_camera(x, by, fps, cuts, lead=base_lead,
                                        deadzone=base_dz, vmax=vmax, amax=amax,
                                        half=half, W=W, H=H, half_v=half_v,
                                        deadzone_v=deadzone_v)
         return cam, cam_y, {"deadzone": base_dz, "lead": base_lead,
-                            "miss_pct": 0.0, "jitter_px": 0.0, "trials": trials}
-    _, cam, cam_y, dz, ld, miss, jitter = best
+                            "miss_pct": 0.0, "worst_shot_miss": 0.0,
+                            "jitter_px": 0.0, "trials": trials}
+    _, cam, cam_y, dz, ld, miss, worst, jitter = best
     return cam, cam_y, {"deadzone": dz, "lead": ld, "miss_pct": miss,
+                        "worst_shot_miss": worst,
                         "jitter_px": jitter, "score": best[0],
                         "baseline": {"deadzone": base_dz, "lead": base_lead},
                         "trials": trials}

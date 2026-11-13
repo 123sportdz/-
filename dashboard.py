@@ -2698,6 +2698,8 @@ def api_job_reuse_check(jid: str):
         profile = _edit_profile(job)
     from reelkit import compliance as COMPLIANCE
     return {"profile": profile,
+            "camera": profile.get("camera") or {},
+            "tracking": profile.get("tracking") or {},
             "reuse": COMPLIANCE.assess_reuse(profile),
             "plan": COMPLIANCE.improve_plan(profile)}
 
