@@ -178,3 +178,40 @@ def test_duplicate_strike_within_a_day_counts_once(tmp_path):
     assert second["strikes"] == 1                     # نقرة مكررة لا تصبح إنذاراً ثانياً
     other = C.record_strike("j1", "v2", reason="copyright", path=log)
     assert other["strikes"] == 2                      # فيديو مختلف = إنذار حقيقي
+
+
+def test_verify_evidence_detects_missing_and_changed_files(tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "license.txt").write_bytes(b"contract")
+    monkeypatch.setenv("REEL_RIGHTS_EVIDENCE_DIR", str(root))
+    import hashlib
+    good = hashlib.sha256(b"contract").hexdigest()
+    report = C.verify_evidence([
+        {"source": "clip", "evidence_path": "license.txt", "evidence_sha256": good},
+        {"source": "music", "evidence_path": "license.txt", "evidence_sha256": "0" * 64},
+        {"source": "photo", "evidence_path": "nope.pdf"},
+        {"source": "graphic", "evidence_path": "../escape.txt"},
+    ])
+    states = [row["state"] for row in report["assets"]]
+    assert states == ["verified", "mismatch", "missing", "invalid"]
+    assert report["ok"] is False
+    assert set(report["broken"]) == {"music", "photo", "graphic"}
+
+
+def test_dossier_marks_broken_evidence(tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "license.txt").write_bytes(b"contract")
+    monkeypatch.setenv("REEL_RIGHTS_EVIDENCE_DIR", str(root))
+    job = {"id": "j1", "title": "هدف", "output": "/tmp/reel.mp4", "duration": 40,
+           "source_sha256": "b" * 64,
+           "clip_window": {"start": "12", "end": "52"}}
+    rights = {"visual_rights_basis": "licensed", "assets": [
+        {"source": "clip", "media_type": "video", "rights_holder": "X",
+         "permission_type": "licensed", "allowed_platforms": ["youtube"],
+         "evidence_path": "license.txt", "evidence_sha256": "0" * 64}]}
+    doc = C.build_dossier(job, rights, "", path=str(tmp_path / "c.jsonl"), now=NOW)
+    assert "دليل ناقص أو متغيّر" in doc["markdown"]
+    assert "b" * 64 in doc["markdown"]
+    assert "12 .. 52" in doc["markdown"]

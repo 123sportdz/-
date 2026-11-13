@@ -39,3 +39,6 @@
 - `compliance.record_strike` is idempotent within 24h for the same video+reason (or job+reason when no video id); one click must never become two strikes. Keep the freeze ladder (7/14 days, then terminated) and the 90-day window intact. Cover in `tests/test_compliance.py`.
 - `reel.py --report-json` also records the camera tune and tracking QA; `reuse-check` returns them as `camera`/`tracking`. Do not drop these when changing the report schema — dashboard diagnostics read them.
 - `autotune_camera` scores `global miss * 8 + worst shot miss * 2 + jitter * 0.35`; the worst-shot term exists so a calm clip cannot hide one bad attack. Adjust weights only with a synthetic regression in `tests/test_protrack_pro.py`.
+
+- `GET /api/jobs/{id}/readiness` is a summary of recorded facts only: `quality` and `compliance_freeze` can block (`verdict=blocked`), everything else requires review. Never let it imply legal clearance, and never auto-publish on `ready`.
+- `compliance.verify_evidence` re-hashes local evidence files against declared SHA-256 with the same traversal protection as `reelkit.rights`; a missing or changed file must appear loudly in the dossier, never be silently omitted. Source files get a SHA-256 at job start for provenance.

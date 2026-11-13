@@ -100,3 +100,41 @@ def test_reuse_check_returns_plan(client):
     body = client.get("/api/jobs/job-1/reuse-check").json()
     assert body["plan"]["steps"]
     assert body["plan"]["reached"] is True
+
+
+def test_readiness_sends_raw_job_to_review(client):
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 45,
+        "quality_report": {"ok": True}, "options": {"replay": "off"},
+    }
+    body = client.get("/api/jobs/job-1/readiness").json()
+    assert body["verdict"] == "review"
+    assert "reuse" in body["review"]
+    assert body["plan"]["steps"]
+
+
+def test_readiness_blocks_while_a_strike_is_active(client):
+    client.post("/api/compliance/strike", json={"video_id": VIDEO_ID, "reason": "copyright"})
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 40,
+        "quality_report": {"ok": True},
+    }
+    body = client.get("/api/jobs/job-1/readiness").json()
+    assert body["verdict"] == "blocked"
+    assert "compliance_freeze" in body["blocking"]
+
+
+def test_readiness_is_ready_when_every_check_is_recorded(client):
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 40,
+        "quality_report": {"ok": True},
+        "rights_review": {"target_reviews": {"youtube": {"ok": True}}},
+        "edit_profile": {"duration_s": 40, "commentary_s": 30, "segments": 3,
+                         "has_captions": True, "has_graphics": True,
+                         "has_crop": True, "source_kind": "licensed",
+                         "tracking": {"coverage": 88.0, "frame_miss_pct": 4.0,
+                                      "longest_gap": 0.3}},
+    }
+    body = client.get("/api/jobs/job-1/readiness").json()
+    assert body["verdict"] == "ready"
+    assert body["blocking"] == [] and body["review"] == []
