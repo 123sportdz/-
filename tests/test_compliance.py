@@ -243,3 +243,30 @@ def test_channel_report_ok_for_original_mix():
     assert report["verdict"] == "ok"
     assert report["raw"] == 0
     assert report["with_commentary"] == 6
+
+
+def test_transformation_timeline_merges_spans_and_finds_gaps():
+    cert = C.transformation_timeline({"duration_s": 40, "commentary_s": 10,
+                                      "commentary_start": 0,
+                                      "caption_spans": [[9, 20], [30, 35]]})
+    assert cert["ok"] is True
+    assert cert["spans"] == [(0.0, 20.0), (30.0, 35.0)]
+    assert cert["coverage_pct"] == 62.5
+    # فجوة الذيل 5s أقصر من حدّ الضجيج (8s) فلا تُبلَّغ
+    assert cert["gaps"] == [(20.0, 30.0)]
+    assert cert["longest_gap_s"] == 10.0
+    assert cert["verdict"] == "strong"
+
+
+def test_transformation_timeline_is_honest_when_empty():
+    cert = C.transformation_timeline({"duration_s": 30})
+    assert cert["coverage_pct"] == 0.0
+    assert cert["gaps"] == [(0.0, 30.0)]
+    assert cert["verdict"] == "none"
+    assert "<svg" in cert["svg"]
+    assert "nan" not in cert["svg"].lower()
+
+
+def test_transformation_timeline_requires_duration():
+    cert = C.transformation_timeline({})
+    assert cert["ok"] is False and cert["verdict"] == "unknown"

@@ -133,7 +133,10 @@ def test_readiness_is_ready_when_every_check_is_recorded(client):
                          "has_captions": True, "has_graphics": True,
                          "has_crop": True, "source_kind": "licensed",
                          "tracking": {"coverage": 88.0, "frame_miss_pct": 4.0,
-                                      "longest_gap": 0.3}},
+                                      "longest_gap": 0.3},
+                         "timeline": {"duration_s": 40, "commentary_s": 30,
+                                      "commentary_start": 0.4,
+                                      "caption_spans": [[0.4, 30]]}},
     }
     body = client.get("/api/jobs/job-1/readiness").json()
     assert body["verdict"] == "ready"
@@ -150,3 +153,23 @@ def test_channel_report_endpoint(client):
     body = client.get("/api/channel/report").json()
     assert body["verdict"] == "pattern_risk"
     assert body["total"] == 6
+
+
+def test_timeline_endpoint_serves_svg_and_csv(client):
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 40,
+        "edit_profile": {"duration_s": 40, "commentary_s": 18,
+                         "timeline": {"duration_s": 40, "commentary_s": 18,
+                                      "commentary_start": 0.4,
+                                      "caption_spans": [[0.4, 12]],
+                                      "cuts_s": [0, 12, 25]}},
+    }
+    svg = client.get("/api/jobs/job-1/timeline")
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in svg.text
+    csv = client.get("/api/jobs/job-1/timeline?format=csv")
+    assert "original,0.40,18.40" in csv.text
+    data = client.get("/api/jobs/job-1/timeline?format=json").json()
+    assert data["coverage_pct"] > 0
+    assert "svg" not in data
