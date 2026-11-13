@@ -138,3 +138,15 @@ def test_readiness_is_ready_when_every_check_is_recorded(client):
     body = client.get("/api/jobs/job-1/readiness").json()
     assert body["verdict"] == "ready"
     assert body["blocking"] == [] and body["review"] == []
+
+
+def test_channel_report_endpoint(client):
+    for index in range(6):
+        dashboard.JOBS[f"j{index}"] = {
+            "id": f"j{index}", "created": index, "status": "done",
+            "source_sha256": "a" * 64,
+            "edit_profile": {"duration_s": 45, "segments": 1},
+        }
+    body = client.get("/api/channel/report").json()
+    assert body["verdict"] == "pattern_risk"
+    assert body["total"] == 6

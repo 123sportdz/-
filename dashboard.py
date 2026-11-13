@@ -1700,6 +1700,13 @@ def _create(payload):
                 if _sha:
                     with _lock:
                         jj["source_sha256"] = _sha
+                        _dupes = sum(1 for other in JOBS.values()
+                                     if other is not jj
+                                     and other.get("source_sha256") == _sha)
+                        if _dupes:
+                            jj["log"] = (jj.get("log") or []) + [
+                                f"⚠️ نفس المصدر استُخدم في {_dupes} مهام أخرى — "
+                                "تكرار المصدر يرفع خطر «المحتوى المعاد استخدامه»"]
             except Exception:
                 pass
         priority = jj.get("priority", "normal")
@@ -2713,6 +2720,15 @@ def api_job_reuse_check(jid: str):
             "tracking": profile.get("tracking") or {},
             "reuse": COMPLIANCE.assess_reuse(profile),
             "plan": COMPLIANCE.improve_plan(profile)}
+
+
+@app.get("/api/channel/report")
+def api_channel_report(window: int = 30):
+    """نمط القناة من المهام المحفوظة: نسبة الخام وتكرار المصدر وحكم واحد."""
+    with _lock:
+        jobs = list(JOBS.values())
+    from reelkit import compliance as COMPLIANCE
+    return COMPLIANCE.channel_report(jobs, window=max(1, min(200, int(window))))
 
 
 @app.get("/api/jobs/{jid}/readiness")

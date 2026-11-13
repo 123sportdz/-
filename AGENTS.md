@@ -42,3 +42,5 @@
 
 - `GET /api/jobs/{id}/readiness` is a summary of recorded facts only: `quality` and `compliance_freeze` can block (`verdict=blocked`), everything else requires review. Never let it imply legal clearance, and never auto-publish on `ready`.
 - `compliance.verify_evidence` re-hashes local evidence files against declared SHA-256 with the same traversal protection as `reelkit.rights`; a missing or changed file must appear loudly in the dossier, never be silently omitted. Source files get a SHA-256 at job start for provenance.
+
+- `compliance.channel_report` judges the channel pattern (last 30 jobs), not a single video: raw ratio, duplicate source fingerprints, commentary presence. Verdicts are `insufficient`/`ok`/`watch`/`pattern_risk`; it advises only and never blocks. The per-video gate stays `assess_reuse` + `reelkit.rights`.
