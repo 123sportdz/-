@@ -90,3 +90,13 @@ def test_measured_edit_profile_overrides_heuristics(client):
     body = client.get("/api/jobs/job-1/reuse-check").json()
     assert body["profile"]["commentary_s"] == 30
     assert body["reuse"]["tier"] == "low"
+
+
+def test_reuse_check_returns_plan(client):
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 45,
+        "options": {"replay": "off"},
+    }
+    body = client.get("/api/jobs/job-1/reuse-check").json()
+    assert body["plan"]["steps"]
+    assert body["plan"]["reached"] is True

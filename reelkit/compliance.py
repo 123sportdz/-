@@ -238,6 +238,70 @@ def edit_profile(*, duration_s: float = 0.0, commentary_s: float = 0.0,
     return profile
 
 
+def _plan_options(edit: Dict[str, Any]) -> List[Any]:
+    """الخطوة التالية الممكنة فعلياً على هذا المخرج (لا نطلب ما هو موجود)."""
+    dur = max(0.0, float(edit.get("duration_s") or 0.0))
+    com = max(0.0, float(edit.get("commentary_s") or 0.0))
+    opts = []
+    if dur > 0 and com < 0.5 * dur:
+        target_c = min(0.5 * dur, max(com + 5.0, 0.35 * dur))
+        opts.append((f"ارفع التعليق إلى {target_c:.0f} ثانية",
+                     {**edit, "commentary_s": target_c}))
+    elif dur <= 0 and com <= 0:
+        opts.append(("أضف 15 ثانية تعليق أصلي", {**edit, "commentary_s": 15.0}))
+    if not edit.get("has_captions"):
+        opts.append(("أضف كابشن عربي", {**edit, "has_captions": True}))
+    if not edit.get("has_graphics"):
+        opts.append(("أضف جرافيك/هوية قناة", {**edit, "has_graphics": True}))
+    if not edit.get("has_replay"):
+        opts.append(("أضف إعادة/تحليل حركة", {**edit, "has_replay": True}))
+    if not edit.get("has_crop"):
+        opts.append(("أعد التأطير عمودياً", {**edit, "has_crop": True}))
+    try:
+        segments = int(edit.get("segments") or 1)
+    except (TypeError, ValueError):
+        segments = 1
+    if segments < 3:
+        opts.append(("ركّب 3 لقطات متتابعة", {**edit, "segments": 3}))
+    if dur > 180:
+        opts.append(("اقتطع 90 ثانية حول الذروة", {**edit, "duration_s": 90.0}))
+    return opts
+
+
+def improve_plan(edit: Optional[Dict[str, Any]] = None, target: int = 55,
+                 max_steps: int = 4) -> Dict[str, Any]:
+    """أقصر طريق مقاس من الحالة الحالية إلى درجة قيمة مضافة مقبولة.
+
+    جشع خطوة بخطوة على نموذج `assess_reuse` نفسه: كل خطوة هي التغيير الذي يعطي
+    أكبر زيادة قابلة للقياس الآن. يُعرض للمشغّل قبل النشر، ولا يعدّل شيئاً.
+    """
+    work = dict(edit or {})
+    current = assess_reuse(work)
+    steps: List[Dict[str, Any]] = []
+    target = int(target)
+    for _ in range(max(0, int(max_steps))):
+        if current["score"] >= target:
+            break
+        best = None
+        for label, mutated in _plan_options(work):
+            report = assess_reuse(mutated)
+            gain = report["score"] - current["score"]
+            if gain > 0 and (best is None or gain > best[0]):
+                best = (gain, label, mutated, report)
+        if best is None:
+            break
+        gain, label, work, current = best
+        steps.append({"action": label, "delta": int(gain), "score": current["score"]})
+    return {
+        "score": current["score"],
+        "target": target,
+        "tier": current["tier"],
+        "steps": steps,
+        "reached": current["score"] >= target,
+        "remaining": max(0, target - current["score"]),
+    }
+
+
 # --------------------------------------------------------- 2) تصنيف حالة الفيديو
 def classify_video_status(status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """يحوّل رد `YouTubeUploader.video_status` إلى حادثة مصنّفة قابلة للتسجيل."""
@@ -490,6 +554,12 @@ def build_dossier(job: Optional[Dict[str, Any]] = None,
     lines.append(f"- درجة القيمة المضافة: **{reuse['score']}/100** ({reuse['tier']})")
     for factor in reuse["factors"]:
         lines.append(f"- {factor}")
+    plan = improve_plan({**edit, "duration_s": edit.get("duration_s") or job.get("duration")})
+    if plan["steps"]:
+        lines.append("")
+        lines.append("**ما ينقص (مقاس):**")
+        for step in plan["steps"]:
+            lines.append(f"- {step['action']} (+{step['delta']}) → {step['score']}/100")
     if reuse["blockers"]:
         lines.append("")
         lines.append("**عوائق:**")

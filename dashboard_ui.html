@@ -1934,7 +1934,7 @@ async function submitPub(id,targets,trigger=null){
     const youtube=result.youtube;
     const freshUpload=!!(youtube?.ok&&/^[A-Za-z0-9_-]{11}$/.test(String(youtube.id||"")));
     const reuseWarn=Array.isArray(youtube?.reuse?.blockers)&&youtube.reuse.blockers.length
-      ? `<div class="warn" style="border-color:#7a5a1f;color:#ffd58a">⚠️ قيمة مضافة منخفضة (${esc(String(youtube.reuse.score))}/100): ${youtube.reuse.blockers.map(b=>esc(String(b))).join(" ")}</div>`
+      ? `<div class="warn" style="border-color:#7a5a1f;color:#ffd58a">⚠️ قيمة مضافة منخفضة (${esc(String(youtube.reuse.score))}/100): ${youtube.reuse.blockers.map(b=>esc(String(b))).join(" ")}${Array.isArray(youtube.reuse.plan?.steps)&&youtube.reuse.plan.steps.length?`<br>الخطوة التالية: ${esc(String(youtube.reuse.plan.steps[0].action))} (+${esc(String(youtube.reuse.plan.steps[0].delta))})`:""}</div>`
       : "";
     if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=reuseWarn+rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
     if(targets.includes("youtube")||targets.includes("telegram")){

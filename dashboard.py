@@ -2423,6 +2423,7 @@ def api_publish(jid: str, payload: dict):
         if "youtube" in targets:
             from reelkit import compliance as COMPLIANCE
             reuse = COMPLIANCE.assess_reuse(_edit_profile(job))
+            reuse["plan"] = COMPLIANCE.improve_plan(_edit_profile(job))
             if reuse["blockers"]:
                 AUDIT.append_event("compliance_status", jid, kind="reuse_warning",
                                    detail={"tier": reuse["tier"], "score": reuse["score"]})
@@ -2696,7 +2697,9 @@ def api_job_reuse_check(jid: str):
             raise HTTPException(404, "job not found")
         profile = _edit_profile(job)
     from reelkit import compliance as COMPLIANCE
-    return {"profile": profile, "reuse": COMPLIANCE.assess_reuse(profile)}
+    return {"profile": profile,
+            "reuse": COMPLIANCE.assess_reuse(profile),
+            "plan": COMPLIANCE.improve_plan(profile)}
 
 def _logo_list():
     out = []
