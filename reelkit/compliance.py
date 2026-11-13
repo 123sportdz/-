@@ -40,6 +40,14 @@ STRIKE_RULES = {
 }
 
 # أنواع الحوادث التي قد يحملها السجل
+EVIDENCE_STATES = {
+    "verified": "مطابق للبصمة",
+    "unhashed": "موجود بلا بصمة معلنة",
+    "mismatch": "تغيّر — لا يطابق البصمة",
+    "missing": "مفقود",
+    "invalid": "مسار غير صالح",
+}
+
 KINDS = {
     "ok", "processing", "upload_failed", "deleted", "unknown",
     "rejected_copyright", "rejected_duplicate", "rejected_inappropriate",
@@ -300,6 +308,62 @@ def improve_plan(edit: Optional[Dict[str, Any]] = None, target: int = 55,
         "steps": steps,
         "reached": current["score"] >= target,
         "remaining": max(0, target - current["score"]),
+    }
+
+
+def sha256_file(path: Any, chunk: int = 1024 * 1024, max_bytes: int = 3 * 1024 ** 3) -> str:
+    """بصمة SHA-256 لملف المصدر (بثّ chunked). ترجع "" عند الفشل أو التجاوز."""
+    try:
+        target = Path(path)
+        if not target.is_file() or target.stat().st_size > max_bytes:
+            return ""
+        digest = hashlib.sha256()
+        with target.open("rb") as stream:
+            for block in iter(lambda: stream.read(chunk), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
+def verify_evidence(assets: Optional[List[Dict[str, Any]]] = None,
+                    evidence_root: Optional[str] = None) -> Dict[str, Any]:
+    """يتحقق أن ملفات الدليل ما زالت موجودة ومطابقة للبصمة المعلنة.
+
+    الاعتراض يُرفض عملياً إذا كان الدليل مفقوداً أو تغيّر منذ التسجيل. هذا فحص
+    وقائع محلي: لا يقرر ملكية ولا صحة ترخيص، فقط «هل الملف الذي ستُرسله هو نفسه».
+    """
+    from reelkit.rights import _evidence_digest      # نفس مسار الأدلة وحمايته من الخروج
+
+    rows: List[Dict[str, Any]] = []
+    broken: List[str] = []
+    for index, asset in enumerate(assets or []):
+        if not isinstance(asset, dict):
+            continue
+        source = _text(asset.get("source") or asset.get("source_reference") or asset.get("asset_id"), 90)
+        rel = asset.get("evidence_path") or ""
+        declared = _text(asset.get("evidence_sha256"), 80).lower()
+        digest, error = _evidence_digest(rel, evidence_root) if rel else (None, "evidence_missing")
+        if digest is None:
+            state = "invalid" if error == "evidence_path_invalid" else "missing"
+        elif declared and declared != digest.lower():
+            state = "mismatch"
+        elif declared:
+            state = "verified"
+        else:
+            state = "unhashed"
+        row = {"index": index, "source": source or f"asset-{index + 1}",
+               "state": state, "declared_sha256": declared,
+               "actual_sha256": (digest or "").lower(), "error": error or ""}
+        rows.append(row)
+        if state in ("missing", "mismatch", "invalid"):
+            broken.append(source or f"asset-{index + 1}")
+    return {
+        "assets": rows,
+        "broken": broken,
+        "ok": not broken,
+        "hashed": sum(1 for row in rows if row["state"] in ("verified", "mismatch")),
+        "total": len(rows),
     }
 
 
@@ -579,6 +643,12 @@ def build_dossier(job: Optional[Dict[str, Any]] = None,
     lines.append(f"- فيديو YouTube: `{video_id or '—'}`")
     lines.append(f"- العنوان: {_text(job.get('title'), 200) or '—'}")
     lines.append(f"- الخروج: `{_safe_name(job.get('output')) or '—'}`")
+    source_sha = _text(job.get("source_sha256"), 64)
+    if source_sha:
+        lines.append(f"- بصمة المصدر (SHA-256): `{source_sha}`")
+    clip = job.get("clip_window") if isinstance(job.get("clip_window"), dict) else {}
+    if clip:
+        lines.append(f"- نافذة الاقتطاع: {clip.get('start', 'البداية')} .. {clip.get('end', 'النهاية')}")
     lines.append("")
     lines.append("> هذا الملف يوثّق **وقائع** إنتاج وترخيص كما أدخلها المشغّل. "
                  "ليس اعتراضاً قانونياً، ولا إقراراً بالملكية، ولا حكماً باستخدام عادل.")
@@ -609,21 +679,31 @@ def build_dossier(job: Optional[Dict[str, Any]] = None,
         lines.append(f"- {label}: {_text(rights.get(key), 300) or '—'}")
     lines.append(f"- إفصاح المحتوى المعدّل/الاصطناعي: "
                  f"{'نعم' if rights.get('contains_synthetic_media') else 'لا'}")
+    evidence = verify_evidence(assets)
     if assets:
         lines.append("")
-        lines.append("| الأصل | النوع | صاحب الحق | نوع الإذن | المنصات | بصمة الدليل |")
-        lines.append("|---|---|---|---|---|---|")
-        for asset in assets[:30]:
+        lines.append("| الأصل | النوع | صاحب الحق | نوع الإذن | المنصات | حالة الدليل | بصمة الدليل |")
+        lines.append("|---|---|---|---|---|---|---|")
+        states = {row["index"]: row for row in evidence["assets"]}
+        for index, asset in enumerate(assets[:30]):
             if not isinstance(asset, dict):
                 continue
-            lines.append("| {} | {} | {} | {} | {} | {} |".format(
+            row = states.get(index) or {"state": "missing", "declared_sha256": "",
+                                        "actual_sha256": ""}
+            digest = row.get("declared_sha256") or row.get("actual_sha256") or "—"
+            lines.append("| {} | {} | {} | {} | {} | {} | `{}` |".format(
                 _text(asset.get("source") or asset.get("reference"), 90) or "—",
                 _text(asset.get("media_type"), 20) or "—",
                 _text(asset.get("rights_holder"), 60) or "—",
                 _text(asset.get("permission_type"), 20) or "—",
                 ", ".join(str(p) for p in (asset.get("allowed_platforms") or [])[:4]) or "—",
-                _text(asset.get("evidence_sha256"), 80) or "—",
+                EVIDENCE_STATES.get(row.get("state"), row.get("state")),
+                digest,
             ))
+        if evidence["broken"]:
+            lines.append("")
+            lines.append("**⚠️ دليل ناقص أو متغيّر:** " + "، ".join(evidence["broken"]))
+            lines.append("لا ترسل اعتراضاً قبل استعادة الملف المطابق أو إرفاق نسخة جديدة موثّقة.")
     lines.append("")
     lines.append("## 3) سجل الحوادث")
     lines.append("")

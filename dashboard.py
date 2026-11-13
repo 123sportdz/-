@@ -1668,7 +1668,9 @@ def _create(payload):
                      "label": os.path.basename(src), "status": "queued", "stage": "في الانتظار",
                      "progress": 0, "created": time.time(), "options": payload,
                      "priority": "high" if str(payload.get("priority", "normal")).lower() == "high" else "normal",
-                     "title": "", "description": "", "tags": [], "publish": {}}
+                     "title": "", "description": "", "tags": [], "publish": {},
+                     "clip_window": ({"start": payload.get("start"), "end": payload.get("end")}
+                                     if (payload.get("start") or payload.get("end")) else {})}
     try:                        # ⏱️ تقدير زمن الرندر قبل البدء (heuristic فقط)
         from reelkit.estimate import estimate_render_seconds
         _meta = _probe_meta(src)
@@ -1691,6 +1693,15 @@ def _create(payload):
             return                            # 🔧 حُذفت قبل إقلاع الخيط (سباق حذف)
         jj["stage"] = "في الانتظار…"
         _persist()
+        if not jj.get("source_sha256"):
+            try:                      # 🔎 بصمة المصدر: دليل هوية للملف عند أي مطالبة لاحقة
+                from reelkit import compliance as COMPLIANCE
+                _sha = COMPLIANCE.sha256_file(jj.get("input"))
+                if _sha:
+                    with _lock:
+                        jj["source_sha256"] = _sha
+            except Exception:
+                pass
         priority = jj.get("priority", "normal")
         JOB_SEM.acquire(priority)   # 🚦 high يسبق normal منضبطاً
         gpu_token = None
@@ -2702,6 +2713,64 @@ def api_job_reuse_check(jid: str):
             "tracking": profile.get("tracking") or {},
             "reuse": COMPLIANCE.assess_reuse(profile),
             "plan": COMPLIANCE.improve_plan(profile)}
+
+
+@app.get("/api/jobs/{jid}/readiness")
+def api_job_readiness(jid: str):
+    """ملخص جاهزية النشر: حقائق مسجّلة فقط، بلا ادّعاء اكتمال قانوني."""
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        profile = _edit_profile(job)
+        quality = dict(job.get("quality_report") or {})
+        review = job.get("rights_review") if isinstance(job.get("rights_review"), dict) else {}
+    from reelkit import compliance as COMPLIANCE
+    reuse = COMPLIANCE.assess_reuse(profile)
+    freeze = COMPLIANCE.publish_gate()
+    tracking = profile.get("tracking") if isinstance(profile.get("tracking"), dict) else {}
+    miss = tracking.get("frame_miss_pct")
+    coverage = tracking.get("coverage")
+
+    checks = {
+        "quality": {
+            "label": "جودة المخرج",
+            "ok": quality.get("ok") is True,
+            "detail": "; ".join(str(i) for i in (quality.get("issues") or [])) or "أبعاد/مدة/صوت",
+        },
+        "tracking": {
+            "label": "جودة التتبّع",
+            "ok": (None if not tracking else
+                   (miss is None or float(miss) <= 25.0)
+                   and (coverage is None or float(coverage) >= 60.0)),
+            "detail": ("لا تقرير تتبّع (رندر قديم أو تعطّل الكاشف)" if not tracking else
+                       f"تغطية {float(coverage or 0):.0f}% · خروج {float(miss or 0):.0f}% · "
+                       f"أطول فجوة {float(tracking.get('longest_gap') or 0):.2f}s"),
+        },
+        "reuse": {
+            "label": "القيمة المضافة",
+            "ok": bool(reuse["public_ok"]),
+            "detail": f"{reuse['score']}/100 — " + (reuse["blockers"][0] if reuse["blockers"] else "مقبولة للنشر العام"),
+        },
+        "compliance_freeze": {
+            "label": "قفل الإنذارات",
+            "ok": bool(freeze["ok"]),
+            "detail": freeze.get("error") or "لا إنذار نشط",
+        },
+        "rights": {
+            "label": "سجل الحقوق",
+            "ok": None if not review else bool(
+                ((review.get("target_reviews") or {}).get("youtube") or {}).get("ok")),
+            "detail": "لم يُسجَّل بعد" if not review else "مسجّل لهذه المهمة",
+        },
+    }
+    blocking = [key for key, item in checks.items()
+                if item["ok"] is False and key in ("quality", "compliance_freeze")]
+    review_needed = [key for key, item in checks.items() if item["ok"] is not True]
+    verdict = "blocked" if blocking else ("review" if review_needed else "ready")
+    return {"verdict": verdict, "checks": checks,
+            "blocking": blocking, "review": review_needed,
+            "reuse": reuse, "plan": COMPLIANCE.improve_plan(profile)}
 
 def _logo_list():
     out = []
