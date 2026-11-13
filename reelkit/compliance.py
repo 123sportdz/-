@@ -1,0 +1,587 @@
+"""reelkit.compliance — الامتثال على YouTube من الجذر: قيمة مضافة، حوادث، وقفل نشر.
+
+YouTube لا يعاقب على قِصر المقطع ولا على العلامة المائية. يعاقب على ثلاثة أشياء:
+
+1. **حقوق النشر** — مطابقة Content ID ⇒ مطالبة أو حجب جغرافي، والإنذارات الثلاثة
+   تُغلق القناة. الإنذار لا يظهر في Data API؛ يُرى في Studio ويُسجَّل هنا يدوياً.
+2. **إعادة استخدام المحتوى** — مخرج بلا قيمة أصلية ⇒ منع تحقيق الدخل ووصول محدود.
+   هذا يُقاس: تعليق أصلي، كابشن، جرافيك، إعادة، تعدد اللقطات، ومدة المصدر.
+3. **إرشادات المجتمع** — رفض/حجب بسبب المحتوى نفسه.
+
+الوحدة تفعل أربعة أشياء، ولا تفعل شيئاً آخر:
+  - `assess_reuse`   : يقيس القيمة المضافة قبل النشر ويقول ما ينقص.
+  - `classify_video_status` : يترجم حالة Data API إلى حادثة مصنّفة.
+  - `ledger`         : سجل JSONL للمطالبات والإنذارات، ونافذة إنذار 90 يوماً،
+                       وقفل نشر محسوب من سياسة YouTube نفسها (7/14/إغلاق).
+  - `build_dossier`  : ملف وقائع جاهز لمراجعة بشرية عند الاعتراض.
+
+لا تخفي هذه الوحدة بصمة، ولا تنشئ اعتراضاً تلقائياً، ولا تتجاوز `reelkit.rights`.
+السجل يوثّق وقائع؛ ولا يثبت ملكية ولا يمنح ترخيصاً.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+_LOCK = threading.Lock()
+
+STRIKE_WINDOW_DAYS = 90          # إنذار حقوق النشر ينتهي بعد 90 يوماً على YouTube
+STRIKE_RULES = {
+    # عدد الإنذارات النشطة: (أيام المنع، مستوى المنع)
+    1: (7, "upload"),            # أسبوع بلا رفع
+    2: (14, "upload"),           # أسبوعان بلا رفع
+    3: (None, "terminated"),     # القناة تُغلق — لا رفع حتى المراجعة اليدوية
+}
+
+# أنواع الحوادث التي قد يحملها السجل
+KINDS = {
+    "ok", "processing", "upload_failed", "deleted", "unknown",
+    "rejected_copyright", "rejected_duplicate", "rejected_inappropriate",
+    "rejected_terms", "rejected_other", "region_blocked", "claim", "strike",
+}
+
+REJECTION_MAP = {
+    "copyright": ("rejected_copyright", 3, True,
+                  "رفض YouTube الفيديو لحقوق النشر",
+                  ["افتح YouTube Studio ← Content ← Restrictions وتحقق من وجود إنذار",
+                   "لا تعد رفع الفيديو نفسه قبل مراجعة الحقوق",
+                   "سجّل الإنذار يدوياً: python -m reelkit.compliance strike --video ID"]),
+    "duplicate": ("rejected_duplicate", 2, True,
+                  "رفض YouTube الفيديو كمحتوى مكرر/معاد استخدامه",
+                  ["أضف تعليقاً أصلياً وكابشن وجرافيك يغيّر المعنى لا الشكل فقط",
+                   "استخدم مادة تملكها أو مرخّصة، لا مجرد قص وتكبير"]),
+    "inappropriate": ("rejected_inappropriate", 3, True,
+                      "رفض YouTube الفيديو لمخالفة إرشادات المجتمع",
+                      ["راجع المشاهد العنيفة/الحساسة في المصدر",
+                       "اقتصر على اللقطات الرياضية المسموحة وأخفِ ما قد يُصنَّف مخالفاً"]),
+    "termsofuse": ("rejected_terms", 3, True,
+                   "رفض YouTube الفيديو لمخالفة شروط الاستخدام",
+                   ["راجع سبب الرفض في Studio قبل أي إعادة رفع"]),
+}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _text(value: Any, limit: int = 500) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+# ------------------------------------------------------------- 1) القيمة المضافة
+def assess_reuse(edit: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """يقدّر هل المخرج «محتوى معاد استخدامه» بنظر سياسة YouTube.
+
+    المدخلات كلها اختيارية (أي حقل غائب = صفر):
+      duration_s, source_duration_s, segments, commentary_s, has_captions,
+      has_graphics, has_replay, has_crop, is_full_match, source_kind
+        source_kind: own | licensed | broadcast | unknown
+
+    المخرج **تقدير هندسي** لا حكم قانوني: `score` 0..100 لقيمة أصلية مضافة،
+    و`tier`، و`public_ok`، و`actions` بما ينقص فعلاً.
+    """
+    edit = edit or {}
+    duration = max(0.0, float(edit.get("duration_s") or 0.0))
+    commentary = max(0.0, float(edit.get("commentary_s") or 0.0))
+    segments = max(1, int(edit.get("segments") or 1))
+    full_match = bool(edit.get("is_full_match"))
+    source_kind = str(edit.get("source_kind") or "unknown").lower()
+
+    score = 0
+    factors: List[str] = []
+    actions: List[str] = []
+
+    # التعليق الأصلي هو أقوى إشارة تحويل: صوتك يضيف معنى لا يوجد في المصدر.
+    if duration > 0 and commentary > 0:
+        coverage = min(1.0, commentary / max(1.0, min(duration, 90.0)))
+        pts = int(round(40 * min(1.0, coverage / 0.5)))
+        score += pts
+        factors.append(f"تعليق أصلي {commentary:.0f}s ({coverage*100:.0f}% من المقطع) +{pts}")
+    else:
+        actions.append("أضف تعليقاً صوتياً أصلياً — أقوى دليل على قيمة مضافة، وأول ما تطلبه مراجعة إعادة الاستخدام.")
+
+    if edit.get("has_captions"):
+        score += 10
+        factors.append("كابشن/نص على الشاشة +10")
+    else:
+        actions.append("أضف كابشن عربي (كلمة-بكلمة) — تحويل نصي مرئي، ليس مجرد قص.")
+
+    if edit.get("has_graphics"):
+        score += 10
+        factors.append("جرافيك/هوية/شعار +10")
+    if edit.get("has_replay"):
+        score += 5
+        factors.append("إعادة/تحليل حركة +5")
+
+    if segments >= 3:
+        score += 10
+        factors.append(f"{segments} لقطات مركّبة +10")
+    elif segments == 2:
+        score += 5
+        factors.append("لقطتان مركّبتان +5")
+
+    if edit.get("has_crop"):
+        score += 5
+        factors.append("إعادة تأطير عمودي +5")
+
+    if 0 < duration <= 60:
+        score += 5
+        factors.append("مدة قصيرة +5")
+    elif duration > 180:
+        score -= 15
+        factors.append("مدة >3 دقائق -15")
+
+    if full_match:
+        score -= 50
+        factors.append("تسجيل كامل للمباراة -50")
+
+    if source_kind in ("broadcast", "unknown"):
+        factors.append("المصدر بثّ/غير محدّد — لا يضيف نقاطاً ولا يعفي من الحقوق")
+
+    score = int(max(0, min(100, score)))
+    if score >= 55:
+        tier = "low"
+    elif score >= 25:
+        tier = "medium"
+    else:
+        tier = "high"
+
+    raw_reupload = (not commentary and not edit.get("has_captions")
+                    and not edit.get("has_graphics") and segments <= 1)
+    blockers: List[str] = []
+    if full_match:
+        blockers.append("المقطع تسجيل كامل/شبه كامل للمباراة — مرفوض للنشر العام.")
+    if duration > 600:
+        blockers.append("المدة تتجاوز 10 دقائق — ليست مقتطفاً، بل إعادة بثّ.")
+    if raw_reupload:
+        blockers.append("قصّ فقط بلا أي إضافة أصلية — هذا تعريف «reused content».")
+    if tier == "high" and not blockers:
+        blockers.append("القيمة المضافة منخفضة (درجة %d/100) — YouTube قد يمنع تحقيق الدخل والوصول." % score)
+
+    if source_kind == "unknown":
+        actions.append("حدّد مصدر المادة في سجل الحقوق؛ «غير متأكد» يبقي النشر العام ممنوعاً.")
+    if full_match or duration > 600:
+        actions.append("اقتطع 30–60 ثانية حول الذروة فقط، مع تعليق وتحليل.")
+
+    return {
+        "score": score,
+        "tier": tier,
+        "public_ok": not blockers,
+        "blockers": blockers,
+        "factors": factors,
+        "actions": actions,
+        "edit": {
+            "duration_s": duration,
+            "commentary_s": commentary,
+            "segments": segments,
+            "source_kind": source_kind,
+        },
+    }
+
+
+def edit_profile(*, duration_s: float = 0.0, commentary_s: float = 0.0,
+                 segments: int = 1, has_captions: bool = False,
+                 has_graphics: bool = False, has_replay: bool = False,
+                 has_crop: bool = True, source_duration_s: float = 0.0,
+                 is_full_match: bool = False, source_kind: str = "unknown",
+                 **extra: Any) -> Dict[str, Any]:
+    """يبني ملف وقائع التحرير من قياسات الرندر (لا تخمين).
+
+    يكتبه `reel.py --report-json` بجوار المخرج، وتقرأه اللوحة في `job["edit_profile"]`
+    كي يقيس `assess_reuse` ما جرى فعلاً: مدة التعليق المسجَّلة، عدد اللقطات، الكابشن.
+    """
+    def num(value: Any, default: float = 0.0) -> float:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        return out if out == out and out >= 0 else default     # يرفض NaN والسالب
+
+    profile = {
+        "duration_s": num(duration_s),
+        "commentary_s": num(commentary_s),
+        "segments": max(1, int(num(segments, 1) or 1)),
+        "has_captions": bool(has_captions),
+        "has_graphics": bool(has_graphics),
+        "has_replay": bool(has_replay),
+        "has_crop": bool(has_crop),
+        "source_duration_s": num(source_duration_s),
+        "is_full_match": bool(is_full_match),
+        "source_kind": _text(source_kind, 20).lower() or "unknown",
+    }
+    for key in ("commentary_words", "qa", "engine"):
+        if key in extra and extra[key] is not None:
+            profile[key] = extra[key]
+    return profile
+
+
+# --------------------------------------------------------- 2) تصنيف حالة الفيديو
+def classify_video_status(status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """يحوّل رد `YouTubeUploader.video_status` إلى حادثة مصنّفة قابلة للتسجيل."""
+    status = status if isinstance(status, dict) else {}
+    upload = _text(status.get("upload_status"), 40).lower()
+    failure = _text(status.get("failure_reason"), 60).lower()
+    rejection = _text(status.get("rejection_reason"), 60).lower()
+    processing = _text(status.get("processing_status"), 40).lower()
+    region = status.get("region_restriction") if isinstance(status.get("region_restriction"), dict) else {}
+    blocked = [str(x) for x in (region.get("blocked") or []) if str(x).strip()]
+    allowed = region.get("allowed")
+
+    def result(kind: str, severity: int, blocking: bool, headline: str,
+               actions: Iterable[str] = (), *, claim_like: bool = False,
+               studio: bool = False) -> Dict[str, Any]:
+        return {
+            "kind": kind,
+            "severity": severity,
+            "blocking": blocking,
+            "claim_like": claim_like,
+            "requires_studio_check": studio,
+            "headline": headline,
+            "actions": list(actions),
+        }
+
+    if upload == "rejected":
+        kind, severity, blocking, headline, actions = REJECTION_MAP.get(
+            rejection,
+            ("rejected_other", 3, True, "رفض YouTube الفيديو",
+             ["افتح Studio واقرأ سبب الرفض قبل أي إعادة رفع"]),
+        )
+        return result(kind, severity, blocking, headline, actions, studio=True)
+
+    if upload == "failed":
+        reason = failure or "غير معروف"
+        return result("upload_failed", 2, True, f"فشل الرفع/المعالجة ({reason})",
+                      ["أعد الرفع بعد التحقق من الترميز والاتصال",
+                       "راجع processingFailureReason في Studio"])
+
+    if upload == "deleted":
+        return result("deleted", 1, False, "الفيديو محذوف من YouTube",
+                      ["تأكد من أن الحذف مقصود قبل إعادة الرفع"])
+
+    if upload in ("processed", "uploaded"):
+        if blocked:
+            return result("region_blocked", 2, False,
+                          f"الفيديو محجوب في {len(blocked)} دولة — مؤشر مطالبة/قيود",
+                          ["افتح Studio ← Restrictions وتحقق من المطالبة ونطاقها",
+                           "لا تحاول تجاوز الحجب بتغيير الملف؛ عالج الحق أو الاعتراض بمستند"],
+                          claim_like=True, studio=True)
+        if isinstance(allowed, list) and not allowed:
+            return result("region_blocked", 2, False, "الفيديو محجوب عالمياً",
+                          ["افتح Studio ← Restrictions؛ الحجب العالمي غالباً مطالبة حقوق"],
+                          claim_like=True, studio=True)
+        if processing in ("processing", "terminated"):
+            return result("processing", 0, False, "YouTube ما زال يعالج الفيديو", [])
+        return result("ok", 0, False, "الفيديو متاح بلا رفض أو حجب مسجّل", [])
+
+    return result("unknown", 1, False, "حالة فيديو غير معروفة",
+                  ["أعد فحص الحالة من Studio"], studio=True)
+
+
+# ------------------------------------------------------------------ 3) السجل
+def default_path(root: Optional[str] = None) -> Path:
+    base = Path(root) if root else Path(os.environ.get("REELKIT_ROOT") or Path.cwd())
+    return base / "compliance_log.jsonl"
+
+
+def append(kind: str, *, job_id: str = "", video_id: str = "", privacy: str = "",
+           reason: str = "", note: str = "", detail: Optional[Dict[str, Any]] = None,
+           path: Optional[str] = None, ts: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """يضيف حادثة واحدة. يفشل بصمت — السجل لا يوقف النشر بنفسه."""
+    if kind not in KINDS:
+        raise ValueError(f"نوع حادثة غير معروف: {kind!r}")
+    entry = {
+        "ts": _iso(ts or _now()),
+        "kind": kind,
+        "job_id": _text(job_id, 80),
+        "video_id": _text(video_id, 20),
+        "privacy": _text(privacy, 20),
+        "reason": _text(reason, 200),
+        "note": _text(note, 500),
+    }
+    if detail:
+        entry["detail"] = json.loads(json.dumps(detail, ensure_ascii=False, default=str))
+    target = Path(path) if path else default_path()
+    try:
+        with _LOCK:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return None
+    return entry
+
+
+def read(path: Optional[str] = None, limit: int = 500,
+         job_id: Optional[str] = None, video_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """يقرأ الأحدث أولاً. سطر مشوّه يُتجاهل ولا يُسقط السجل."""
+    target = Path(path) if path else default_path()
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if job_id and entry.get("job_id") != job_id:
+            continue
+        if video_id and entry.get("video_id") != video_id:
+            continue
+        out.append(entry)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def active_strikes(entries: Optional[List[Dict[str, Any]]] = None, now: Optional[datetime] = None,
+                   path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """الإنذارات داخل نافذة 90 يوماً، الأحدث أولاً."""
+    now = now or _now()
+    entries = entries if entries is not None else read(path=path, limit=5000)
+    floor = now - timedelta(days=STRIKE_WINDOW_DAYS)
+    out = []
+    for entry in entries:
+        if entry.get("kind") != "strike":
+            continue
+        ts = _parse_ts(entry.get("ts"))
+        if ts is not None and floor <= ts <= now:
+            out.append(entry)
+    out.sort(key=lambda e: _parse_ts(e.get("ts")) or now, reverse=True)
+    return out
+
+
+def restriction(entries: Optional[List[Dict[str, Any]]] = None, now: Optional[datetime] = None,
+                path: Optional[str] = None) -> Dict[str, Any]:
+    """قفل النشر المحسوب من سياسة YouTube: 7 أيام، 14 يوماً، ثم إغلاق."""
+    now = now or _now()
+    strikes = active_strikes(entries, now=now, path=path)
+    count = len(strikes)
+    if count >= 3:
+        return {"level": "terminated", "strikes": count, "blocked_until": None,
+                "reason": "ثلاثة إنذارات نشطة — القناة معرّضة للإغلاق، لا رفع."}
+    if count:
+        days, level = STRIKE_RULES[count]
+        latest = _parse_ts(strikes[0].get("ts")) or now
+        until = latest + timedelta(days=days)
+        if until > now:
+            return {"level": level, "strikes": count, "blocked_until": _iso(until),
+                    "reason": f"{count} إنذار نشط — الرفع ممنوع حتى {_iso(until)}."}
+        return {"level": "none", "strikes": count, "blocked_until": None,
+                "reason": "انذار منتهي الأثر."}
+    return {"level": "none", "strikes": 0, "blocked_until": None, "reason": ""}
+
+
+def publish_gate(privacy: str = "public", now: Optional[datetime] = None,
+                 path: Optional[str] = None) -> Dict[str, Any]:
+    """بوابة النشر: تعيد ok=False أثناء قفل الرفع. تُستدعى قبل أي رفع."""
+    lock = restriction(now=now, path=path)
+    if lock["level"] == "none":
+        return {"ok": True, "restriction": lock}
+    return {
+        "ok": False,
+        "code": "compliance_freeze",
+        "error": "قفل نشر نشط: " + lock["reason"],
+        "restriction": lock,
+    }
+
+
+def record_status(job_id: str, video_id: str, status: Dict[str, Any],
+                  privacy: str = "", path: Optional[str] = None) -> Dict[str, Any]:
+    """يصنّف الحالة ويسجّلها. لا يسجّل `ok` المتكرر مرتين لنفس الفيديو."""
+    classified = classify_video_status(status)
+    if classified["kind"] not in ("ok", "processing"):
+        append(classified["kind"], job_id=job_id, video_id=video_id, privacy=privacy,
+               reason=classified["headline"], path=path,
+               detail={"severity": classified["severity"],
+                       "rejection_reason": status.get("rejection_reason") if isinstance(status, dict) else None})
+    return classified
+
+
+def record_strike(job_id: str, video_id: str, reason: str = "", note: str = "",
+                  path: Optional[str] = None) -> Dict[str, Any]:
+    """يسجّل إنذاراً يدوياً (لا يظهر في Data API) ويحسب القفل الناتج."""
+    append("strike", job_id=job_id, video_id=video_id, reason=reason or "إنذار حقوق نشر",
+           note=note, path=path)
+    return restriction(path=path)
+
+
+def summary(path: Optional[str] = None) -> Dict[str, Any]:
+    entries = read(path=path, limit=5000)
+    counts: Dict[str, int] = {}
+    for entry in entries:
+        kind = str(entry.get("kind") or "unknown")
+        counts[kind] = counts.get(kind, 0) + 1
+    return {
+        "counts": counts,
+        "strikes_active": len(active_strikes(entries)),
+        "restriction": restriction(entries),
+        "recent": entries[:20],
+    }
+
+
+# ------------------------------------------------------------- 4) ملف الوقائع
+def _safe_name(value: Any) -> str:
+    return Path(str(value or "")).name[:160]
+
+
+def build_dossier(job: Optional[Dict[str, Any]] = None,
+                  rights: Optional[Dict[str, Any]] = None,
+                  video_id: str = "", *, path: Optional[str] = None,
+                  now: Optional[datetime] = None) -> Dict[str, Any]:
+    """يبني ملف وقائع Markdown للاعتراض اليدوي. لا يُرسل شيئاً ولا يدّعي ملكية."""
+    job = job if isinstance(job, dict) else {}
+    rights = rights if isinstance(rights, dict) else {}
+    now = now or _now()
+    job_id = _text(job.get("id") or "", 80)
+    video_id = _text(video_id or "", 20)
+    edit = job.get("edit_profile") if isinstance(job.get("edit_profile"), dict) else {}
+    reuse = assess_reuse({**edit,
+                          "duration_s": edit.get("duration_s") or job.get("duration"),
+                          "segments": edit.get("segments") or job.get("segments") or 1})
+    events = read(path=path, limit=200, job_id=job_id) if job_id else []
+    if video_id:
+        events = [e for e in events if not e.get("video_id") or e.get("video_id") == video_id]
+
+    assets = rights.get("assets") if isinstance(rights.get("assets"), list) else []
+    lines: List[str] = []
+    lines.append("# ملف وقائع نشر — للمراجعة البشرية فقط")
+    lines.append("")
+    lines.append(f"- تاريخ الإنشاء: {_iso(now)}")
+    lines.append(f"- المهمة: `{job_id or '—'}`")
+    lines.append(f"- فيديو YouTube: `{video_id or '—'}`")
+    lines.append(f"- العنوان: {_text(job.get('title'), 200) or '—'}")
+    lines.append(f"- الخروج: `{_safe_name(job.get('output')) or '—'}`")
+    lines.append("")
+    lines.append("> هذا الملف يوثّق **وقائع** إنتاج وترخيص كما أدخلها المشغّل. "
+                 "ليس اعتراضاً قانونياً، ولا إقراراً بالملكية، ولا حكماً باستخدام عادل.")
+    lines.append("")
+    lines.append("## 1) التحويل المُضاف")
+    lines.append("")
+    lines.append(f"- درجة القيمة المضافة: **{reuse['score']}/100** ({reuse['tier']})")
+    for factor in reuse["factors"]:
+        lines.append(f"- {factor}")
+    if reuse["blockers"]:
+        lines.append("")
+        lines.append("**عوائق:**")
+        for blocker in reuse["blockers"]:
+            lines.append(f"- {blocker}")
+    lines.append("")
+    lines.append("## 2) إقرارات الحقوق")
+    lines.append("")
+    for label, key in (("الصورة", "visual_rights_basis"), ("الصوت/الموسيقى", "audio_rights_basis"),
+                       ("مرجع المصدر", "source_reference"),
+                       ("دليل الصورة", "visual_evidence_reference"),
+                       ("دليل الصوت", "audio_evidence_reference")):
+        lines.append(f"- {label}: {_text(rights.get(key), 300) or '—'}")
+    lines.append(f"- إفصاح المحتوى المعدّل/الاصطناعي: "
+                 f"{'نعم' if rights.get('contains_synthetic_media') else 'لا'}")
+    if assets:
+        lines.append("")
+        lines.append("| الأصل | النوع | صاحب الحق | نوع الإذن | المنصات | بصمة الدليل |")
+        lines.append("|---|---|---|---|---|---|")
+        for asset in assets[:30]:
+            if not isinstance(asset, dict):
+                continue
+            lines.append("| {} | {} | {} | {} | {} | {} |".format(
+                _text(asset.get("source") or asset.get("reference"), 90) or "—",
+                _text(asset.get("media_type"), 20) or "—",
+                _text(asset.get("rights_holder"), 60) or "—",
+                _text(asset.get("permission_type"), 20) or "—",
+                ", ".join(str(p) for p in (asset.get("allowed_platforms") or [])[:4]) or "—",
+                _text(asset.get("evidence_sha256"), 80) or "—",
+            ))
+    lines.append("")
+    lines.append("## 3) سجل الحوادث")
+    lines.append("")
+    if events:
+        for entry in events[:30]:
+            lines.append(f"- {entry.get('ts')} — {entry.get('kind')}: {_text(entry.get('reason'), 200)}")
+    else:
+        lines.append("- لا حوادث مسجّلة لهذه المهمة.")
+    lines.append("")
+    lines.append("## 4) ما يُرفق عند الاعتراض")
+    lines.append("")
+    for item in ("عقد/ترخيص أو إذن مكتوب يغطي المنصة والمدة",
+                 "بصمة SHA-256 لملف الدليل كما في سجل الأصول",
+                 "سكربت التعليق الأصلي وطريقة تسجيله",
+                 "لقطات الشاشة من خط الزمن تثبت القص والجرافيك والكابشن"):
+        lines.append(f"- [ ] {item}")
+    lines.append("")
+    lines.append("## 5) الخطوة التالية")
+    lines.append("")
+    lines.append("افتح Studio ← Content ← الفيديو ← Restrictions، اقرأ نوع المطالبة، "
+                 "ثم أرسل الاعتراض يدوياً بالمستندات أعلاه. لا تُرسل اعتراضاً بلا دليل.")
+    markdown = "\n".join(lines)
+    digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    return {"markdown": markdown, "sha256": digest, "job_id": job_id, "video_id": video_id}
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="python -m reelkit.compliance",
+                                     description="سجل المطالبات والإنذارات وقفل النشر")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_sum = sub.add_parser("summary", help="ملخص السجل والقفل الحالي")
+    p_sum.add_argument("--path", default=None)
+
+    p_strike = sub.add_parser("strike", help="تسجيل إنذار حقوق نشر يدوياً")
+    p_strike.add_argument("--video", default="")
+    p_strike.add_argument("--job", default="")
+    p_strike.add_argument("--reason", default="")
+    p_strike.add_argument("--note", default="")
+    p_strike.add_argument("--path", default=None)
+
+    p_gate = sub.add_parser("gate", help="فحص قفل النشر")
+    p_gate.add_argument("--path", default=None)
+
+    p_dos = sub.add_parser("dossier", help="توليد ملف وقائع لمهمة")
+    p_dos.add_argument("--job", default="")
+    p_dos.add_argument("--video", default="")
+    p_dos.add_argument("--path", default=None)
+
+    args = parser.parse_args(argv)
+    if args.cmd == "summary":
+        print(json.dumps(summary(path=args.path), ensure_ascii=False, indent=2))
+    elif args.cmd == "strike":
+        print(json.dumps(record_strike(args.job, args.video, args.reason, args.note,
+                                       path=args.path), ensure_ascii=False, indent=2))
+    elif args.cmd == "gate":
+        print(json.dumps(publish_gate(path=args.path), ensure_ascii=False, indent=2))
+    elif args.cmd == "dossier":
+        print(build_dossier({"id": args.job}, {}, args.video, path=args.path)["markdown"])
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(_main())

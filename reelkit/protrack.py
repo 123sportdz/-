@@ -66,8 +66,26 @@ def _gap_fill(a, fps, max_gap_s=1.2):
     return _hold_fill(a)
 
 
-def one_euro(x, fps, min_cutoff=1.1, beta=0.035, d_cutoff=1.0):
-    """مرشّح One Euro: تنعيم قوي عند الحركة البطيئة، استجابة عالية عند السريعة."""
+def _cut_slices(n, cuts):
+    """مقاطع [start, stop) بين القطوع. القطع عند c يعني أن اللقطة الجديدة تبدأ من c."""
+    idx = sorted({int(c) for c in (cuts or ()) if 0 < int(c) < n})
+    start = 0
+    for c in idx:
+        if c > start:
+            yield start, c
+        start = c
+    if start < n:
+        yield start, n
+
+
+def one_euro(x, fps, min_cutoff=1.1, beta=0.035, d_cutoff=1.0, cuts=()):
+    """مرشّح One Euro: تنعيم قوي عند الحركة البطيئة، استجابة عالية عند السريعة.
+
+    🎬 v1.73: `cuts` يعيد ضبط حالة المرشّح عند كل قطع. كان المرشّح IIR واحداً على
+    كل الفيديو، فتمرّ حالة اللقطة السابقة إلى أول فريم من اللقطة الجديدة: الكاميرا
+    تبدأ من موضع قديم ثم تزحف 0.3–0.5s قبل أن تصل الهدف (إطار خاطئ في كل قطع).
+    الآن كل لقطة تُرشَّح مستقلة، وأول فريم في اللقطة = هدفه بالضبط.
+    """
     x = np.asarray(x, float)
     n = len(x)
     if n == 0:
@@ -79,37 +97,51 @@ def one_euro(x, fps, min_cutoff=1.1, beta=0.035, d_cutoff=1.0):
         a = alpha(cut)
         out = np.empty_like(vals)
         prev = vals[0]
-        for i in range(n):
+        for i in range(len(vals)):
             prev = a * vals[i] + (1 - a) * prev
             out[i] = prev
         return out
 
-    dx = np.empty(n)
-    dx[0] = 0.0
-    dx[1:] = np.diff(x) * fps
-    dx_hat = _lp(dx, d_cutoff)
-    cut = min_cutoff + beta * np.abs(dx_hat)
+    def _run(lo, hi):
+        seg = x[lo:hi]
+        m = len(seg)
+        dx = np.empty(m)
+        dx[0] = 0.0
+        dx[1:] = np.diff(seg) * fps
+        dx_hat = _lp(dx, d_cutoff)
+        cutoff = min_cutoff + beta * np.abs(dx_hat)
+        out = np.empty(m)
+        prev = seg[0]
+        for j in range(m):
+            a = 1.0 / (1.0 + (1.0 / (2 * math.pi * max(0.05, cutoff[j]) * dt)))
+            prev = a * seg[j] + (1 - a) * prev
+            out[j] = prev
+        return out
+
     out = np.empty(n)
-    prev = x[0]
-    for i in range(n):
-        a = 1.0 / (1.0 + (1.0 / (2 * math.pi * max(0.05, cut[i]) * dt)))
-        prev = a * x[i] + (1 - a) * prev
-        out[i] = prev
+    for lo, hi in _cut_slices(n, cuts):
+        out[lo:hi] = _run(lo, hi)
     return out
 
 
-def savgol_vel(x, fps, win=9):
-    """سرعة مقاسة بمشتقة ناعمة (مربّع أدنى محلي) — أنظف من الفرق البسيط."""
+def savgol_vel(x, fps, win=9, cuts=()):
+    """سرعة مقاسة بمشتقة ناعمة (مربّع أدنى محلي) — أنظف من الفرق البسيط.
+
+    🎬 v1.73: `cuts` يحسب كل لقطة على حدة. النافذة كانت تعبر القطع فتمزج فريمات
+    من لقطتين مختلفتين في مشتقة واحدة ⇒ سرعة وهمية آلاف البكسلات/ثانية عند الحد،
+    وهي التي كانت تسحب الكاميرا إلى حافة الإطار في أول فريم من كل لقطة.
+    """
     x = np.asarray(x, float)
     k = max(3, int(win) | 1)
     half = k // 2
-    pad = np.pad(x, half, mode="edge")
     out = np.empty_like(x)
     t = np.arange(-half, half + 1) / fps
     A = np.vstack([np.ones_like(t), t]).T
     pinv = np.linalg.pinv(A)
-    for i in range(len(x)):
-        out[i] = pinv[1] @ pad[i:i + k]
+    for lo, hi in _cut_slices(len(x), cuts):
+        pad = np.pad(x[lo:hi], half, mode="edge")
+        for i in range(hi - lo):
+            out[lo + i] = pinv[1] @ pad[i:i + k]
     return out
 
 
@@ -670,7 +702,7 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
             y = None
         else:
             y = _gap_fill(y, fps)
-    vx = savgol_vel(x, fps, 9)
+    vx = savgol_vel(x, fps, 9, cuts=cuts)
     # 🎬 v1.45: قطع المشاهد تُنتج قفزة في x ⇒ savgol_vel يبلّغ سرعة وهمية (2450-3500px/s)
     # فتنطلق الكاميرا لحافة الإطار في بداية اللقطة الجديدة. نصفّر السرعة حول القطع.
     if cuts:
@@ -685,7 +717,7 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
     x_lo, x_hi = _camera_limits(half, n, W)
     if x_lo is not None:
         tgt = np.clip(tgt, x_lo, x_hi)
-    tgt = one_euro(tgt, fps, min_cutoff=0.9, beta=0.02)
+    tgt = one_euro(tgt, fps, min_cutoff=0.9, beta=0.02, cuts=cuts)
     if x_lo is not None:
         tgt = np.clip(tgt, x_lo, x_hi)
     cam = np.empty(n); vel = 0.0; dt = 1.0 / fps
@@ -712,7 +744,7 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
             cam[i] = next_cam
     cam_y = None
     if y is not None:
-        vy = savgol_vel(y, fps, 9)
+        vy = savgol_vel(y, fps, 9, cuts=cuts)
         if cuts:                                   # مثل vx: لا سرعة وهمية عبر القطع
             try:
                 for c in [int(c) for c in cuts if 0 <= int(c) < n]:
@@ -720,7 +752,7 @@ def predictive_camera(bx, by, fps, cuts=(), lead=0.16, deadzone=88.0, vmax=1200.
                     vy[lo:hi] = 0.0
             except Exception:
                 pass
-        ty = one_euro(y + lead * vy, fps, min_cutoff=0.9, beta=0.02)
+        ty = one_euro(y + lead * vy, fps, min_cutoff=0.9, beta=0.02, cuts=cuts)
         y_lo, y_hi = _camera_limits(half_v, n, H)
         if y_lo is not None:
             ty = np.clip(ty, y_lo, y_hi)
@@ -765,7 +797,7 @@ def dynamic_zoom(speed_px, fps, base=1.0, maxz=1.22, ref=None, cuts=()):
     r = np.clip(s / (ref * 1.6), 0.0, 1.0)
     r = _hold_fill(np.where(np.isfinite(r), r, 0.0))
     z = base + (maxz - base) * r
-    z = one_euro(z, fps, min_cutoff=0.5, beta=0.01)
+    z = one_euro(z, fps, min_cutoff=0.5, beta=0.01, cuts=cuts)
     # 🎬 v1.67: بعد التنعيم نُثبّت التقريب على القاعدة حول كل قطع — سرعة وهمية عبر
     # القطع كانت تُطلق punch-in مفاجئاً في أول لقطة جديدة (نفس منطق تصفير vx).
     n = len(s)

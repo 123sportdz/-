@@ -287,6 +287,12 @@ class YouTubeUploader:
         gate = RIGHTS.validate_youtube_publish(rights, privacy=privacy, scheduled=bool(publish_at))
         if not gate["ok"]:
             raise ValueError("رفض الرفع بسبب بوابة الحقوق: " + "؛ ".join(gate["errors"]))
+        # 🛑 قفل الإنذارات: بعد إنذار حقوق نشر يمنع YouTube الرفع نفسه لأسابيع.
+        # نمنع محلياً قبل استهلاك الحصة، ونفس الحالة تُقرأ من سجل compliance_log.jsonl.
+        from reelkit import compliance as COMPLIANCE
+        freeze = COMPLIANCE.publish_gate(privacy=privacy)
+        if not freeze["ok"]:
+            raise ValueError(freeze["error"])
         if not isinstance(rights, dict):
             rights = {}
         contains_synthetic_media = (contains_synthetic_media is True or

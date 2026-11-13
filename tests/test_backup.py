@@ -55,3 +55,21 @@ def test_backup_malformed_json_falls_back_to_raw_copy(tmp_path):
     out = B.backup_file(src, backup_dir=tmp_path / "backups")
     assert out is not None
     assert out.read_text(encoding="utf-8") == "{not json"
+
+
+def test_backup_rotation_orders_same_second_counters(tmp_path):
+    """نفس الطابع الزمني (خامة mtime ثانية): العدّاد يُفكّ رقمياً لا معجمياً."""
+    import os
+    d = tmp_path / "backups"
+    d.mkdir()
+    names = ["jobs.json.20260101-000000.bak",
+             "jobs.json.20260101-000000_0001.bak",
+             "jobs.json.20260101-000000_0002.bak",
+             "jobs.json.20260101-000000_0010.bak"]
+    for name in names:
+        p = d / name
+        p.write_text("{}", encoding="utf-8")
+        os.utime(p, ns=(1, 1))
+    kept = B.rotate(d, "jobs.json", keep=2)
+    assert kept == [d / names[3], d / names[2]]
+    assert not (d / names[0]).exists()

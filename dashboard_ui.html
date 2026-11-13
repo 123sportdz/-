@@ -1933,7 +1933,10 @@ async function submitPub(id,targets,trigger=null){
       : `<div class="warn" style="border-color:#6b2a30;color:#ff9aa2">❌ ${esc(target)}: ${esc(out?.error||out?.code||"فشل")}</div>`).join("");
     const youtube=result.youtube;
     const freshUpload=!!(youtube?.ok&&/^[A-Za-z0-9_-]{11}$/.test(String(youtube.id||"")));
-    if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
+    const reuseWarn=Array.isArray(youtube?.reuse?.blockers)&&youtube.reuse.blockers.length
+      ? `<div class="warn" style="border-color:#7a5a1f;color:#ffd58a">⚠️ قيمة مضافة منخفضة (${esc(String(youtube.reuse.score))}/100): ${youtube.reuse.blockers.map(b=>esc(String(b))).join(" ")}</div>`
+      : "";
+    if($("m_res")&&CUR?.id===id)$("m_res").innerHTML=reuseWarn+rows+(freshUpload?youtubeStatusPanel({youtube},id):"");
     if(targets.includes("youtube")||targets.includes("telegram")){
       const details=result.youtube?.details||result.telegram?.details||{};
       const fallbackReview={basis:rights.visual_rights_basis===rights.audio_rights_basis?rights.visual_rights_basis:"mixed",visual_rights_basis:rights.visual_rights_basis,audio_rights_basis:rights.audio_rights_basis,source_reference:rights.source_reference,evidence_reference:rights.evidence_reference,visual_evidence_reference:rights.visual_evidence_reference,audio_evidence_reference:rights.audio_evidence_reference,
@@ -1941,7 +1944,7 @@ async function submitPub(id,targets,trigger=null){
         evidence_reviewed:rights.evidence_reviewed,rights_acknowledged:rights.rights_acknowledged,
         contains_synthetic_media:rights.contains_synthetic_media,privacy:details.privacy||(youtube?.scheduled_for?"public":body.privacy),
         upload_privacy:details.upload_privacy||body.privacy,scheduled:details.scheduled===true||!!youtube?.scheduled_for,
-        form_complete:typeof details.ok==="boolean"?details.ok:!((result.youtube?.code||result.telegram?.code)==="rights_gate"),
+        form_complete:typeof details.ok==="boolean"?details.ok:!(["rights_gate","compliance_freeze","reuse_gate"].includes(result.youtube?.code||result.telegram?.code)),
         gate_errors:Array.isArray(details.errors)?details.errors:[],submitted_at:new Date().toISOString()};
       const review=result.rights_review&&typeof result.rights_review==="object"?result.rights_review:fallbackReview;
       const job=JOBS.find(x=>x.id===id);if(job)job.rights_review=review;

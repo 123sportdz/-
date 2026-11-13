@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -30,13 +31,34 @@ def default_redact(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# عدّاد النسخ داخل الثانية نفسها يُكتب `_0001` (شرطة سفلية + أصفار) كي لا يلتبس
+# بفاصل الوقت `-HHMMSS` ولا يكسر الترتيب المعجمي عند تعادل mtime.
+_COUNTER_RE = re.compile(r"_(\d{4,})\.bak$")
+
+
+def _rotation_key(path: Path):
+    """مفتاح الأحدثية: الوقت ثم عدّاد اللاحقة رقمياً.
+
+    mtime قد يكون بخامة ثانية على بعض أنظمة الملفات (FAT/بعض التركيبات)، فنسختان
+    داخل الثانية نفسها تتساويان. الترتيب المعجمي للأسماء يكسر التعادل خطأً:
+    `-1.bak` يسبق `.bak` لأن '-' < '.'، و`-10` يسبق `-2`. لذلك نفكّ العدّاد
+    رقمياً: النسخة بلا لاحقة أقدم (0)، وكل زيادة في العدّاد أحدث.
+    """
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    match = _COUNTER_RE.search(path.name)
+    counter = int(match.group(1)) if match else 0
+    return (mtime, counter, path.name)
+
+
 def rotate(backup_dir: str | Path, stem: str, keep: int = 20) -> List[Path]:
     """يحذف أقدم النسخ فوق السقف. يرجع قائمة النسخ الباقية (الأحدث أولاً)."""
     try:
         base = Path(backup_dir)
-        # ترتيب زمني (mtime) وليس معجمياً: اللاحقة -1 داخل الثانية نفسها تكسر الترتيب المعجمي
-        copies = sorted(base.glob(f"{stem}.*.bak"),
-                        key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        # ترتيب زمني (mtime) مع فكّ اللاحقة رقمياً عند تعادل الطابع الزمني
+        copies = sorted(base.glob(f"{stem}.*.bak"), key=_rotation_key, reverse=True)
         for old in copies[max(0, int(keep)):]:
             try:
                 old.unlink()
@@ -65,10 +87,20 @@ def backup_file(path: str | Path, backup_dir: str | Path | None = None,
         base.mkdir(parents=True, exist_ok=True)
         stamp = str(suffix) if suffix else time.strftime("%Y%m%d-%H%M%S")
         dest = base / f"{src.name}.{stamp}.bak"
-        n = 1
-        while dest.exists():            # طابع فريد حتى داخل الثانية نفسها
-            dest = base / f"{src.name}.{stamp}-{n}.bak"
+        # 🔢 العدّاد لا يُعاد استخدامه: نأخذ (أكبر عدّاد موجود + 1) لا أول فجوة.
+        # إعادة استخدام اسم حُذف بالتدوير كانت تجعل أحدث نسخة تحمل اسم أقدم نسخة،
+        # فيحذفها التدوير التالي ظناً أنها قديمة. الاسم الآن رتيب داخل الثانية.
+        used = [0]
+        for old in base.glob(f"{src.name}.{stamp}*.bak"):
+            m = _COUNTER_RE.search(old.name)
+            if m:
+                used.append(int(m.group(1)))
+        n = max(used) + 1
+        dest = base / (f"{src.name}.{stamp}.bak" if n == 1
+                       else f"{src.name}.{stamp}_{n - 1:04d}.bak")
+        while dest.exists():            # احتياط: اسم محجوز بلا عدّاد
             n += 1
+            dest = base / f"{src.name}.{stamp}_{n - 1:04d}.bak"
         tmp = dest.with_name(dest.name + ".tmp")
         if redact is False:
             shutil.copy2(src, dest)

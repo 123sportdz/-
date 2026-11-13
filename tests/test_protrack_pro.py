@@ -189,3 +189,30 @@ def test_frame_miss_pct_accepts_per_frame_crop_bounds():
     cam = np.array([100.0, 200.0, 300.0])
     half_w = np.array([0.0, 99.0, 199.0])
     assert PT.frame_miss_pct(x, None, cam, half_w=half_w) == pytest.approx(200.0 / 3.0)
+
+
+def test_cut_resets_camera_smoothing_state():
+    """القطع يعيد ضبط One Euro: أول فريم في اللقطة الجديدة = هدفه، لا موضع اللقطة السابقة."""
+    fps = 60.0
+    n = 240
+    cut = 120
+    x = np.full(n, 300.0)
+    x[cut:] = 900.0
+    cam_cut, _ = PT.predictive_camera(x, None, fps, cuts=[cut], deadzone=0, lead=0)
+    cam_raw, _ = PT.predictive_camera(x, None, fps, deadzone=0, lead=0)
+    assert abs(cam_cut[cut] - 900.0) < 1.0
+    # بلا قطع تبقى الكاميرا عالقة في موضع اللقطة القديمة (السلوك الذي نمنعه)
+    assert abs(cam_raw[cut] - 900.0) > 400.0
+
+
+def test_savgol_velocity_does_not_mix_shots_at_cuts():
+    """نافذة المشتقة لا تعبر القطع، فلا سرعة وهمية آلاف البكسلات عند الحد."""
+    fps = 60.0
+    n = 180
+    cut = 90
+    x = np.full(n, 300.0)
+    x[cut:] = 900.0
+    vel_raw = PT.savgol_vel(x, fps, 9)
+    vel_cut = PT.savgol_vel(x, fps, 9, cuts=[cut])
+    assert float(np.nanmax(np.abs(vel_raw))) > 5000.0
+    assert float(np.nanmax(np.abs(vel_cut))) < 10.0

@@ -27,6 +27,9 @@ EVENT_TYPES = {
     # ValueError داخل معالج فشل النشر نفسه فيُفقَد ردّ النشر الأصلي للمستخدم.
     "youtube_share_check",
     "telegram_share_check",
+    "compliance_gate_denied",
+    "compliance_status",
+    "compliance_strike",
 }
 MAX_VALUE_CHARS = 200
 MAX_EVENTS = 5000
