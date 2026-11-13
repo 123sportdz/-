@@ -1165,6 +1165,7 @@ def main(argv=None):
 
         # ---------- 🔤 كابشن كلمة-بكلمة (متزامن مع التعليق) ----------
         cap_cues = None
+        commentary_start = 0.0
         _cap_cfg = str(CFG.get("captions", "auto")).lower()
         cap_on = a.commentary_show and ((a.captions == "on") or
                                          (a.captions == "auto" and
@@ -1175,6 +1176,7 @@ def main(argv=None):
                 if voice_wav:
                     dur_v = VO.audio_seconds(voice_wav)
                     _d0 = RD.VOICE_DELAY_MS / 1000.0
+                    commentary_start = _d0
                     if dur_v > 0:
                         cap_cues = CP.build(commentary_text, start=_d0,
                                             duration=max(0.6, min(dur_v, info["duration"] - _d0)))
@@ -1186,6 +1188,7 @@ def main(argv=None):
                 if not voice_wav and commentary_text:
                     cap_cues = CP.build(commentary_text, start=0.4,
                                         duration=max(1.0, info["duration"] - 0.8))
+                    commentary_start = 0.4
                 if cap_cues:
                     log(f"      🔤 كابشن: {CP.total_words(cap_cues)} كلمة على "
                         f"{len(cap_cues)} مقطع عرض")
@@ -1298,6 +1301,21 @@ def main(argv=None):
                     source_kind="broadcast" if str(getattr(a, "source_url", "") or "").startswith("http") else "unknown",
                     commentary_words=len(commentary_text.split()) if commentary_text else 0,
                 )
+                try:
+                    _fps_out = float(info.get("fps") or 30.0)
+                except (TypeError, ValueError):
+                    _fps_out = 30.0
+                prof["timeline"] = {
+                    "duration_s": float(info.get("duration") or 0),
+                    "cuts_s": [round(float(c) / _fps_out, 2)
+                               for c in (an.get("cuts") or [])][:400],
+                    "commentary_s": commentary_s,
+                    "commentary_start": commentary_start,
+                    "caption_spans": [[round(float(g.get("t0") or 0), 2),
+                                       round(float(g.get("t1") or 0), 2)]
+                                      for g in (cap_cues or []) if isinstance(g, dict)][:400],
+                    "replay_s": (round(float(t_key), 2) if t_key is not None else None),
+                }
                 prof["camera"] = {k: tune[k] for k in
                                   ("deadzone", "lead", "miss_pct", "jitter_px", "baseline")
                                   if k in tune}

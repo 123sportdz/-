@@ -44,3 +44,5 @@
 - `compliance.verify_evidence` re-hashes local evidence files against declared SHA-256 with the same traversal protection as `reelkit.rights`; a missing or changed file must appear loudly in the dossier, never be silently omitted. Source files get a SHA-256 at job start for provenance.
 
 - `compliance.channel_report` judges the channel pattern (last 30 jobs), not a single video: raw ratio, duplicate source fingerprints, commentary presence. Verdicts are `insufficient`/`ok`/`watch`/`pattern_risk`; it advises only and never blocks. The per-video gate stays `assess_reuse` + `reelkit.rights`.
+
+- `compliance.transformation_timeline` is a facts-only certificate: it derives coverage and gaps from recorded commentary start/length, real caption spans, cuts and replay position. Never synthesize spans to make coverage look better; an unknown window stays a gap. Served as SVG/CSV/JSON at `GET /api/jobs/{id}/timeline`, and its 40%/20s threshold is one of the six readiness checks.

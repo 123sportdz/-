@@ -2731,6 +2731,30 @@ def api_channel_report(window: int = 30):
     return COMPLIANCE.channel_report(jobs, window=max(1, min(200, int(window))))
 
 
+@app.get("/api/jobs/{jid}/timeline")
+def api_job_timeline(jid: str, format: str = "svg"):
+    """شهادة تحويل: SVG للعين، CSV للأرشفة، JSON للفحص."""
+    fmt = str(format or "svg").strip().lower()
+    if fmt not in {"svg", "csv", "json"}:
+        raise HTTPException(400, "الصيغة يجب أن تكون svg أو csv أو json")
+    with _lock:
+        job = JOBS.get(jid)
+        if not job:
+            raise HTTPException(404, "job not found")
+        profile = _edit_profile(job)
+    facts = profile.get("timeline") if isinstance(profile.get("timeline"), dict) else {}
+    from reelkit import compliance as COMPLIANCE
+    cert = COMPLIANCE.transformation_timeline(facts)
+    from fastapi.responses import PlainTextResponse
+    if fmt == "csv":
+        return PlainTextResponse(cert["csv"], media_type="text/csv; charset=utf-8")
+    if fmt == "json":
+        return {key: value for key, value in cert.items() if key not in ("svg", "csv")}
+    if not cert.get("svg"):
+        raise HTTPException(422, "لا خط زمني محفوظ لهذه المهمة — أعد الرندر بتقرير التحرير")
+    return PlainTextResponse(cert["svg"], media_type="image/svg+xml")
+
+
 @app.get("/api/jobs/{jid}/readiness")
 def api_job_readiness(jid: str):
     """ملخص جاهزية النشر: حقائق مسجّلة فقط، بلا ادّعاء اكتمال قانوني."""
@@ -2744,6 +2768,8 @@ def api_job_readiness(jid: str):
     from reelkit import compliance as COMPLIANCE
     reuse = COMPLIANCE.assess_reuse(profile)
     freeze = COMPLIANCE.publish_gate()
+    timeline = profile.get("timeline") if isinstance(profile.get("timeline"), dict) else {}
+    cert = COMPLIANCE.transformation_timeline(timeline)
     tracking = profile.get("tracking") if isinstance(profile.get("tracking"), dict) else {}
     miss = tracking.get("frame_miss_pct")
     coverage = tracking.get("coverage")
@@ -2762,6 +2788,13 @@ def api_job_readiness(jid: str):
             "detail": ("لا تقرير تتبّع (رندر قديم أو تعطّل الكاشف)" if not tracking else
                        f"تغطية {float(coverage or 0):.0f}% · خروج {float(miss or 0):.0f}% · "
                        f"أطول فجوة {float(tracking.get('longest_gap') or 0):.2f}s"),
+        },
+        "transformation": {
+            "label": "تغطية التحويل",
+            "ok": (None if not cert.get("ok") else
+                   bool(cert["coverage_pct"] >= 40.0 and cert["longest_gap_s"] <= 20.0)),
+            "detail": ("لا خط زمني محفوظ (رندر قديم)" if not cert.get("ok") else
+                       f"{cert['coverage_pct']}% من الخط الزمني · أطول فجوة {cert['longest_gap_s']:g}s"),
         },
         "reuse": {
             "label": "القيمة المضافة",

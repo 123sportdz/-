@@ -611,6 +611,138 @@ def summary(path: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _merge_spans(spans: List[Any], duration: float) -> List[Any]:
+    """يدمج الفترات المتقاطعة ويقصّها داخل [0, duration]."""
+    clean = []
+    for span in spans or []:
+        try:
+            a, b = float(span[0]), float(span[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (a == a and b == b) or b <= a:
+            continue
+        a = max(0.0, a)
+        b = min(duration, b) if duration > 0 else b
+        if b > a:
+            clean.append((a, b))
+    clean.sort()
+    merged: List[Any] = []
+    for a, b in clean:
+        if merged and a <= merged[-1][1] + 1e-9:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def transformation_timeline(timeline: Optional[Dict[str, Any]] = None, *,
+                            width: int = 1200, height: int = 170,
+                            gap_floor_s: float = 8.0) -> Dict[str, Any]:
+    """شهادة تحويل: أين توجد عناصر أصلية على خط الزمن، وكم يغطي منها.
+
+    المصدر وقائع الرندر فقط: مدة التعليق وبدايته، فترات الكابشن الحقيقية،
+    موضع الإعادة، والقطوع. لا نخترع توزيعاً: أي فترة لا نعرفها تبقى فجوة.
+    """
+    tl = timeline if isinstance(timeline, dict) else {}
+    try:
+        duration = float(tl.get("duration_s") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        return {"ok": False, "coverage_pct": 0.0, "gaps": [], "longest_gap_s": 0.0,
+                "verdict": "unknown", "svg": "", "csv": "", "spans": []}
+
+    commentary_s = max(0.0, min(duration, float(tl.get("commentary_s") or 0.0)))
+    try:
+        start = max(0.0, min(duration, float(tl.get("commentary_start") or 0.0)))
+    except (TypeError, ValueError):
+        start = 0.0
+    spans: List[Any] = []
+    if commentary_s > 0:
+        spans.append((start, min(duration, start + commentary_s)))
+    caption_spans = [span for span in (tl.get("caption_spans") or []) if isinstance(span, (list, tuple))]
+    spans.extend(caption_spans)
+    merged = _merge_spans(spans, duration)
+
+    covered = sum(b - a for a, b in merged)
+    coverage = max(0.0, min(100.0, covered / duration * 100.0))
+
+    gaps: List[Any] = []
+    cursor = 0.0
+    for a, b in merged:
+        if a - cursor >= gap_floor_s:
+            gaps.append((round(cursor, 2), round(a, 2)))
+        cursor = max(cursor, b)
+    if duration - cursor >= gap_floor_s:
+        gaps.append((round(cursor, 2), round(duration, 2)))
+    longest = max((b - a for a, b in gaps), default=0.0)
+
+    if coverage >= 60.0 and longest <= 15.0:
+        verdict = "strong"
+    elif coverage >= 30.0:
+        verdict = "thin"
+    else:
+        verdict = "none"
+
+    try:
+        cuts = [round(float(c), 2) for c in (tl.get("cuts_s") or [])][:400]
+    except (TypeError, ValueError):
+        cuts = []
+    replay = tl.get("replay_s")
+
+    svg = _timeline_svg(duration, merged, gaps, cuts, replay, width, height)
+    csv_rows = ["kind,start_s,end_s"]
+    csv_rows += [f"original,{a:.2f},{b:.2f}" for a, b in merged]
+    csv_rows += [f"gap,{a:.2f},{b:.2f}" for a, b in gaps]
+    csv_rows += [f"cut,{c:.2f},{c:.2f}" for c in cuts]
+    return {"ok": True, "coverage_pct": round(coverage, 1),
+            "covered_s": round(covered, 2), "duration_s": round(duration, 2),
+            "gaps": gaps, "longest_gap_s": round(longest, 2),
+            "verdict": verdict, "spans": merged, "svg": svg,
+            "csv": "\n".join(csv_rows) + "\n"}
+
+
+def _timeline_svg(duration, spans, gaps, cuts, replay, width, height) -> str:
+    pad = 14
+    track_w = max(10, int(width) - 2 * pad)
+    def x_of(t):
+        return pad + track_w * (max(0.0, min(duration, t)) / duration)
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" font-family="DejaVu Sans, sans-serif">',
+        f'<rect width="{width}" height="{height}" fill="#0e1116"/>',
+        f'<text x="{pad}" y="18" fill="#c9d4e3" font-size="12">'
+        f'شهادة تحويل — {duration:.0f}s</text>',
+        f'<rect x="{pad}" y="26" width="{track_w}" height="16" fill="#1b2430"/>',
+    ]
+    for a, b in spans:
+        x1, x2 = x_of(a), x_of(b)
+        parts.append(f'<rect x="{x1:.1f}" y="26" width="{max(0.5, x2 - x1):.1f}" '
+                     f'height="16" fill="#2f7d5a"/>')
+    for a, b in gaps:
+        x1, x2 = x_of(a), x_of(b)
+        parts.append(f'<rect x="{x1:.1f}" y="46" width="{max(0.5, x2 - x1):.1f}" '
+                     f'height="10" fill="#8a3a3a"/>')
+    for c in cuts:
+        x = x_of(c)
+        parts.append(f'<line x1="{x:.1f}" y1="22" x2="{x:.1f}" y2="60" '
+                     f'stroke="#4b5a70" stroke-width="1"/>')
+    try:
+        if replay is not None:
+            rx = x_of(float(replay))
+            parts.append(f'<circle cx="{rx:.1f}" cy="34" r="3.5" fill="#e0b341"/>')
+    except (TypeError, ValueError):
+        pass
+    parts.append(f'<text x="{pad}" y="80" fill="#8fa1b8" font-size="11">'
+                 f'أخضر: عنصر أصلي (تعليق/كابشن) · أحمر: فجوة · خطوط: قطوع · نقطة: إعادة</text>')
+    parts.append(f'<text x="{pad}" y="98" fill="#8fa1b8" font-size="11">'
+                 f'0s</text>')
+    parts.append(f'<text x="{width - pad - 30}" y="98" fill="#8fa1b8" font-size="11">'
+                 f'{duration:.0f}s</text>')
+    parts.append('</svg>')
+    return "".join(parts)
+
+
 def channel_report(jobs: Optional[List[Dict[str, Any]]] = None, *, window: int = 30) -> Dict[str, Any]:
     """نمط القناة لا الفيديو الواحد: هذا ما تنظر إليه سياسة إعادة الاستخدام.
 
@@ -751,6 +883,17 @@ def build_dossier(job: Optional[Dict[str, Any]] = None,
         lines.append("**ما ينقص (مقاس):**")
         for step in plan["steps"]:
             lines.append(f"- {step['action']} (+{step['delta']}) → {step['score']}/100")
+    cert = transformation_timeline((job.get("edit_profile") or {}).get("timeline")
+                                   if isinstance(job.get("edit_profile"), dict) else {})
+    if cert.get("ok"):
+        lines.append("")
+        lines.append("### شهادة التحويل")
+        lines.append("")
+        lines.append(f"- تغطية العناصر الأصلية: **{cert['coverage_pct']}%** من الخط الزمني")
+        lines.append(f"- أطول نافذة بلا عنصر أصلي: {cert['longest_gap_s']} ثانية")
+        lines.append(f"- الحكم: {cert['verdict']}")
+        if cert["gaps"]:
+            lines.append("- فجوات: " + "، ".join(f"{a:g}–{b:g}s" for a, b in cert["gaps"][:8]))
     if reuse["blockers"]:
         lines.append("")
         lines.append("**عوائق:**")
