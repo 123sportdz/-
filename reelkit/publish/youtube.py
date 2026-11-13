@@ -100,7 +100,6 @@ def auth_url(client_secret=None, redirect_uri=LOOPBACK, pending="oauth_pending.j
 def finish_auth(code, client_secret=None, redirect_uri=LOOPBACK,
                 token_path="token.json"):
     """Step 2: exchange the code for a refresh token and cache it."""
-    import re as _re
     from urllib.parse import urlparse, parse_qs, unquote
     here = os.path.dirname(os.path.abspath(__file__))
     cs = _resolve_secret(client_secret)

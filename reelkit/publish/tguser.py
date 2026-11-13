@@ -119,7 +119,6 @@ def _proxy_from_cfg():
     if not p:
         return None
     # صيغ: host:port | socks5://host:port | http://user:pass@host:port
-    import re as _re
     kind = "socks5"
     if "://" in p:
         kind, p = p.split("://", 1)
@@ -351,7 +350,7 @@ def qr_png_b64(url):
         buf = BytesIO()
         img.save(buf, format="PNG")
         return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception as e:
+    except Exception:
         return ""
 
 

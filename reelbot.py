@@ -709,7 +709,7 @@ def main(argv=None):
         print(f"✅ البوت: @{me.get('username')} ({me.get('first_name')})"
               f"{' — حُفظ في config.json' if saved else ' — تعذّر الحفظ'}")
         print("الخطوة التالية: شغّل البوت، أرسل له /id، ثم:\n"
-              f"   python reelbot.py --allow <المعرّف>")
+              "   python reelbot.py --allow <المعرّف>")
         return 0
 
     allowlist = C.parse_allowed(a.allow) or C.parse_allowed(

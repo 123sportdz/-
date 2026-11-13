@@ -1,0 +1,16 @@
+# إعدادات أدوات الجودة فقط.
+# هذا الملف لا يجعل المستودع حزمة قابلة للتثبيت: التطبيق يُشغَّل من جذره
+# عبر start.sh / start.bat، والاعتماديات في requirements.txt.
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv", "venv", "web", "outputs", "incoming", "audit_log", "node_modules"]
+
+[tool.ruff.lint]
+# نبدأ بقواعد الأخطاء الفعلية فقط (أسماء غير معرّفة، استيرادات ميتة، صيغ خاطئة)
+# لا بقواعد التنسيق. التوسيع لاحقاً قرار منفصل، لا مفاجأة في CI.
+select = ["F", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

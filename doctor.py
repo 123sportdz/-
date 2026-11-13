@@ -334,7 +334,6 @@ def check_network(cfg):
             say(WARN, "تخزين وسيط (ISP)", str(e)[:50])
         posts = feed.latest(limit=3)
         ids = [p["message_id"] for p in posts]
-        needs = sum(1 for p in posts if len(p.get("videos") or []) > 1)
         links = sum(1 for p in posts if (p.get("videos") or p.get("video")))
         hidden = len(posts) - links
         say(OK if posts else WARN, f"سحب من {ch}",

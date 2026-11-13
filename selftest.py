@@ -30,7 +30,6 @@ def unit_render_branches(tmp, src):
     """🧷 يغطّي فرع الأثر/الوسم بكشوفات حقيقية في كل التخطيطات.
     (هذا بالضبط ما فاتني: UnboundLocalError في ball_x_off ظهر على جهاز المستخدم فقط
      لأن الاختبار القديم كان بلا كشوفات فلم يدخل الفرع أبداً.)"""
-    import subprocess as sp
     import numpy as _np
     from reelkit import render as RD
     n, fps = 24, 30.0
@@ -133,7 +132,7 @@ def unit_protrack(tmp):
     cam, cam_y = P.predictive_camera(grid_trk["x"], grid_trk["y"], rate, half=228, W=1280, H=720)
     jit = float(np.mean(np.abs(np.diff(cam[~np.isnan(cam)], 2))))
     bridged = P.template_bridge(str(tmp / "clip.mp4"), grid_trk, fps, 1280, 720)
-    qa = P.qa_report(grid_trk, cam, rate, grid_trk["rejected"], bridged)
+    P.qa_report(grid_trk, cam, rate, grid_trk["rejected"], bridged)
     # 🧪 حالة ضجيج واقعية (7 كشوفات/لحظة، معظمها منخفض الثقة) — مثل مقاطع المستخدم
     rng2 = np.random.default_rng(7)
     rows = []
@@ -552,7 +551,6 @@ def unit_bot_control(tmp, src):
     يتحقق أن البوت: (١) يحترم القائمة البيضاء، (٢) ينشئ مهمة من مسار محلي،
     (٣) يراقبها ويُرسل الفيديو عند الانتهاء، (٤) ينفّذ أوامر القائمة/الحالة.
     """
-    import urllib.request
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from reelkit import control as C
     from reelkit.ffio import kill_tree

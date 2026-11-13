@@ -8,8 +8,6 @@ import json
 import os
 import platform
 import re
-import secrets
-import shutil
 import ssl
 import stat
 import subprocess

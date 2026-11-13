@@ -1295,8 +1295,8 @@ def _download_to_local(src, caption_in=""):
             urls = list(post.get("videos") or [])
             if post.get("video") and post["video"] not in urls:
                 urls.insert(0, post["video"])
-        except Exception as e:
-            public_err = str(e)[:110]
+        except Exception:
+            pass
         # 🔑 لا رابط عام؟ نجرّب التنزيل بحساب المستخدم (MTProto)
         if not urls and mid:
             try:
@@ -2239,7 +2239,7 @@ def _do_publish_once(job, targets, title, desc, tags, privacy, publish_at=None, 
                 AUDIT.append_event("rights_gate_denied", jid, target=target,
                                    privacy=str(gate.get("privacy") or "")[:20],
                                    errors=[str(e)[:180] for e in (gate.get("errors") or [])[:5]])
-        review = _record_rights_review(job, rights, gates, targets)
+        _record_rights_review(job, rights, gates, targets)
         _persist()
     if publish_at and "youtube" in targets:
         try:

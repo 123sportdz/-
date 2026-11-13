@@ -129,7 +129,6 @@ def _run_goals(a, argv):
     التشغيل عبر عمليات فرعية متتابعة (لا توازٍ — ذاكرة GPU)، وكل عامل يمر بكل
     منطق reel.py السليم (كشف/تتبّع/هوية/كابشن) بلا نسخ سطر واحد منه.
     يرجّع رمز الخروج (0 = نجح هدف واحد على الأقل)."""
-    src = a.input
     goals = _rank_goals(a)
     if not goals:
         print("🎯 --goals: ما لقيت لحظات هتاف واضحة في هذا التسجيل — "
@@ -527,7 +526,7 @@ def main(argv=None):
             ffio.run(cmd); src = trimmed
             log(f"[1/6] trimmed  -> {src}")
 
-        log(f"[1/6] normalizing source …")
+        log("[1/6] normalizing source …")
         try:
             source_info = ffio.probe(src)
             _vfr = bool(source_info.get("vfr"))
@@ -647,7 +646,7 @@ def main(argv=None):
                 score_box = None
                 log(f"⚠️  تعذّر كشف اللوحة ({type(e).__name__})")
 
-        log(f"[2/6] analyzing scenes / camera …")
+        log("[2/6] analyzing scenes / camera …")
         _use_cache = cache.enabled() and not a.no_cache
         # 💾 بصمة المصدر **الأصلي** لا الوسيط: الملفات المهذّبة/المحوّلة تُبنى في مجلد عمل
         # جديد بـmtime جديد كل تشغيل ⇒ كان الكاش يضيع دائماً مع --start/--end وAV1!
@@ -660,7 +659,7 @@ def main(argv=None):
             an = {"fps": float(an["fps"]), "W": int(an["W"]), "H": int(an["H"]),
                   "step": int(an["step"]), "times": an["times"], "cents": an["cents"],
                   "cuts": an["cuts"].tolist()}
-            log(f"      💾 تحليل المشاهد من الكاش")
+            log("      💾 تحليل المشاهد من الكاش")
         else:
             an = analysis.analyze(readable)
             if _akey:
@@ -725,7 +724,7 @@ def main(argv=None):
                 except Exception as e:
                     log(f"      ⚠️ إعادة المحاولة تعذّرت ({type(e).__name__}: {str(e)[:60]})")
 
-        log(f"[4/6] detecting players (shot layout) …")
+        log("[4/6] detecting players (shot layout) …")
         del bd
         bd2 = None
         detect.release_gpu_memory()
@@ -750,7 +749,7 @@ def main(argv=None):
             if _pkey and len(person):
                 cache.save("person", _pkey, person)
 
-        log(f"[5/6] tracking + camera …")
+        log("[5/6] tracking + camera …")
         del pd
         detect.release_gpu_memory()
 
@@ -782,7 +781,7 @@ def main(argv=None):
             return arr
 
         if a.subject == "player":
-            log(f"      player-cam: selecting the player in the play …")
+            log("      player-cam: selecting the player in the play …")
             anchor = SB.ball_anchor(det, n_frames, info["fps"], a.rate) if len(det) else None
             pt = SB.PlayerTracker(device=a.device).scan(readable, rate=a.rate, fps=info["fps"],
                                                         ball_x=anchor)
