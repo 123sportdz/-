@@ -229,3 +229,18 @@ def test_config_example_binds_uploads_to_connected_channel():
 
     assert config["youtube_channel_id"] == "UCTIN753Wd_5nxlOuHvuOhdg"
     assert config["youtube_privacy"] == "private"
+
+
+def test_upload_refuses_while_a_strike_is_active(tmp_path, monkeypatch):
+    """طبقة المكتبة نفسها تمنع الرفع أثناء قفل إنذار — قبل أي نداء API."""
+    monkeypatch.setenv("REELKIT_ROOT", str(tmp_path))
+    from reelkit import compliance as C
+    C.record_strike("job-x", "AbCdEfGhIj1", reason="copyright",
+                    path=str(tmp_path / "compliance_log.jsonl"))
+    clip = tmp_path / "reel.mp4"
+    clip.write_bytes(b"not-a-real-video")
+    uploader = YouTubeUploader(client_secret=str(tmp_path / "cs.json"),
+                               token_path=str(tmp_path / "token.json"))
+    monkeypatch.setattr(uploader, "_service", lambda: pytest.fail("API must not be called"))
+    with pytest.raises(ValueError, match="قفل"):
+        uploader.upload(clip, "Title", privacy="private", rights=RIGHTS_REVIEW)

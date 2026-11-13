@@ -168,3 +168,13 @@ def test_improve_plan_is_empty_when_already_good():
                            "has_crop": True})
     assert plan["steps"] == []
     assert plan["reached"] is True
+
+
+def test_duplicate_strike_within_a_day_counts_once(tmp_path):
+    log = str(tmp_path / "c.jsonl")
+    first = C.record_strike("j1", "v1", reason="copyright", path=log)
+    second = C.record_strike("j1", "v1", reason="copyright", path=log)
+    assert first["strikes"] == 1
+    assert second["strikes"] == 1                     # نقرة مكررة لا تصبح إنذاراً ثانياً
+    other = C.record_strike("j1", "v2", reason="copyright", path=log)
+    assert other["strikes"] == 2                      # فيديو مختلف = إنذار حقيقي

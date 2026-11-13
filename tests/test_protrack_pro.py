@@ -246,3 +246,17 @@ def test_autotune_respects_crop_bounds_and_empty_input():
     assert np.all(cam >= half - 1e-6)
     assert np.all(cam <= 1280 - half + 1e-6)
     assert PT.autotune_camera([], None, 30.0) == (None, None, {})
+
+
+def test_autotune_weights_the_worst_shot():
+    """متوسط منخفض لا يخفي لقطة سيئة: أسوأ لقطة تُقاس وتُرجَّح."""
+    fps = 30.0
+    n = 600
+    t = np.arange(n) / fps
+    x = np.full(n, 640.0)
+    x[300:] = 640 + 800 * np.sin(2 * np.pi * 0.9 * t[300:])
+    _, _, info = PT.autotune_camera(x, None, fps, cuts=[300], deadzone=120.0,
+                                    lead=0.16, half=200.0, W=1280, H=720)
+    assert info["worst_shot_miss"] >= info["miss_pct"]
+    assert info["worst_shot_miss"] > 60.0
+    assert any("worst_shot_miss" in trial for trial in info["trials"])

@@ -35,3 +35,7 @@
 
 - In v1.74, `protrack.autotune_camera` picks deadzone/lead per clip by measuring actual `frame_miss_pct` and camera jitter across a 4×3 grid; it is on by default in `reel.py` and disabled with `--no-autotune`. It never replaces `predictive_camera`'s bounds — every candidate is clipped identically. Cover in `tests/test_protrack_pro.py`.
 - `compliance.improve_plan` is a greedy, measured path to an acceptable added-value score using the same `assess_reuse` model; it advises only and never edits a job. Exposed as `plan` in `reuse-check`, the publish response, and the dossier. Keep the labels Arabic and the deltas computed, never hardcoded.
+
+- `compliance.record_strike` is idempotent within 24h for the same video+reason (or job+reason when no video id); one click must never become two strikes. Keep the freeze ladder (7/14 days, then terminated) and the 90-day window intact. Cover in `tests/test_compliance.py`.
+- `reel.py --report-json` also records the camera tune and tracking QA; `reuse-check` returns them as `camera`/`tracking`. Do not drop these when changing the report schema — dashboard diagnostics read them.
+- `autotune_camera` scores `global miss * 8 + worst shot miss * 2 + jitter * 0.35`; the worst-shot term exists so a calm clip cannot hide one bad attack. Adjust weights only with a synthetic regression in `tests/test_protrack_pro.py`.

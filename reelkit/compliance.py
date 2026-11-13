@@ -31,6 +31,7 @@ from typing import Any, Dict, Iterable, List, Optional
 _LOCK = threading.Lock()
 
 STRIKE_WINDOW_DAYS = 90          # إنذار حقوق النشر ينتهي بعد 90 يوماً على YouTube
+STRIKE_DEDUPE_HOURS = 24         # ضغطة مكررة/إعادة محاولة لا تُحسب إنذاراً ثانياً
 STRIKE_RULES = {
     # عدد الإنذارات النشطة: (أيام المنع، مستوى المنع)
     1: (7, "upload"),            # أسبوع بلا رفع
@@ -491,11 +492,44 @@ def record_status(job_id: str, video_id: str, status: Dict[str, Any],
     return classified
 
 
+def _duplicate_strike(entries: List[Dict[str, Any]], job_id: str, video_id: str,
+                      reason: str, now: datetime) -> bool:
+    """نفس الإنذار خلال 24 ساعة لا يُحسب مرتين (ضغطة مكررة أو إعادة محاولة).
+
+    بدون هذا، نقرتان على «تسجيل إنذار» تصلان إلى إنذارين ⇒ منع 14 يوماً بدل 7،
+    ونقرة ثالثة تُغلق القناة في السجل بلا سبب حقيقي. المطابقة: الفيديو + السبب
+    إن وُجد معرّف، وإلا المهمة + السبب.
+    """
+    floor = now - timedelta(hours=STRIKE_DEDUPE_HOURS)
+    key_reason = _text(reason, 200).strip().lower()
+    for entry in entries:
+        if entry.get("kind") != "strike":
+            continue
+        ts = _parse_ts(entry.get("ts"))
+        if ts is None or ts < floor:
+            continue
+        if video_id:
+            if entry.get("video_id") == video_id and \
+                    _text(entry.get("reason"), 200).strip().lower() == key_reason:
+                return True
+        elif entry.get("job_id") == job_id and \
+                _text(entry.get("reason"), 200).strip().lower() == key_reason:
+            return True
+    return False
+
+
 def record_strike(job_id: str, video_id: str, reason: str = "", note: str = "",
                   path: Optional[str] = None) -> Dict[str, Any]:
-    """يسجّل إنذاراً يدوياً (لا يظهر في Data API) ويحسب القفل الناتج."""
-    append("strike", job_id=job_id, video_id=video_id, reason=reason or "إنذار حقوق نشر",
-           note=note, path=path)
+    """يسجّل إنذاراً يدوياً (لا يظهر في Data API) ويحسب القفل الناتج.
+
+    التسجيل متماثل (idempotent) خلال 24 ساعة: الإنذار الواحد لا يصبح إنذارين.
+    """
+    now = _now()
+    reason_text = reason or "إنذار حقوق نشر"
+    existing = read(path=path, limit=5000)
+    if not _duplicate_strike(existing, job_id, video_id, reason_text, now):
+        append("strike", job_id=job_id, video_id=video_id, reason=reason_text,
+               note=note, path=path, ts=now)
     return restriction(path=path)
 
 

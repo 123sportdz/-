@@ -798,7 +798,7 @@ def main(argv=None):
             target = ax.copy()
             target[np.isnan(target)] = info["width"]/2
         # ---------- 🎯 محرّك التتبّع الاحترافي (v1.23): 2D + RTS + جسر القالب ----------
-        pro = None; pro_qa = None; bridged = 0; cam_y = None; zoom = None
+        pro = None; pro_qa = None; bridged = 0; cam_y = None; zoom = None; tune = {}
 
         def _pro_track(det_cur, rate_cur):
             """تتبّع احترافي كامل على كشوفات معطاة. يرجّع (pro, bridged, cov_key)."""
@@ -1298,6 +1298,14 @@ def main(argv=None):
                     source_kind="broadcast" if str(getattr(a, "source_url", "") or "").startswith("http") else "unknown",
                     commentary_words=len(commentary_text.split()) if commentary_text else 0,
                 )
+                prof["camera"] = {k: tune[k] for k in
+                                  ("deadzone", "lead", "miss_pct", "jitter_px", "baseline")
+                                  if k in tune}
+                if pro_qa:
+                    prof["tracking"] = {k: pro_qa[k] for k in
+                                        ("coverage", "longest_gap", "jitter_px",
+                                         "rejected", "bridged", "frame_miss_pct")
+                                        if k in pro_qa}
                 tmp_rj = str(a.report_json) + ".tmp"
                 with open(tmp_rj, "w", encoding="utf-8") as fh:
                     json.dump(prof, fh, ensure_ascii=False, indent=2)
