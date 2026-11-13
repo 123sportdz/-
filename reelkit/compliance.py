@@ -202,6 +202,42 @@ def assess_reuse(edit: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     }
 
 
+def edit_profile(*, duration_s: float = 0.0, commentary_s: float = 0.0,
+                 segments: int = 1, has_captions: bool = False,
+                 has_graphics: bool = False, has_replay: bool = False,
+                 has_crop: bool = True, source_duration_s: float = 0.0,
+                 is_full_match: bool = False, source_kind: str = "unknown",
+                 **extra: Any) -> Dict[str, Any]:
+    """يبني ملف وقائع التحرير من قياسات الرندر (لا تخمين).
+
+    يكتبه `reel.py --report-json` بجوار المخرج، وتقرأه اللوحة في `job["edit_profile"]`
+    كي يقيس `assess_reuse` ما جرى فعلاً: مدة التعليق المسجَّلة، عدد اللقطات، الكابشن.
+    """
+    def num(value: Any, default: float = 0.0) -> float:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        return out if out == out and out >= 0 else default     # يرفض NaN والسالب
+
+    profile = {
+        "duration_s": num(duration_s),
+        "commentary_s": num(commentary_s),
+        "segments": max(1, int(num(segments, 1) or 1)),
+        "has_captions": bool(has_captions),
+        "has_graphics": bool(has_graphics),
+        "has_replay": bool(has_replay),
+        "has_crop": bool(has_crop),
+        "source_duration_s": num(source_duration_s),
+        "is_full_match": bool(is_full_match),
+        "source_kind": _text(source_kind, 20).lower() or "unknown",
+    }
+    for key in ("commentary_words", "qa", "engine"):
+        if key in extra and extra[key] is not None:
+            profile[key] = extra[key]
+    return profile
+
+
 # --------------------------------------------------------- 2) تصنيف حالة الفيديو
 def classify_video_status(status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """يحوّل رد `YouTubeUploader.video_status` إلى حادثة مصنّفة قابلة للتسجيل."""

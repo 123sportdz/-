@@ -139,3 +139,14 @@ def test_dossier_has_fingerprint_and_no_absolute_paths(tmp_path):
     assert "/home/user/outputs" not in doc["markdown"]
     assert "ليس اعتراضاً قانونياً" in doc["markdown"]
     assert "a" * 64 in doc["markdown"]
+
+
+def test_edit_profile_normalizes_measured_facts():
+    profile = C.edit_profile(duration_s="38.5", commentary_s=-4, segments=0,
+                             has_captions=True, source_kind="Licensed",
+                             commentary_words=22)
+    assert profile["duration_s"] == 38.5
+    assert profile["commentary_s"] == 0.0          # السالب يُرفض لا يُقلب
+    assert profile["segments"] == 1
+    assert profile["source_kind"] == "licensed"
+    assert profile["commentary_words"] == 22

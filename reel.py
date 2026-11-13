@@ -10,7 +10,7 @@ Notes
     match use --start/--end to trim first, or lower --rate.
   * AV1/HEVC sources are normalized with ffmpeg automatically (OpenCV cannot decode AV1).
 """
-import argparse, os, subprocess, sys, time
+import argparse, json, os, subprocess, sys, time
 import cv2
 import numpy as np
 
@@ -341,6 +341,8 @@ def main(argv=None):
                     help="معلومة مصدر مختصرة؛ لا تعني ترخيصاً أو حق إعادة النشر")
     ap.add_argument("--transformative", action="store_true",
                     help="وضع توافق قديم: يفعّل تعليقاً عربياً ويولّد ملف معلومات الإنتاج فقط؛ لا يثبت ترخيصاً أو Fair Use")
+    ap.add_argument("--report-json", default="",
+                    help="مسار ملف JSON لوقائع التحرير (يقرأه فحص الامتثال في اللوحة)")
     ap.add_argument("--rights-package", action="store_true",
                     help="يولّد ملف معلومات الإنتاج والحقوق بجانب الريل؛ ليس اعتراضاً ولا دليلاً على الإذن")
     ap.add_argument("--channel", default="", help="اسم القناة/الناشر في ملف معلومات الإنتاج")
@@ -1251,6 +1253,34 @@ def main(argv=None):
                 log(f"⚠️  الإعادة تعذّرت ({type(e).__name__}: {str(e)[:80]}) — المخرج كما هو")
 
         log(f"\nDONE  {a.output}  ({n} frames, {time.time()-t0:.0f}s)")
+        if a.report_json:
+            try:
+                from reelkit import compliance as COMPLIANCE
+                try:
+                    commentary_s = float(VO.audio_seconds(voice_wav)) if voice_wav else 0.0
+                except Exception:
+                    commentary_s = 0.0
+                prof = COMPLIANCE.edit_profile(
+                    duration_s=info.get("duration") or 0,
+                    commentary_s=commentary_s,
+                    segments=len(an.get("cuts") or []) + 1,
+                    has_captions=bool(a.caption),
+                    has_graphics=bool(brand_name or brand_url or a.burst
+                                      or (a.score and str(a.score).lower() != "off")),
+                    has_replay=bool(a.replay and str(a.replay).lower() != "off"),
+                    has_crop=True,
+                    source_duration_s=info.get("duration") or 0,
+                    is_full_match=float(a.max_dur or 0) > 600,
+                    source_kind="broadcast" if str(getattr(a, "source_url", "") or "").startswith("http") else "unknown",
+                    commentary_words=len(commentary_text.split()) if commentary_text else 0,
+                )
+                tmp_rj = str(a.report_json) + ".tmp"
+                with open(tmp_rj, "w", encoding="utf-8") as fh:
+                    json.dump(prof, fh, ensure_ascii=False, indent=2)
+                os.replace(tmp_rj, a.report_json)
+                log(f"🗂️ وقائع التحرير: {a.report_json}")
+            except Exception as e:
+                log(f"⚠️ تعذّر كتابة وقائع التحرير ({type(e).__name__}: {str(e)[:70]})")
         if a.thumb:
             try:
                 import reelkit.thumb as TH

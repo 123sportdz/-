@@ -77,3 +77,16 @@ def test_reuse_check_credits_declared_commentary(client):
     body = client.get("/api/jobs/job-1/reuse-check").json()
     assert body["profile"]["commentary_s"] > 0
     assert body["reuse"]["score"] > silent
+
+
+def test_measured_edit_profile_overrides_heuristics(client):
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 40,
+        "options": {"replay": "off"},
+        "edit_profile": {"duration_s": 40, "commentary_s": 30, "segments": 4,
+                         "has_captions": True, "has_graphics": True,
+                         "has_replay": True, "has_crop": True, "source_kind": "licensed"},
+    }
+    body = client.get("/api/jobs/job-1/reuse-check").json()
+    assert body["profile"]["commentary_s"] == 30
+    assert body["reuse"]["tier"] == "low"

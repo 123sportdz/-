@@ -624,6 +624,15 @@ def run_job(job_id, args):
             except Exception as e:
                 with _lock:
                     job["quality_report"] = {"ok": False, "issues": [f"تعذر فحص الجودة: {e}"]}
+            try:                       # 🗂️ وقائع التحرير المقاسة (تعليق/لقطات/كابشن)
+                report_path = Path(str(job["output"]) + ".report.json")
+                if report_path.is_file():
+                    prof = json.loads(report_path.read_text(encoding="utf-8"))
+                    if isinstance(prof, dict):
+                        with _lock:
+                            job["edit_profile"] = prof
+            except Exception:
+                pass
             try:
                 with _lock:
                     job["has_thumb"] = Path(str(job["output"]).replace(".mp4", "_thumb.jpg")).exists()
@@ -1469,6 +1478,7 @@ def _brand_args(payload):
 
 def _make_args(payload, src, out):
     args = ["-i", src, "-o", str(out),
+            "--report-json", str(out) + ".report.json",
             "--subject", payload.get("subject", "action"),
             "--out-size", payload.get("out_size", "1080x1920"),
             "--rate", str(payload.get("rate", 15)),
@@ -2280,6 +2290,9 @@ def _edit_profile(job):
     job = job if isinstance(job, dict) else {}
     opts = job.get("options") if isinstance(job.get("options"), dict) else {}
     quality = job.get("quality_report") if isinstance(job.get("quality_report"), dict) else {}
+    measured = job.get("edit_profile") if isinstance(job.get("edit_profile"), dict) else None
+    if measured:
+        return dict(measured)
     try:
         duration = float(job.get("duration") or quality.get("duration") or 0.0)
     except (TypeError, ValueError):
@@ -2599,8 +2612,8 @@ def api_youtube_status(jid: str):
         raise HTTPException(502, friendly_error(
             e, f"تعذّر فحص حالة YouTube ({type(e).__name__}). تحقق من الاتصال وربط الحساب.")) from e
     AUDIT.append_event("youtube_status_check", jid, ok=True, video_id=video_id,
-                       privacy=str((status or {}).get("privacy") or "")[:20],
-                       state=str((status or {}).get("state") or "")[:40])
+                       privacy=str((status or {}).get("privacy_status") or "")[:20],
+                       state=str((status or {}).get("upload_status") or "")[:40])
     if not isinstance(status, dict):
         raise HTTPException(502, "أعاد YouTube حالة غير صالحة")
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
