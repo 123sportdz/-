@@ -743,6 +743,59 @@ def _timeline_svg(duration, spans, gaps, cuts, replay, width, height) -> str:
     return "".join(parts)
 
 
+def rights_calendar(assets: Optional[List[Dict[str, Any]]] = None, *,
+                    days: int = 45, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """تقويم انتهاء التراخيص: أي أصل تنتهي مدته قريباً، وأيها انتهى.
+
+    الأصل بلا نافذة زمنية (`expires_at`) يُعرض `no_window` ولا يُفترض أنه دائم.
+    القائمة مرتّبة بالأقرب انتهاءً، وهي تحذير تشغيلي لا حكم قانوني.
+    """
+    now = now or _now()
+    days = max(1, int(days))
+    rows: List[Dict[str, Any]] = []
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        expires = _text(asset.get("expires_at"), 40)
+        row = {
+            "source": _text(asset.get("source_reference") or asset.get("source") or asset.get("asset_id"), 90),
+            "asset_id": _text(asset.get("asset_id"), 64),
+            "job_id": _text(asset.get("job_id"), 40),
+            "permission_type": _text(asset.get("permission_type"), 20),
+            "expires_at": expires,
+            "days_left": None,
+            "state": "no_window",
+        }
+        when = _parse_ts(expires) if expires else None
+        if when is not None:
+            left = (when - now).total_seconds() / 86400.0
+            row["days_left"] = round(left, 1)
+            if left <= 0:
+                row["state"] = "expired"
+            elif left <= days:
+                row["state"] = "expiring"
+            else:
+                row["state"] = "active"
+        rows.append(row)
+    rows.sort(key=lambda item: (item["expires_at"] or "9999", item["source"]))
+    expiring = [row for row in rows if row["state"] == "expiring"]
+    expired = [row for row in rows if row["state"] == "expired"]
+    return {
+        "days": days,
+        "rows": rows,
+        "expiring": expiring,
+        "expired": expired,
+        "counts": {
+            "total": len(rows),
+            "expiring": len(expiring),
+            "expired": len(expired),
+            "active": sum(1 for row in rows if row["state"] == "active"),
+            "no_window": sum(1 for row in rows if row["state"] == "no_window"),
+        },
+        "next": rows[0]["expires_at"] if rows and rows[0]["expires_at"] else "",
+    }
+
+
 def channel_report(jobs: Optional[List[Dict[str, Any]]] = None, *, window: int = 30) -> Dict[str, Any]:
     """نمط القناة لا الفيديو الواحد: هذا ما تنظر إليه سياسة إعادة الاستخدام.
 

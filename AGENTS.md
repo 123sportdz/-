@@ -46,3 +46,5 @@
 - `compliance.channel_report` judges the channel pattern (last 30 jobs), not a single video: raw ratio, duplicate source fingerprints, commentary presence. Verdicts are `insufficient`/`ok`/`watch`/`pattern_risk`; it advises only and never blocks. The per-video gate stays `assess_reuse` + `reelkit.rights`.
 
 - `compliance.transformation_timeline` is a facts-only certificate: it derives coverage and gaps from recorded commentary start/length, real caption spans, cuts and replay position. Never synthesize spans to make coverage look better; an unknown window stays a gap. Served as SVG/CSV/JSON at `GET /api/jobs/{id}/timeline`, and its 40%/20s threshold is one of the six readiness checks.
+
+- `compliance.rights_calendar` + `GET /api/rights/calendar` surface licence windows (`expired`/`expiring`/`active`/`no_window`); an asset with no `expires_at` is never assumed permanent. `rights_review` now stores a compact `assets` list (safe fields only, max 20) so dossiers and the calendar work after the request ends. Keep both in sync.

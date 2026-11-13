@@ -128,7 +128,9 @@ def test_readiness_is_ready_when_every_check_is_recorded(client):
     dashboard.JOBS["job-1"] = {
         "id": "job-1", "status": "done", "output": "reel.mp4", "duration": 40,
         "quality_report": {"ok": True},
-        "rights_review": {"target_reviews": {"youtube": {"ok": True}}},
+        "rights_review": {"target_reviews": {"youtube": {"ok": True}},
+                          "assets": [{"asset_id": "clip", "source_reference": "beIN",
+                                      "expires_at": "2027-06-01"}]},
         "edit_profile": {"duration_s": 40, "commentary_s": 30, "segments": 3,
                          "has_captions": True, "has_graphics": True,
                          "has_crop": True, "source_kind": "licensed",
@@ -173,3 +175,20 @@ def test_timeline_endpoint_serves_svg_and_csv(client):
     data = client.get("/api/jobs/job-1/timeline?format=json").json()
     assert data["coverage_pct"] > 0
     assert "svg" not in data
+
+
+def test_rights_calendar_endpoint_aggregates_jobs(client):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    soon = (now + timedelta(days=10)).strftime("%Y-%m-%d")
+    past = (now - timedelta(days=10)).strftime("%Y-%m-%d")
+    dashboard.JOBS["job-1"] = {
+        "id": "job-1", "status": "done",
+        "rights_review": {"assets": [
+            {"asset_id": "a", "source_reference": "beIN", "expires_at": soon},
+            {"asset_id": "b", "source_reference": "old", "expires_at": past}]},
+    }
+    body = client.get("/api/rights/calendar?days=45").json()
+    assert body["counts"]["expired"] == 1
+    assert body["counts"]["expiring"] == 1
+    assert body["rows"][0]["job_id"] == "job-1"
