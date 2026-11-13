@@ -215,3 +215,31 @@ def test_dossier_marks_broken_evidence(tmp_path, monkeypatch):
     assert "دليل ناقص أو متغيّر" in doc["markdown"]
     assert "b" * 64 in doc["markdown"]
     assert "12 .. 52" in doc["markdown"]
+
+
+def _job(jid, created, sha, **edit):
+    return {"id": jid, "created": created, "source_sha256": sha,
+            "edit_profile": {"duration_s": 45, "segments": 1, **edit}}
+
+
+def test_channel_report_needs_enough_data():
+    report = C.channel_report([_job("a", 1, "a" * 64), _job("b", 2, "b" * 64)])
+    assert report["verdict"] == "insufficient"
+
+
+def test_channel_report_flags_raw_reupload_pattern():
+    jobs = [_job(f"j{i}", i, f"{i:064x}" if i < 3 else "a" * 64) for i in range(8)]
+    report = C.channel_report(jobs)
+    assert report["verdict"] == "pattern_risk"
+    assert report["raw_ratio"] >= 0.4
+    assert report["duplicate_sources"]
+    assert any("reused content" in action for action in report["actions"])
+
+
+def test_channel_report_ok_for_original_mix():
+    jobs = [_job(f"j{i}", i, f"{i:064x}", commentary_s=25, segments=3,
+                 has_captions=True, has_graphics=True) for i in range(6)]
+    report = C.channel_report(jobs)
+    assert report["verdict"] == "ok"
+    assert report["raw"] == 0
+    assert report["with_commentary"] == 6

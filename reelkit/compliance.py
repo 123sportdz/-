@@ -611,6 +611,93 @@ def summary(path: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def channel_report(jobs: Optional[List[Dict[str, Any]]] = None, *, window: int = 30) -> Dict[str, Any]:
+    """نمط القناة لا الفيديو الواحد: هذا ما تنظر إليه سياسة إعادة الاستخدام.
+
+    YouTube لا يعاقب مقطعاً واحداً بلا تعليق، بل قناة ترفع قصاصات خام متتابعة.
+    لذلك نجمع آخر `window` مهمة مكتملة: نسبة الخام، تكرار نفس المصدر، ومتوسط
+    التعليق. المدخلات حقائق محفوظة في المهام (تقرير الرندر + بصمة المصدر).
+    """
+    window = max(1, int(window))
+    items = [job for job in (jobs or []) if isinstance(job, dict)]
+    def when(job):
+        try:
+            return float(job.get("created") or job.get("ended") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    items.sort(key=when, reverse=True)
+    items = items[:window]
+
+    rows: List[Dict[str, Any]] = []
+    assessed = 0
+    raw = 0
+    with_commentary = 0
+    for job in items:
+        profile = job.get("edit_profile") if isinstance(job.get("edit_profile"), dict) else {}
+        reuse = assess_reuse(profile) if profile else None
+        score = reuse["score"] if reuse else None
+        tier = reuse["tier"] if reuse else "unknown"
+        commentary = float(profile.get("commentary_s") or 0.0)
+        if reuse is not None:
+            assessed += 1
+            if tier == "high":
+                raw += 1
+            if commentary >= 3.0:
+                with_commentary += 1
+        rows.append({
+            "id": _text(job.get("id"), 40),
+            "title": _text(job.get("title"), 80),
+            "source_sha256": _text(job.get("source_sha256"), 64),
+            "score": score,
+            "tier": tier,
+            "commentary_s": commentary,
+        })
+
+    clusters: Dict[str, List[str]] = {}
+    for row in rows:
+        sha = row["source_sha256"]
+        if len(sha) == 64:
+            clusters.setdefault(sha, []).append(row["id"] or "?")
+    duplicates = [
+        {"source_sha256": sha, "count": len(ids), "jobs": ids[:6]}
+        for sha, ids in sorted(clusters.items(), key=lambda kv: -len(kv[1])) if len(ids) > 1
+    ]
+
+    raw_ratio = (raw / assessed) if assessed else 0.0
+    if assessed < 5:
+        verdict = "insufficient"
+        actions = ["أكمل خمسة رندرات على الأقل قبل الحكم على نمط القناة."]
+    elif raw_ratio >= 0.4 or any(item["count"] >= 3 for item in duplicates):
+        verdict = "pattern_risk"
+        actions = [
+            "القناة ترفع قصاصات خام بنسبة عالية — هذا نمط «reused content».",
+            "افرض تعليقاً أصلياً 15 ثانية على الأقل قبل أي نشر عام.",
+            "نوّع المصادر؛ نفس المباراة عشر مرات تُقرأ كتكرار.",
+        ]
+    elif raw_ratio >= 0.2 or duplicates:
+        verdict = "watch"
+        actions = [
+            "النمط مقبول لكنه هش: ارفع نسبة الريلز التي فيها تعليق أصلي.",
+            "لا ترفع أكثر من ريلين من نفس المصدر في الأسبوع نفسه.",
+        ]
+    else:
+        verdict = "ok"
+        actions = ["النمط صحي: أغلب الريلز فيها تعليق وكابشن وتنويع مصادر."]
+
+    return {
+        "window": window,
+        "total": len(rows),
+        "assessed": assessed,
+        "raw": raw,
+        "raw_ratio": round(raw_ratio, 3),
+        "with_commentary": with_commentary,
+        "duplicate_sources": duplicates,
+        "verdict": verdict,
+        "actions": actions,
+        "rows": rows[:window],
+    }
+
+
 # ------------------------------------------------------------- 4) ملف الوقائع
 def _safe_name(value: Any) -> str:
     return Path(str(value or "")).name[:160]
