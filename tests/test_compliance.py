@@ -270,3 +270,19 @@ def test_transformation_timeline_is_honest_when_empty():
 def test_transformation_timeline_requires_duration():
     cert = C.transformation_timeline({})
     assert cert["ok"] is False and cert["verdict"] == "unknown"
+
+
+def test_rights_calendar_sorts_and_classifies():
+    from datetime import datetime, timezone
+    now = datetime(2026, 11, 13, tzinfo=timezone.utc)
+    cal = C.rights_calendar([
+        {"source_reference": "soon", "expires_at": "2026-12-01"},
+        {"source_reference": "gone", "expires_at": "2026-10-01"},
+        {"source_reference": "own", "permission_type": "own"},
+        {"source_reference": "later", "expires_at": "2027-08-01"},
+    ], days=45, now=now)
+    assert [row["source"] for row in cal["rows"]] == ["gone", "soon", "later", "own"]
+    assert cal["counts"] == {"total": 4, "expiring": 1, "expired": 1,
+                             "active": 1, "no_window": 1}
+    assert cal["rows"][1]["days_left"] == 18.0
+    assert cal["next"] == "2026-10-01"

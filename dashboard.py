@@ -2086,6 +2086,25 @@ def _record_rights_review(job, rights, gates, targets):
                       if "audio_evidence_reference" in rights else rights.get("evidence_reference"))
     visual_basis = str(visual_basis or "unknown")[:40]
     audio_basis = str(audio_basis or "unknown")[:40]
+    compact_assets = []
+    for index, raw in enumerate(rights.get("assets") or []):
+        if not isinstance(raw, dict):
+            continue
+        compact_assets.append({
+            "asset_id": str(raw.get("asset_id") or f"asset-{index + 1}")[:64],
+            "source_reference": str(raw.get("source_reference") or "")[:300],
+            "media_type": str(raw.get("media_type") or "other")[:20],
+            "rights_holder": str(raw.get("rights_holder") or "")[:120],
+            "permission_type": str(raw.get("permission_type") or "unknown")[:20],
+            "platforms_allowed": [str(item)[:20] for item in (raw.get("platforms_allowed") or [])
+                                  if isinstance(item, str)][:4],
+            "valid_from": str(raw.get("valid_from") or "")[:40],
+            "expires_at": str(raw.get("expires_at") or "")[:40],
+            "evidence_reference": str(raw.get("evidence_reference") or "")[:300],
+            "evidence_path": str(raw.get("evidence_path") or "")[:200],
+            "evidence_sha256": str(raw.get("evidence_sha256") or "")[:64],
+            "review_status": str(raw.get("review_status") or "")[:20],
+        })
     job["rights_review"] = {
         "basis": visual_basis if visual_basis == audio_basis else "mixed",
         "visual_rights_basis": visual_basis,
@@ -2109,6 +2128,7 @@ def _record_rights_review(job, rights, gates, targets):
         "form_complete": bool(target_reviews) and all(item["ok"] for item in target_reviews.values()),
         "gate_errors": errors[:20],
         "submitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "assets": compact_assets[:20],
     }
     return job["rights_review"]
 
@@ -2755,6 +2775,22 @@ def api_job_timeline(jid: str, format: str = "svg"):
     return PlainTextResponse(cert["svg"], media_type="image/svg+xml")
 
 
+@app.get("/api/rights/calendar")
+def api_rights_calendar(days: int = 45):
+    """أي ترخيص ينتهي قريباً أو انتهى — من سجلات المهام المحفوظة."""
+    with _lock:
+        jobs = list(JOBS.values())
+    assets = []
+    for job in jobs:
+        review = job.get("rights_review") if isinstance(job.get("rights_review"), dict) else {}
+        for asset in review.get("assets") or []:
+            if isinstance(asset, dict):
+                assets.append({**asset, "job_id": job.get("id"),
+                               "title": job.get("title")})
+    from reelkit import compliance as COMPLIANCE
+    return COMPLIANCE.rights_calendar(assets, days=max(1, min(365, int(days))))
+
+
 @app.get("/api/jobs/{jid}/readiness")
 def api_job_readiness(jid: str):
     """ملخص جاهزية النشر: حقائق مسجّلة فقط، بلا ادّعاء اكتمال قانوني."""
@@ -2770,6 +2806,8 @@ def api_job_readiness(jid: str):
     freeze = COMPLIANCE.publish_gate()
     timeline = profile.get("timeline") if isinstance(profile.get("timeline"), dict) else {}
     cert = COMPLIANCE.transformation_timeline(timeline)
+    rights_cal = COMPLIANCE.rights_calendar(
+        (review.get("assets") if isinstance(review.get("assets"), list) else []), days=30)
     tracking = profile.get("tracking") if isinstance(profile.get("tracking"), dict) else {}
     miss = tracking.get("frame_miss_pct")
     coverage = tracking.get("coverage")
@@ -2811,6 +2849,14 @@ def api_job_readiness(jid: str):
             "ok": None if not review else bool(
                 ((review.get("target_reviews") or {}).get("youtube") or {}).get("ok")),
             "detail": "لم يُسجَّل بعد" if not review else "مسجّل لهذه المهمة",
+        },
+        "rights_window": {
+            "label": "صلاحية الترخيص",
+            "ok": (None if not (review.get("assets") or []) else
+                   not (rights_cal["expired"] or rights_cal["expiring"])),
+            "detail": ("لا سجل أصول لفحص المدة" if not (review.get("assets") or []) else
+                       (f"{len(rights_cal['expiring'])} ترخيص ينتهي خلال 30 يوماً"
+                        if rights_cal["expiring"] else "لا انتهاء قريب")),
         },
     }
     blocking = [key for key, item in checks.items()
