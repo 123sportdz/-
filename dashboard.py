@@ -2291,8 +2291,6 @@ def _edit_profile(job):
     opts = job.get("options") if isinstance(job.get("options"), dict) else {}
     quality = job.get("quality_report") if isinstance(job.get("quality_report"), dict) else {}
     measured = job.get("edit_profile") if isinstance(job.get("edit_profile"), dict) else None
-    if measured:
-        return dict(measured)
     try:
         duration = float(job.get("duration") or quality.get("duration") or 0.0)
     except (TypeError, ValueError):
@@ -2316,7 +2314,7 @@ def _edit_profile(job):
         if requested:
             words = len(str(script).split()) if script else 22
             commentary_s = min(max(3.0, words / 2.6), max(3.0, duration * 0.8) if duration else 60.0)
-    return {
+    profile = {
         "duration_s": duration,
         "commentary_s": commentary_s,
         "segments": max(1, segments),
@@ -2327,6 +2325,14 @@ def _edit_profile(job):
         "is_full_match": duration > 600,
         "source_kind": "broadcast" if source_url.startswith("http") else "unknown",
     }
+    # القياسات من الرندر تتقدّم على التقدير، لكن مصدر البث معروف للوحة وحدها.
+    if measured:
+        for key, value in measured.items():
+            if key == "source_kind" and profile["source_kind"] == "broadcast":
+                continue
+            if value is not None:
+                profile[key] = value
+    return profile
 
 
 @app.post("/api/jobs/{jid}/publish")

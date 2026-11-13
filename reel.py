@@ -1270,7 +1270,9 @@ def main(argv=None):
                     has_replay=bool(a.replay and str(a.replay).lower() != "off"),
                     has_crop=True,
                     source_duration_s=info.get("duration") or 0,
-                    is_full_match=float(a.max_dur or 0) > 600,
+                    is_full_match=bool(a.start is None and a.end is None
+                                       and float(info.get("duration") or 0) > 600),
+                    # ملاحظة: max_dur سقف المخرج، لا طول المصدر — لا يُستخدم هنا.
                     source_kind="broadcast" if str(getattr(a, "source_url", "") or "").startswith("http") else "unknown",
                     commentary_words=len(commentary_text.split()) if commentary_text else 0,
                 )
