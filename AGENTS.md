@@ -53,3 +53,5 @@
 - `CONTRIBUTING.md` and `SECURITY.md` are part of the contract: rights gates, no fingerprint evasion, fail-closed, no secrets, no external publishing without an explicit request. Keep them current when behaviour changes.
 
 - API routes for compliance now live in `reelkit/api/compliance_routes.py` (an `APIRouter` mounted in `dashboard.py`). Shared state stays singular: handlers resolve `JOBS`, `_lock`, `_edit_profile` and `AUDIT` through a late `import dashboard`, never by importing copies at module load (that would create a second queue/lock). Add future route groups the same way instead of growing `dashboard.py`.
+
+- Rights evidence is backed up by `backup.snapshot_evidence`: incremental (manifest SHA-256 comparison), rotating, symlink-refusing, and secret-skipping. It runs at dashboard startup and via `POST /api/rights/evidence-backup` / `python -m reelkit.backup --evidence`. `rights_evidence/` and `backups/` are gitignored — never commit evidence or snapshots.

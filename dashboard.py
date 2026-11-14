@@ -742,6 +742,15 @@ async def _lifespan(_app):
             print(f"🧹 تنظيف الإقلاع: حُذف {_n} مجلد عمل مهجور ({_sp.human(_f)}).", flush=True)
     except Exception:
         pass
+    # 🛡️ نسخة احتياطية تزايدية لأدلة الحقوق عند كل إقلاع — لا لقطة إن لم يتغيّر شيء.
+    try:
+        from reelkit import backup as _bk
+        _snap = _bk.snapshot_evidence(keep=int(os.environ.get("REEL_EVIDENCE_BACKUPS", "10")))
+        if _snap.get("created"):
+            print(f"🛡️ نسخة أدلة الحقوق: {_snap['files']} ملف "
+                  f"({_snap['bytes'] / 1024:.0f} KB) → {_snap['snapshot']}", flush=True)
+    except Exception:
+        pass
     # تشغيل الأتمتة المحفوظة (on_event مُهملة في FastAPI الحديثة)
     try:
         if CFG.get("automation_enabled"):

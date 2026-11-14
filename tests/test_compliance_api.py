@@ -192,3 +192,15 @@ def test_rights_calendar_endpoint_aggregates_jobs(client):
     assert body["counts"]["expired"] == 1
     assert body["counts"]["expiring"] == 1
     assert body["rows"][0]["job_id"] == "job-1"
+
+
+def test_evidence_backup_endpoint(client, tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "license.pdf").write_bytes(b"contract")
+    monkeypatch.setenv("REEL_RIGHTS_EVIDENCE_DIR", str(root))
+    body = client.post("/api/rights/evidence-backup").json()
+    assert body["ok"] is True and body["created"] is True
+    assert body["files"] == 1
+    again = client.post("/api/rights/evidence-backup").json()
+    assert again["created"] is False

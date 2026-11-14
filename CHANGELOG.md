@@ -1,5 +1,15 @@
 # سجل التغييرات
 
+## غير مُصدَر — 2026-11-13 (نسخ احتياطي لأدلة الحقوق)
+
+- **`backup.snapshot_evidence`**: لقطة تزايدية لمجلد `rights_evidence/` مع بيان SHA-256 لكل ملف. لا تُنشئ لقطة إن لم يتغيّر شيء (مقارنة البيان)، وتحذف الأقدم فوق السقف، ولا تتبع الروابط الرمزية.
+- **تخطّي الأسرار**: أي ملف يبدو سرّاً (`.env`، `client_secret`، `token.json`، `*.pem`، `*.key`) لا يُنسخ، ويُذكر في `skipped` بدل تجاهله صامتاً.
+- **تلقائي عند الإقلاع**: اللوحة تأخذ لقطة عند كل تشغيل (لا شيء يحدث إن لم يتغيّر ملف). `REEL_EVIDENCE_BACKUPS` يضبط السقف (افتراضي 10).
+- **`POST /api/rights/evidence-backup`** و`python -m reelkit.backup --evidence` للنسخ اليدوي.
+- **`.gitignore`**: أُضيف `backups/` و`rights_evidence/` — كان مجلد الأدلة غير مستثنى، فكان يمكن أن تُرفع عقود حقيقية بالخطأ.
+- **اختبارات**: 5 جديدة. المجموع 420 بلا Chromium.
+
+
 ## غير مُصدَر — 2026-11-13 (فصل مسارات الامتثال عن اللوحة)
 
 - **`reelkit/api/compliance_routes.py`**: ثمانية مسارات (compliance، strike، dossier، reuse-check، channel/report، timeline، rights/calendar، readiness) انتقلت من `dashboard.py` إلى `APIRouter` مستقل. اللوحة صارت 3,486 سطراً بدل 3,661 و**71 مساراً** بدل 79.
