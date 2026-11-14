@@ -534,9 +534,10 @@ def build_package(out_path, *, source="", caption="", commentary="",
             fh.write("\n".join(lines))
         return path
     except Exception as e:
-        import sys
         # كان الابتلاع الصامت: فشل قرص/صلاحيات يمر بلا أثر حتى في السجل
-        print(f"⚠️ تعذّر كتابة ملف معلومات الإنتاج: {type(e).__name__}: {e}", file=sys.stderr)
+        from reelkit.observability import get_logger
+        get_logger("rights").warning(
+            "⚠️ تعذّر كتابة ملف معلومات الإنتاج: %s: %s", type(e).__name__, e)
         return None
 
 

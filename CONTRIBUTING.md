@@ -19,11 +19,23 @@ Python **3.11–3.13**. لا 3.14 (torch).
 ## الفحص قبل الدفع
 
 ```bash
-python -m ruff check .          # قواعد الأخطاء الفعلية فقط (F, E9)
-python -m pytest -q --ignore=tests/test_dashboard_browser.py
+./tools/check.sh                # ruff + مجموعة الاختبارات (ويندوز: tools\check.bat)
+./tools/check.sh --cov          # مع تقرير تغطية
 ```
 
 اختياري: `pip install pre-commit && pre-commit install`.
+
+### تثبيت النسخ على جهازك
+
+`requirements.txt` يضع سقوفاً للإصدارات الرئيسية فقط. بعد تشغيل ناجح على جهازك:
+
+```bash
+pip freeze > constraints.txt
+pip install -r requirements.txt -c constraints.txt
+```
+
+`constraints.txt` شخصي ولا يُرفع. الترقية الكبرى (ultralytics/opencv/numpy) تحتاج
+تشغيل `python selftest.py` على مقطع حقيقي قبل اعتمادها.
 CI يشغّل الفحص على Linux وWindows وChromium ووسائط حقيقية؛ إن كان محلياً أخضر
 فغالباً سيمر.
 

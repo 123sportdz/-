@@ -55,3 +55,7 @@
 - API routes for compliance now live in `reelkit/api/compliance_routes.py` (an `APIRouter` mounted in `dashboard.py`). Shared state stays singular: handlers resolve `JOBS`, `_lock`, `_edit_profile` and `AUDIT` through a late `import dashboard`, never by importing copies at module load (that would create a second queue/lock). Add future route groups the same way instead of growing `dashboard.py`.
 
 - Rights evidence is backed up by `backup.snapshot_evidence`: incremental (manifest SHA-256 comparison), rotating, symlink-refusing, and secret-skipping. It runs at dashboard startup and via `POST /api/rights/evidence-backup` / `python -m reelkit.backup --evidence`. `rights_evidence/` and `backups/` are gitignored — never commit evidence or snapshots.
+
+- Dependencies carry major-version ceilings on purpose (`requirements.txt`). A major bump of ultralytics/opencv/numpy is a tested decision, not a silent update: run `python selftest.py` on a real clip before raising it. Exact per-machine pins go in a local, gitignored `constraints.txt`.
+- Library warnings go through `reelkit.observability.get_logger`, never `print` to stderr; CLI subcommands may still print. Keep messages identical so operators and the dashboard keep matching them. Log files rotate under `logs/` and must never contain secrets.
+- Run `./tools/check.sh` (ruff + tests) before pushing; `--cov` adds a coverage report. Dependabot is grouped and ignores semver-major.
