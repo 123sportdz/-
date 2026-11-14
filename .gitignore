@@ -39,3 +39,5 @@ rights_manifest.json
 rights_review.json
 rights_record.json
 compliance_log.jsonl
+backups/
+rights_evidence/

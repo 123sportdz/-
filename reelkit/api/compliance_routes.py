@@ -207,3 +207,13 @@ def api_job_readiness(jid: str):
     return {"verdict": verdict, "checks": checks,
             "blocking": blocking, "review": review_needed,
             "reuse": reuse, "plan": COMPLIANCE.improve_plan(profile)}
+
+
+@router.post("/api/rights/evidence-backup")
+def api_rights_evidence_backup(keep: int = 10, force: bool = False):
+    """لقطة فورية لأدلة الحقوق. لا تُنشئ نسخة إن لم يتغيّر ملف."""
+    from reelkit import backup as BACKUP
+    result = BACKUP.snapshot_evidence(keep=max(1, min(50, int(keep))), force=bool(force))
+    if not result.get("ok") and result.get("reason") == "evidence_dir_missing":
+        raise HTTPException(404, "مجلد rights_evidence غير موجود — لا أدلة لنسخها")
+    return result

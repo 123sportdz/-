@@ -7,11 +7,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -119,3 +121,135 @@ def backup_file(path: str | Path, backup_dir: str | Path | None = None,
         return dest
     except OSError:
         return None
+
+
+# ----------------------------------------------------- نسخ أدلة الحقوق (مجلد)
+# الأدلة ملفات ثنائية (عقود، لقطات، PDF) — لا تُقرأ ولا تُخفى أسرارها. ننسخها
+# كما هي إلى لقطة بطابع زمني مع بيان SHA-256، ونتخطى أي ملف يبدو سرّاً.
+EVIDENCE_DENY = (".env", "client_secret", "token.json", "oauth_pending",
+                 ".pem", ".key", "id_rsa", "credentials")
+
+
+def _looks_secret(name: str) -> bool:
+    low = name.lower()
+    return any(part in low for part in EVIDENCE_DENY)
+
+
+def _evidence_manifest(root: Path) -> tuple[dict, list, int]:
+    """(manifest, skipped, total_bytes) — لا يتبع الروابط الرمزية."""
+    manifest: Dict[str, Dict[str, Any]] = {}
+    skipped: List[str] = []
+    total = 0
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if path.is_symlink() or not path.is_file():
+            skipped.append(str(rel))
+            continue
+        if _looks_secret(path.name):
+            skipped.append(str(rel))
+            continue
+        try:
+            stat = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            skipped.append(str(rel))
+            continue
+        manifest[str(rel)] = {"sha256": digest.hexdigest(), "size": stat.st_size,
+                              "mtime": int(stat.st_mtime)}
+        total += stat.st_size
+    return manifest, skipped, total
+
+
+def snapshot_evidence(evidence_dir: str | Path | None = None,
+                      backup_dir: str | Path | None = None,
+                      keep: int = 10, stamp: Optional[str] = None,
+                      force: bool = False) -> Dict[str, Any]:
+    """لقطة تزايدية لمجلد أدلة الحقوق. لا تُنشئ لقطة فارغة أو مكررة.
+
+    - إن لم يتغيّر أي ملف منذ آخر لقطة: `created=False` ولا نسخة جديدة.
+    - اللقطة القديمة تُحذف فوق السقف `keep` (المجلدات بطابع `YYYYmmdd-HHMMSS`).
+    - الروابط الرمزية والملفات المشبوهة كأسرار تُتخطى وتُذكر في `skipped`.
+    """
+    try:
+        if evidence_dir is None:
+            from reelkit.rights import _evidence_root
+            root = Path(_evidence_root())
+        else:
+            root = Path(evidence_dir).expanduser().resolve()
+        if not root.is_dir():
+            return {"ok": False, "created": False, "reason": "evidence_dir_missing",
+                    "snapshot": None, "files": 0, "bytes": 0, "skipped": []}
+        base = Path(backup_dir).expanduser() if backup_dir else root.parent / "backups" / "rights_evidence"
+        manifest, skipped, total = _evidence_manifest(root)
+        latest = None
+        if base.is_dir():
+            snaps = sorted((p for p in base.iterdir() if p.is_dir() and not p.name.endswith(".tmp")),
+                           key=lambda p: p.name)
+            latest = snaps[-1] if snaps else None
+        if latest is not None and not force:
+            try:
+                previous = json.loads((latest / "manifest.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+            if previous.get("files") == manifest:
+                return {"ok": True, "created": False, "reason": "unchanged",
+                        "snapshot": str(latest), "files": len(manifest),
+                        "bytes": total, "skipped": skipped}
+        base.mkdir(parents=True, exist_ok=True)
+        name = stamp or time.strftime("%Y%m%d-%H%M%S")
+        dest = base / name
+        n = 1
+        while dest.exists():
+            dest = base / f"{name}_{n:04d}"
+            n += 1
+        tmp = base / f"{dest.name}.tmp"
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        for rel in manifest:
+            target = tmp / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, target)
+        (tmp / "manifest.json").write_text(
+            json.dumps({"created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "source": str(root), "files": manifest,
+                        "skipped": skipped, "bytes": total},
+                       ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, dest)
+        if base.is_dir():
+            snaps = sorted((p for p in base.iterdir() if p.is_dir() and not p.name.endswith(".tmp")),
+                           key=lambda p: p.name)
+            for old in snaps[:-max(1, int(keep))]:
+                shutil.rmtree(old, ignore_errors=True)
+        return {"ok": True, "created": True, "reason": "",
+                "snapshot": str(dest), "files": len(manifest),
+                "bytes": total, "skipped": skipped}
+    except OSError as exc:
+        return {"ok": False, "created": False, "reason": type(exc).__name__,
+                "snapshot": None, "files": 0, "bytes": 0, "skipped": []}
+
+
+def _main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="python -m reelkit.backup",
+                                     description="نسخ احتياطي دوّار للحالة وأدلة الحقوق")
+    parser.add_argument("--evidence", action="store_true", help="لقطة لمجلد أدلة الحقوق")
+    parser.add_argument("--evidence-dir", default=None)
+    parser.add_argument("--backup-dir", default=None)
+    parser.add_argument("--keep", type=int, default=10)
+    parser.add_argument("--force", action="store_true", help="أنشئ لقطة حتى لو لم يتغير شيء")
+    args = parser.parse_args(argv)
+    if args.evidence:
+        result = snapshot_evidence(args.evidence_dir, args.backup_dir,
+                                   keep=args.keep, force=args.force)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(_main())
