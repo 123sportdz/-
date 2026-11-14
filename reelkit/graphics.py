@@ -9,6 +9,10 @@
 import cv2, numpy as np, os, glob, sys, math
 from PIL import Image, ImageDraw, ImageFont
 
+from reelkit.observability import get_logger
+
+_log = get_logger("graphics")
+
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 _RAQM = None
@@ -272,7 +276,7 @@ def resolve_text(text, bold=True):
         msg = (f"[تحذير] ما فيه خط يرسم هذا النص كاملاً: {text[:40]!r} "
                f"(أفضل محاولة: {os.path.basename(best[0]) if best else '-'} ناقص "
                f"{best[2] if best else '-'} رمزاً). شغّل: python font_check.py")
-        print(msg, file=sys.stderr)
+        _log.warning(msg)
         try:
             with open("font_warnings.log", "a", encoding="utf-8") as fh:
                 fh.write(msg + "\n")
@@ -422,7 +426,7 @@ def draw_mixed(d, text, x_center, y_top, size=40, bold=True, fill=(255, 255, 255
         if text.strip() and text not in _WARNED:
             _WARNED.add(text)
             msg = (f"[تحذير] تعذّر رسم نص: {text[:40]!r} — شغّل python font_check.py")
-            print(msg, file=sys.stderr)
+            _log.warning(msg)
             try:
                 open("font_warnings.log", "a", encoding="utf-8").write(msg + "\n")
             except Exception:

@@ -41,3 +41,5 @@ rights_record.json
 compliance_log.jsonl
 backups/
 rights_evidence/
+logs/
+constraints.txt

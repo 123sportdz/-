@@ -1,26 +1,30 @@
+# سقوف الإصدارات الرئيسية مقصودة: تحديث major في ultralytics/opencv/numpy
+# يكسر الرندر (واجهات، أعلام، ترميز). الترقية قرار مختبَر، لا تحديث صامت.
+# لتثبيت نسخ دقيقة على جهازك بعد تشغيل ناجح:
+#   pip freeze > constraints.txt && pip install -r requirements.txt -c constraints.txt
 # pytorch is installed separately (CPU or CUDA build) — see README
-ultralytics>=8.3.0
-opencv-python-headless>=4.9.0
-numpy>=1.24
-pillow>=10.0
-arabic-reshaper>=3.0.0
-python-bidi>=0.4.2
+ultralytics>=8.3.0,<9
+opencv-python-headless>=4.9.0,<6
+numpy>=1.24,<3
+pillow>=10.0,<13
+arabic-reshaper>=3.0.0,<4
+python-bidi>=0.4.2,<1
 # dashboard
-fastapi>=0.110
-uvicorn[standard]>=0.27
-python-multipart>=0.0.9
-pytesseract>=0.3.10          # + system package: apt install tesseract-ocr tesseract-ocr-ara
-edge-tts>=7.0                # 🎙️ محرّك التعليق الصوتي المجاني الافتراضي (voice.py)
+fastapi>=0.110,<2
+uvicorn[standard]>=0.27,<2
+python-multipart>=0.0.9,<1
+pytesseract>=0.3.10,<1          # + system package: apt install tesseract-ocr tesseract-ocr-ara
+edge-tts>=7.0,<8                # 🎙️ محرّك التعليق الصوتي المجاني الافتراضي (voice.py)
 # optional (YouTube upload) — مثبّتة افتراضياً لأن النشر لليوتيوب ميزة مشحونة في المشروع
 # (كانت معلّقة ⇒ link_youtube.py ورفع الفيديو يفشلان بـModuleNotFoundError بعد install.sh)
-google-api-python-client>=2.100
-google-auth-oauthlib>=1.2
-fonttools>=4.40
+google-api-python-client>=2.100,<3
+google-auth-oauthlib>=1.2,<2
+fonttools>=4.40,<5
 # ByteTrack لتتبّع اللاعب/الشاشة المقسومة (بدونه يتراجع تلقائياً لمطابقة بسيطة)
-lap>=0.5.12
+lap>=0.5.12,<1
 
 # 🎯 اختياري لكن موصى به: تنزيل فيديوهات تيليجرام الكبيرة بحسابك
 # python-socks: مشغّل البروكسي الذي يوصي به QUICKSTART (بدونه socks5:// يرمي ModuleNotFoundError)
-telethon>=1.36
-python-socks[asyncio]>=2.4
-qrcode[pil]>=7.4
+telethon>=1.36,<2
+python-socks[asyncio]>=2.4,<3
+qrcode[pil]>=7.4,<9
